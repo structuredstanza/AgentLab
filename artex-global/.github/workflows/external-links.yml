@@ -1,0 +1,36 @@
+name: external-links
+# External links the tracking markdown points to (incident reporting channels in the defense guide: boho.or.kr, privacy.go.kr, 
+# pipc.go.kr·fsec.or.kr, CISA KEV, OWASP·SigmaHQ·Suricata·MITRE·MISP, original demo, GitHub
+# Check whether badges and similar external links are still alive. External URL liveness depends on the network and on remote server policies,
+# are flaky, so they are not checked in the internal link merge gate (docs.yml). That is why this workflow
+# runs only on a weekly schedule and manual runs (workflow_dispatch), not on push or PR, so it **does not block merges**,
+# and when an external link degrades or goes offline, the periodic run surfaces it in red. Internal links and anchors are handled by docs.yml, Go build,
+# ci.yml handles build/analysis/tests, detections.yml handles detection rules, and web.yml handles the Korean UI build.
+#
+# --strict fails only if there is at least one DOWN (404, 410, 5xx, DNS/connection error, etc.) that is not in the allowlist (scripts/external-links-allowlist.txt).
+# DNS/connection errors) outside the allowlist. RESTRICTED (bot blocking, rate limiting, etc., while the host
+# ALIVE (live state) and ALLOWED (dead links inherited from upstream that we cannot fix) are not counted as failures, so
+# A red light means "an external link curated by our docs has newly broken — go look." The schedule
+# The workflow runs only on the default branch (main).
+on:
+  schedule:
+    - cron: "17 0 * * 1" # Every Monday at 00:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-links-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  links:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # python3 is installed by default on the ubuntu-latest runner, and the script uses only the standard library,
+      # so no separate installation is needed. It runs with -I to isolate it from user site-packages and environment settings.
+      - name: External link liveness check (browser UA · GET · redirect following · allowlist excluded · non-blocking for merge)
+        run: python3 -I scripts/check-external-links.py --strict

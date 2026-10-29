@@ -1,0 +1,28 @@
+# Publish source and deployment configuration only. Runtime and research data stay local.
+/*
+!/.gitignore
+!/.dockerignore
+!/README.md
+!/lab
+!/deployment/
+!/artex-global/
+
+# Dependencies, generated navigation graphs and build outputs.
+**/node_modules/
+**/graft/
+**/.translation-work/
+**/__pycache__/
+**/.next/
+**/out/
+*.py[cod]
+*.tsbuildinfo
+
+# Credentials and runtime databases must never be published.
+.env
+.env.*
+!/artex-global/.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log

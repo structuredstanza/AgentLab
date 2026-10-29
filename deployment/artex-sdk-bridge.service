@@ -1,0 +1,19 @@
+[Unit]
+Description=AgentLab OMP subscription SDK bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/Research/AgentLab/deployment/sdk-bridge
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/mnt/Research/AgentLab/sdk-state/home LANG=C.UTF-8 BUN_BE_BUN=1 ARTEX_SDK_BRIDGE_TOKEN_FILE=/mnt/Research/AgentLab/secrets/sdk-bridge-token ARTEX_SDK_BRIDGE_DATA_DIR=/mnt/Research/AgentLab/sdk-state ARTEX_SDK_BRIDGE_HOST=127.0.0.1 ARTEX_SDK_BRIDGE_PORT=8788 /usr/bin/strace -ff -ttt -T -yy -s256 -A -e trace=process,file,network -o /mnt/Research/AgentLab/sdk-state/network/sdk /home/minerva/.local/share/tern/omp/versions/18.13.3 /mnt/Research/AgentLab/deployment/sdk-bridge/src/main.mjs
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=35
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

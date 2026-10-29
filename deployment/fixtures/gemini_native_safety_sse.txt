@@ -1,0 +1,2 @@
+data: {"response":{"promptFeedback":{"blockReason":"SAFETY"},"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":0}}}
+

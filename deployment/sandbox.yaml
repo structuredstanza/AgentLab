@@ -1,0 +1,18 @@
+image: agentlab/artex:local
+pull_policy: never
+cpus: 4
+memory: 8G
+workdir: /state
+shell: /bin/bash
+security: default
+mounts:
+  - /mnt/Research/AgentLab/state:/state
+  - /mnt/Research/AgentLab/secrets/admin-password:/run/secrets/agentlab-admin:ro
+  - /mnt/Research/AgentLab/secrets/sdk-bridge-token:/run/secrets/agentlab-sdk-bridge:ro
+network:
+  policy: public
+  ports:
+    - 127.0.0.1:8787:8787
+labels:
+  purpose: autonomous-task-trace-collection
+  application: artex-global

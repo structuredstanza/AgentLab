@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""Control the local ARTEX VM and export its real recorded data."""
+import argparse
+import base64
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import selectors
+import shutil
+import secrets
+import tarfile
+import subprocess
+import sys
+import time
+import urllib.request
+import uuid
+
+ROOT = Path(__file__).resolve().parent
+MSB = ROOT / '.venv/bin/msb'
+NAME = 'artex-agentlab-quota'
+URL = 'http://127.0.0.1:8787'
+PRIMARY_URL = 'http://host.microsandbox.internal:8080/v1'
+PRIMARY_NAME = 'AgentLab Bonsai Thinking'
+PRIMARY_KEY = Path('/mnt/Research/Local_Stack/artifacts/api_key.txt')
+SDK_STATE = ROOT / 'sdk-state'
+SDK_TOKEN = ROOT / 'secrets/sdk-bridge-token'
+os.environ['MSB_HOME'] = str(ROOT / 'microsandbox')
+os.umask(0o077)
+
+
+def now():
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def msb(*args, **kwargs):
+    return subprocess.run([str(MSB), *args], check=True, **kwargs)
+
+
+def guest(*args, **kwargs):
+    return msb('exec', '--no-stdin', NAME, '--', *args, **kwargs)
+
+
+def api(path, data=None, token=None, method=None):
+    headers = {'Content-Type': 'application/json'}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    body = None if data is None else json.dumps(data).encode()
+    req = urllib.request.Request(URL + path, body, headers, method=method)
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.load(response)
+
+
+def login():
+    return api('/api/auth/login', {'username': 'ARTEX', 'password':
+        (ROOT / 'secrets/admin-password').read_text().strip()})['token']
+
+
+def start_sdk_bridge():
+    for path in (SDK_STATE, SDK_STATE / 'home', SDK_STATE / 'network'):
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.chmod(0o700)
+    try:
+        fd = os.open(SDK_TOKEN, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(secrets.token_urlsafe(48) + '\n')
+    SDK_TOKEN.chmod(0o600)
+    unit = ROOT / 'deployment/artex-sdk-bridge.service'
+    installed = Path.home() / '.config/systemd/user/artex-sdk-bridge.service'
+    installed.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if installed.exists() or installed.is_symlink():
+        if installed.resolve() != unit.resolve():
+            raise RuntimeError(f'Refusing to replace an unrelated service: {installed}')
+    else:
+        installed.symlink_to(unit)
+    subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True, timeout=30)
+    subprocess.run(['systemctl', '--user', 'start', unit.name], check=True, timeout=40)
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:8788/healthz', timeout=2) as response:
+                if json.load(response).get('status') == 'ok':
+                    return
+        except (OSError, ValueError):
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError('SDK bridge did not become healthy; inspect artex-sdk-bridge.service')
+        time.sleep(0.2)
+
+
+def start():
+    start_sdk_bridge()
+    for name in ('artex-agentlab', 'artex-agentlab-reasoning', 'artex-agentlab-capture', 'artex-agentlab-english', 'artex-agentlab-sdk', 'artex-agentlab-allocation', 'artex-agentlab-quota'):
+        if name == NAME:
+            continue
+        previous = subprocess.run([str(MSB), 'inspect', name, '--format', 'json'],
+                                  capture_output=True, text=True)
+        if previous.returncode == 0 and json.loads(previous.stdout)['status'].lower() != 'stopped':
+            raise RuntimeError(f'Stop the previous {name} VM gracefully before sharing its persistent state')
+    result = subprocess.run([str(MSB), 'inspect', NAME, '--format', 'json'],
+                            capture_output=True, text=True)
+    if result.returncode:
+        msb('create', '--name', NAME, '--conf', str(ROOT / 'deployment/sandbox.yaml'),
+            '--hostname', 'agentlab-worker',
+            '--net-rule', 'allow@host:tcp:8080', '--net-rule', 'allow@host:tcp:8788')
+    elif json.loads(result.stdout)['status'].lower() != 'running':
+        msb('start', NAME)
+    try:
+        api('/api/health')
+    except Exception:
+        msb('exec', '-d', NAME, '--', 'python3', '/opt/agentlab/guest-start.py')
+        deadline = time.monotonic() + 120
+        while True:
+            try:
+                api('/api/health')
+                break
+            except Exception:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('ARTEX did not become healthy; inspect state/captures and msb logs')
+                time.sleep(1)
+    token = login()
+    settings = api('/api/settings', {'llm_record': True, 'traffic_capture': True,
+                    'agent_traffic_binding': True, 'llm_refusal_fallback_enabled': True}, token, 'PUT')
+    settings = api('/api/settings', token=token)
+    if not all(settings.get(key) for key in ('llm_record', 'traffic_capture', 'agent_traffic_binding', 'llm_refusal_fallback_enabled')):
+        raise RuntimeError('ARTEX capture/refusal fallback settings are not enabled')
+    print(f'ARTEX ready: {URL}; user ARTEX; password: {ROOT}/secrets/admin-password')
+    active = next((p for p in api('/api/llm/profiles', token=token)['profiles'] if p['is_default']), None)
+    if active and active.get('base_url') == PRIMARY_URL:
+        start_primary_model()
+    print('Capture enabled. Primary model: ' + (active['name'] if active else 'not configured'))
+
+
+def start_primary_model():
+    subprocess.run(['systemctl', '--user', 'start', 'bonsai.service'], check=True, timeout=60)
+    deadline = time.monotonic() + 600
+    while True:
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2) as response:
+                healthy = json.load(response).get('status') == 'ok'
+        except (OSError, ValueError):
+            healthy = False
+        if healthy:
+            return primary_runtime()
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Shared Bonsai model is not healthy; inspect bonsai.service')
+        time.sleep(2)
+
+
+def primary_runtime():
+    key = PRIMARY_KEY.read_text().strip()
+    if not key:
+        raise RuntimeError('Shared Bonsai API key is empty')
+    request = urllib.request.Request('http://127.0.0.1:8080/props',
+        headers={'Authorization': 'Bearer ' + key})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        runtime = json.load(response)
+    expected = json.loads((ROOT / 'deployment/provenance.json').read_text())['model_artifact']
+    loaded = Path(runtime.get('model_path', '')).resolve()
+    if runtime.get('model_alias') != 'bonsai-2-27b' or loaded != Path(expected['path']).resolve():
+        raise RuntimeError('Shared backend is serving a different model artifact')
+    identity = loaded.stat()
+    if identity.st_size != expected['size_bytes'] or identity.st_mtime_ns != expected['mtime_ns']:
+        raise RuntimeError('Model weights changed; reverify their hash before recording new provenance')
+    return runtime
+
+
+def primary():
+    """Activate the installed open-weight backend without adding paid fallbacks."""
+    runtime = start_primary_model()
+    key = PRIMARY_KEY.read_text().strip()
+    if not key:
+        raise RuntimeError('Shared Bonsai API key is empty')
+    token = login()
+    profiles = api('/api/llm/profiles', token=token)['profiles']
+    profile = {
+        'name': PRIMARY_NAME, 'format': 'openai', 'base_url': PRIMARY_URL,
+        'model': 'bonsai-2-27b', 'api_key': key, 'streaming': True,
+        'context_window_k': 256, 'max_tokens': 32768,
+        'thinking_type': '', 'reasoning_effort': 'medium', 'pool_exclude': True,
+    }
+    existing = next((p for p in profiles if p['name'] == PRIMARY_NAME), None)
+    if existing:
+        profile['id'] = int(existing['id'])
+    profile_id = api('/api/llm/profiles', profile, token, 'POST')['id']
+    api('/api/llm/profiles/active', {'id': profile_id}, token, 'POST')
+    api('/api/settings', {'llm_record': True, 'traffic_capture': True,
+        'agent_traffic_binding': True, 'llm_pool_enabled': False}, token, 'PUT')
+    active = next(p for p in api('/api/llm/profiles', token=token)['profiles'] if p['is_default'])
+    if str(active['id']) != str(profile_id) or active['base_url'] != PRIMARY_URL:
+        raise RuntimeError('Primary model activation did not persist')
+    provenance_path = ROOT / 'deployment/provenance.json'
+    provenance = json.loads(provenance_path.read_text())
+    provenance['model_backend'] = 'llama.cpp / shared bonsai.service'
+    provenance['primary_model'] = {k: v for k, v in active.items()
+                                   if k not in ('api_key', 'api_key_hint')}
+    provenance.setdefault('reasoning_profiles', {})[PRIMARY_NAME] = {
+        'model_backend': 'llama.cpp', 'provenance': 'open-weight-local',
+    }
+    provenance['inference_runtime'] = {k: runtime.get(k) for k in (
+        'model_path', 'model_alias', 'model_ftype', 'build_info',
+        'default_generation_settings', 'total_slots', 'chat_template_caps')}
+    provenance['inference_runtime']['chat_template_sha256'] = hashlib.sha256(
+        runtime.get('chat_template', '').encode()).hexdigest()
+    provenance_path.write_text(json.dumps(provenance, indent=2) + '\n')
+    print(json.dumps({'primary_profile': profile_id, 'name': PRIMARY_NAME,
+        'model': active['model'], 'base_url': active['base_url'],
+        'paid_fallbacks': False}, indent=2))
+
+
+def stop():
+    guest('python3', '-c', """
+import os
+import time
+from pathlib import Path
+path = Path('/state/supervisor.pid')
+if path.exists():
+    pid = int(path.read_text())
+    try:
+        command = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\\0')
+    except FileNotFoundError:
+        command = []
+    if b'/opt/agentlab/guest-start.py' in command:
+        try:
+            os.kill(pid, 15)
+        except ProcessLookupError:
+            pass
+        for _ in range(600):
+            if not path.exists():
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError('Supervisor did not shut down cleanly; VM left running')
+""")
+    msb('stop', NAME)
+
+
+def execute(command):
+    if command and command[0] == '--':
+        command = command[1:]
+    if not command:
+        raise ValueError('exec requires a command after --')
+    log = ROOT / 'host-events.jsonl'
+    command_id = uuid.uuid4().hex
+    with log.open('ab', buffering=0) as events:
+        def event(kind, **data):
+            line = json.dumps({'timestamp': now(), 'command_id': command_id, 'kind': kind, **data}) + '\n'
+            os.write(events.fileno(), line.encode())
+        event('command_start', argv=command)
+        proc = subprocess.Popen([str(MSB), 'exec', '--no-stdin', NAME, '--', *command],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with selectors.DefaultSelector() as streams:
+            streams.register(proc.stdout, selectors.EVENT_READ, ('stdout', sys.stdout.buffer))
+            streams.register(proc.stderr, selectors.EVENT_READ, ('stderr', sys.stderr.buffer))
+            while streams.get_map():
+                for key, _ in streams.select():
+                    chunk = os.read(key.fd, 65536)
+                    if not chunk:
+                        streams.unregister(key.fileobj)
+                        key.fileobj.close()
+                        continue
+                    kind, target = key.data
+                    event(kind, data_base64=base64.b64encode(chunk).decode())
+                    try:
+                        target.write(chunk)
+                        target.flush()
+                    except BrokenPipeError:
+                        pass  # Continue draining and recording the command when its display pipe closes.
+        code = proc.wait()
+        event('command_exit', argv=command, exit_code=code)
+    return code
+
+
+def extract_capture_archive(stream, destination):
+    def regular_files_only(member, path):
+        if not member.isfile() and not member.isdir():
+            raise ValueError(f'Non-regular guest archive member rejected: {member.name}')
+        filtered = tarfile.data_filter(member, path)
+        filtered.mode = 0o700 if filtered.isdir() else 0o600
+        return filtered
+    with tarfile.open(fileobj=stream, mode='r|') as archive:
+        archive.extractall(destination, filter=regular_files_only)
+
+
+def export():
+    export_id = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    output = ROOT / 'exports' / export_id
+    raw = output / 'raw'
+    raw.mkdir(parents=True, mode=0o700)
+    manifest = {'started_at': now(), 'sandbox': NAME, 'model_data': 'genuine records only',
+                'consistency': 'transactional PostgreSQL rows; separate pg_dump snapshot; online filesystem copy',
+                'privacy': 'raw artifacts may contain credentials, task content and personal data',
+                'limits': ['guest-root can tamper with guest-side captures',
+                           'packet rotation overwrites old segments; inspect session manifest',
+                           'TLS packet payloads are encrypted; application proxy records inspectable HTTP',
+                           'reasoning exists only when explicitly exposed by the provider']}
+    psql = ['psql', '-h', '/run/postgresql', '-U', 'postgres', '-d', 'artex', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1']
+    tables = guest(*psql, '-c', "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename",
+                   capture_output=True, text=True).stdout.splitlines()
+    if not tables or any(not re.fullmatch('[a-z_][a-z_0-9]*', t) for t in tables):
+        raise RuntimeError('Unexpected PostgreSQL table list')
+    sql = 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\n'
+    sql += '\n'.join(f"SELECT json_build_object('table','{t}','row',row_to_json(t)) FROM public.\"{t}\" t;" for t in tables)
+    sql += '\nCOMMIT;'
+    handles = {table: (raw / (table + '.jsonl')).open('w') for table in tables}
+    counts = dict.fromkeys(tables, 0)
+    try:
+        with (raw / 'table-export.stderr').open('w') as errors:
+            proc = subprocess.Popen([str(MSB), 'exec', '--no-stdin', NAME, '--', *psql, '-c', sql],
+                                    stdout=subprocess.PIPE, stderr=errors, text=True)
+            try:
+                for line in proc.stdout:
+                    record = json.loads(line)
+                    table = record['table']
+                    handles[table].write(json.dumps(record['row'], ensure_ascii=False) + '\n')
+                    counts[table] += 1
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
+            finally:
+                proc.stdout.close()
+            if proc.wait():
+                raise RuntimeError(f'Table export failed; see {raw}/table-export.stderr')
+    finally:
+        for handle in handles.values():
+            handle.close()
+    with (raw / 'postgres.dump').open('wb') as dump:
+        guest('pg_dump', '-h', '/run/postgresql', '-U', 'postgres', '-d', 'artex', '-Fc', stdout=dump)
+    guest('sync')
+    with (raw / 'capture-export.stderr').open('w') as errors:
+        proc = subprocess.Popen([str(MSB), 'exec', '--no-stdin', NAME, '--',
+                                 'python3', '/opt/agentlab/guest-export.py'],
+                                stdout=subprocess.PIPE, stderr=errors)
+        try:
+            extract_capture_archive(proc.stdout, raw)
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            proc.stdout.close()
+        if proc.wait():
+            raise RuntimeError(f'Guest file snapshot failed; see {raw}/capture-export.stderr')
+    logs = ROOT / 'microsandbox/sandboxes' / NAME / 'logs'
+    if logs.exists():
+        shutil.copytree(logs, raw / 'runtime-logs', symlinks=True)
+    if (ROOT / 'host-events.jsonl').exists():
+        shutil.copyfile(ROOT / 'host-events.jsonl', raw / 'host-events.jsonl')
+    with (raw / 'sandbox.json').open('w') as stream:
+        msb('inspect', NAME, '--format', 'json', stdout=stream)
+    shutil.copyfile(ROOT / 'deployment/provenance.json', raw / 'provenance.json')
+    sdk_network = SDK_STATE / 'network'
+    if sdk_network.exists():
+        target = raw / 'sdk-network'
+        target.mkdir(mode=0o700)
+        for path in sorted(sdk_network.glob('sdk.*')):
+            if path.is_file() and not path.is_symlink():
+                shutil.copyfile(path, target / path.name)
+        manifest['sdk_network'] = {
+            'source': 'host SDK process strace',
+            'scope': 'SDK process/file/network syscalls, including provider connections',
+            'limit': 'decoded arguments limited to 256 bytes; TLS payloads remain encrypted',
+            'consistency': 'online file copy; SDK OAuth databases are never exported',
+        }
+    shutil.copyfile(ROOT / 'deployment/sandbox.yaml', raw / 'sandbox.yaml')
+    sys.path.insert(0, str(ROOT / 'deployment'))
+    import export_traces
+    manifest['training'] = export_traces.export(raw, output / 'training')
+    manifest['table_rows'] = counts
+    manifest['completed_at'] = now()
+    hashes = {}
+    for path in output.rglob('*'):
+        if path.is_file() and not path.is_symlink():
+            with path.open('rb') as stream:
+                hashes[str(path.relative_to(output))] = hashlib.file_digest(stream, 'sha256').hexdigest()
+    manifest['sha256'] = hashes
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    print(json.dumps({'export': str(output), 'table_rows': counts, 'training': manifest['training']}, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='action', required=True)
+    for name in ('start', 'stop', 'status', 'export', 'primary'):
+        sub.add_parser(name)
+    run = sub.add_parser('exec', help='Execute an adaptable guest command and record its output')
+    run.add_argument('command', nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    if args.action == 'start':
+        start()
+    elif args.action == 'stop':
+        stop()
+    elif args.action == 'status':
+        msb('inspect', NAME, '--format', 'json')
+        print(json.dumps(api('/api/settings', token=login()), indent=2))
+    elif args.action == 'exec':
+        return execute(args.command)
+    elif args.action == 'export':
+        export()
+    elif args.action == 'primary':
+        primary()
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f'agentlab: {exc}', file=sys.stderr)
+        sys.exit(1)

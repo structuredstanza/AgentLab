@@ -1,0 +1,187 @@
+// Parsing utilities for the channel field table and config values.
+//
+// It is kept separate from the page because this is **data**, not a view: it describes which fields each channel has and
+// which control each should use, as well as the two-way conversion between form text and config values (JSON).
+// Once this lives in its own file, adding a new channel only requires changes here; the page itself does not need to be modified.
+//
+// This file is a plain data module (not a client component), so it cannot call useTranslations.
+// Copy is stored as i18n keys (notifyPage namespace) that page.tsx / channel-form.tsx resolve with t().
+// Channel type labels use notifyPage.kind.<kind>.
+
+// Configuration field definitions for each channel.
+//
+// We deliberately keep a frontend field table here instead of having the backend return a schema: the backend is only responsible
+// for Validate (required/format). The UI needs layout and control types, and the two concern different things.
+// The only coupling point is secret_keys: which fields should render as password inputs is provided by the backend,
+// because only each channel implementation knows which values count as credentials (for WeCom, the entire Webhook is the credential,
+// DingTalk's is only one of the secrets (the secret for one channel). When a new channel is added and an entry is missing here, the form will simply come up blank.
+// and does not fail silently (hasFields below will show a hint).
+//
+// label / help / options[].label store i18n keys under the notifyPage namespace,
+// placeholder keeps the literal value (URL, example; not translated).
+export type FieldKind = "text" | "password" | "number" | "select" | "textarea" | "switch" | "kv" | "list";
+export interface FieldDef {
+  key: string;
+  /** i18n keys under the notifyPage namespace */
+  label: string;
+  kind: FieldKind;
+  placeholder?: string;
+  /** i18n keys under the notifyPage namespace */
+  help?: string;
+  /** options[].label is also an i18n key */
+  options?: { value: string; label: string }[];
+}
+export const CHANNEL_FIELDS: Record<string, FieldDef[]> = {
+  dingtalk: [
+    {
+      key: "webhook",
+      label: "field.dingtalk.webhook.label",
+      kind: "text",
+      placeholder: "https://oapi.dingtalk.com/robot/send?access_token=...",
+    },
+    {
+      key: "secret",
+      label: "field.dingtalk.secret.label",
+      kind: "password",
+      help: "field.dingtalk.secret.help",
+    },
+  ],
+  feishu: [
+    {
+      key: "webhook",
+      label: "field.feishu.webhook.label",
+      kind: "text",
+      placeholder: "https://open.feishu.cn/open-apis/bot/v2/hook/...",
+    },
+    { key: "secret", label: "field.feishu.secret.label", kind: "password", help: "field.feishu.secret.help" },
+  ],
+  wecom: [
+    {
+      key: "webhook",
+      label: "field.wecom.webhook.label",
+      kind: "text",
+      placeholder: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...",
+    },
+  ],
+  webhook: [
+    {
+      key: "url",
+      label: "field.webhook.url.label",
+      kind: "text",
+      placeholder: "https://your-endpoint.example.com/hook",
+    },
+    {
+      key: "method",
+      label: "field.webhook.method.label",
+      kind: "select",
+      options: [
+        { value: "POST", label: "field.webhook.method.opt.POST" },
+        { value: "PUT", label: "field.webhook.method.opt.PUT" },
+        { value: "PATCH", label: "field.webhook.method.opt.PATCH" },
+        { value: "GET", label: "field.webhook.method.opt.GET" },
+      ],
+    },
+    { key: "headers", label: "field.webhook.headers.label", kind: "kv", help: "field.webhook.headers.help" },
+    {
+      key: "body_template",
+      label: "field.webhook.body_template.label",
+      kind: "textarea",
+      help: "field.webhook.body_template.help",
+    },
+  ],
+  telegram: [
+    { key: "bot_token", label: "field.telegram.bot_token.label", kind: "password", placeholder: "123456:ABC-DEF..." },
+    { key: "chat_id", label: "field.telegram.chat_id.label", kind: "text", placeholder: "-1001234567890" },
+    {
+      key: "base_url",
+      label: "field.telegram.base_url.label",
+      kind: "text",
+      placeholder: "https://api.telegram.org",
+      help: "field.telegram.base_url.help",
+    },
+  ],
+  email: [
+    { key: "host", label: "field.email.host.label", kind: "text", placeholder: "smtp.example.com" },
+    {
+      key: "port",
+      label: "field.email.port.label",
+      kind: "number",
+      placeholder: "587",
+      help: "field.email.port.help",
+    },
+    { key: "username", label: "field.email.username.label", kind: "text" },
+    { key: "password", label: "field.email.password.label", kind: "password" },
+    { key: "from", label: "field.email.from.label", kind: "text", placeholder: "artex@example.com" },
+    { key: "to", label: "field.email.to.label", kind: "list", help: "field.email.to.help" },
+    { key: "tls", label: "field.email.tls.label", kind: "switch", help: "field.email.tls.help" },
+  ],
+};
+
+// value is the min_severity value used for filtering, label is an i18n key for notifyPage.severityOpt.*.
+export const SEVERITY_OPTIONS = [
+  { value: "", label: "severityOpt.all" },
+  { value: "low", label: "severityOpt.low" },
+  { value: "medium", label: "severityOpt.medium" },
+  { value: "high", label: "severityOpt.high" },
+  { value: "critical", label: "severityOpt.critical" },
+];
+
+export type ChannelForm = {
+  name: string;
+  kind: string;
+  mode: "realtime" | "digest";
+  enabled: boolean;
+  ratePerMin: string;
+  config: Record<string, unknown>;
+  minSeverity: string;
+  includeText: string;
+  excludeText: string;
+  taskIDsText: string;
+  assetIDsText: string;
+  onStatusChange: boolean;
+};
+
+export const emptyForm = (kind: string): ChannelForm => ({
+  name: "",
+  kind,
+  mode: "realtime",
+  enabled: true,
+  ratePerMin: "",
+  config: {},
+  minSeverity: "",
+  includeText: "",
+  excludeText: "",
+  taskIDsText: "",
+  assetIDsText: "",
+  onStatusChange: false,
+});
+
+// parseKV parses a textarea of "KEY=VALUE" entries, one per line.
+export function parseKV(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    const i = t.indexOf("=");
+    if (i > 0) out[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+  }
+  return out;
+}
+// parseIDs parses a comma/whitespace-separated list of IDs. Keep the fullwidth comma "\uFF0C" as a delimiter:
+// Users may paste lists containing full-width commas from elsewhere; this is input parsing logic, not display copy.
+export function parseIDs(text: string): number[] {
+  return text
+    .split(/[\s,，]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => Number(s))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+// parseKeywords parses a line- or comma-separated list of keywords (vulnerability type names may contain spaces, so split by line or comma).
+// Likewise, retain the fullwidth comma "\uFF0C" as a delimiter (input parsing, not display text).
+export function parseKeywords(text: string): string[] {
+  return text
+    .split(/[\n,，]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
