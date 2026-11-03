@@ -616,7 +616,7 @@
     "image_fix": "Dockerfile.toolchain now COPYs deployment/guest-start.py and guest-export.py. Without it the layer inherited the base image's supervisor, so a staged VPN profile was never read — found by running the real staging path, not by the unit tests."
   },
   "scope_manifests_evidence_20261103": {
-    "source_commit": "pending",
+    "source_commit": "c6fb5ecb61ee1929025ead141b052e3fa6bfc6e9",
     "sandbox": "artex-agentlab-scope-20261103t2300z",
     "image": "agentlab/artex:scope-manifests-v2",
     "image_id": "sha256:5ebcf0bb39af",
@@ -674,7 +674,9 @@
       "/api/tools: 57 core tools, list_tools and run_tool present",
       "task_scope.effect column migrated; an exclude row surfaces through GET /api/tasks/3/scope",
       "findings.evidence_path column migrated",
-      "TestLiveDigAgainstLoopback: a real dig run parsed through the embedded manifest produced a dns fact"
+      "TestLiveDigAgainstLoopback: a real dig run parsed through the embedded manifest produced a dns fact",
+      "skills synced: 15 present, recon-orchestration and privesc carry the new tool tables",
+      "probe task deleted; 0 tasks remain, settings re-enforced"
     ],
     "not_verified": [
       "no agent conversation was driven end to end, so run_tool was exercised through its Go test path and the HTTP catalog rather than by a model choosing it",

@@ -39,6 +39,23 @@ For the classified target, rank candidates by expected value per unit of budget,
 
 **Budget the run.** State the wall-clock and request budget before starting, and stop at it. A program that forbids scanners changes the ranking entirely — passive sources first, and say so.
 
+## Prefer the manifest tools
+
+Every tool named in the ranking table has a manifest, and `list_tools` reports
+which are installed. Call `run_tool` with the manifest id and target rather than
+building a Bash command line: the manifest pins the flags, parses the output into
+assets and facts, and refuses a target the engagement's boundary excludes. Reach
+for Bash only when no manifest covers what you need.
+
+| Category | Manifests |
+|---|---|
+| Recon | `subfinder`, `dnsx`, `dig`, `whois`, `amass`, `gau`, `wafw00f` |
+| Web | `httpx`, `katana`, `ffuf`, `feroxbuster`, `gobuster`, `dalfox`, `whatweb`, `wpscan`, `sqlmap`, `gowitness` |
+| Scanning | `nmap`, `masscan`, `naabu`, `rustscan`, `nuclei` |
+| Network | `enum4linux`, `enum4linux-ng`, `netexec`, `nbtscan`, `mtr`, `traceroute`, `sslscan`, `testssl` |
+| Credentials | `hydra` |
+| Intel | `searchsploit` |
+
 ## Phase 3: parameters are derived, not defaulted
 
 For each chosen tool, derive parameters from the profile:

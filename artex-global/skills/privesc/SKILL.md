@@ -28,6 +28,9 @@ Work from cheapest and most decisive to broadest. Stop at the first privilege bo
 | 7 | Readable credentials: config files, `.env`, history, SSH keys, cloud metadata, database credentials | Reuse across a trust boundary is escalation and frequently the real finding |
 | 8 | Kernel and package versions against known local-root CVEs | Last resort: noisy, may crash the host, and out of scope on most programs |
 
+`nxc` (NetExec) and `enum4linux-ng` are available with their manifests
+(`netexec`, `enum4linux-ng`) for the Windows side; `hydra` and `nbtscan` likewise.
+
 `john` here is the core build: it cracks shadow formats (`$6$`, `$1$`, `$2b$`, descrypt) but has no jumbo formats, so use `hashcat` for anything else (raw hashes, archives, Kerberos).
 
 For the broad sweep, run the vendored `scripts/linpeas.sh` (PEASS-ng, pinned checksum in `reference/README.md`). Treat its output as a **lead list, not evidence** — it flags anything unusual, including many false positives. Every line it highlights must be confirmed by hand before it becomes a finding.
