@@ -1,4 +1,4 @@
-image: agentlab/artex:privesc-20261103t191800z
+image: agentlab/artex:toolchain-skills
 pull_policy: never
 cpus: 4
 memory: 8G

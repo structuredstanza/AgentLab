@@ -19,35 +19,48 @@ ARG R2_VERSION=6.2.4
 ARG JADX_VERSION=1.5.6
 ARG GHIDRA_VERSION=12.2
 ARG GHIDRA_DATE=20261016
+ARG JDK_VERSION=25
+# Ghidra 12.2 declares application.java.min=25, which bookworm does not package;
+# jadx and the rest are happy with 25, so it becomes the image default.
+ENV JAVA_HOME=/opt/jdk
+# Ghidra resolves java from PATH before JAVA_HOME, and the distro's 17 is
+# first there, so 21 must lead or every headless run aborts.
+ENV PATH=/opt/jdk/bin:$PATH
 ARG PWNDBG_COMMIT=2026.02.18
 
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       gdb gdb-multiarch qemu-user qemu-user-static \
-      binwalk patchelf gcc g++ make pkg-config libc6-dbg \
+      binwalk patchelf gcc g++ make pkg-config libc6-dbg patch \
       ruby-full socat xxd unzip curl ca-certificates \
       openjdk-17-jdk-headless \
       gobuster john hashcat \
       libimage-exiftool-perl sleuthkit steghide foremost yara \
-      openvpn iproute2 iptables procps; \
+      openvpn iproute2 iptables procps \
+      libxml-writer-perl libjson-perl; \
     rm -rf /var/lib/apt/lists/*
 
 # pwntools and gadget tooling into the system interpreter: the skills run
 # `python3 -c 'import pwn'`, so a private venv would not be found.
 RUN set -eux; \
     python3 -m pip install --no-cache-dir --break-system-packages \
-      pwntools ropper ROPGadget capstone pyelftools keystone-engine checksec.py; \
-    TERM=xterm python3 -c 'import pwn, ropper, capstone, elftools; pwn.context.log_level="error"; print("pwntools ready")'
+      pwntools ropper ROPGadget pyelftools keystone-engine checksec.py 'capstone<6'; \
+    TERM=xterm python3 -c 'import pwn, ropper, capstone, elftools; pwn.context.log_level="error"; print("pwntools ready")'; \
+    # binwalk imports capstone's legacy API, which the 6.x alpha removed.
+    binwalk --help >/dev/null
 
 # pwndbg gives gdb the heap/arena view the exploit-dev workflow depends on.
+# -nx would skip the gdbinit that loads pwndbg, so probe the loaded module instead.
 RUN set -eux; \
     git clone --depth 1 https://github.com/pwndbg/pwndbg /opt/pwndbg; \
     cd /opt/pwndbg && ./setup.sh >/dev/null; \
     rm -rf /opt/pwndbg/.git; \
-    gdb -q -nx -batch -ex 'python import pwndbg; print("pwndbg ok")' 2>&1 | grep -q "pwndbg ok"
+    TERM=xterm gdb -q -batch -ex 'python import pwndbg; print("pwndbg ok")' 2>&1 | grep -q "pwndbg ok"
 
 # radare2 is not packaged in bookworm; build the pinned tag from source.
+# ldconfig afterwards: the shared objects land in /usr/local/lib, which is
+# not on the default loader path until the cache records it.
 RUN set -eux; \
     curl -fsSL -o /tmp/r2.tar.gz \
       "https://github.com/radareorg/radare2/archive/refs/tags/${R2_VERSION}.tar.gz"; \
@@ -55,9 +68,18 @@ RUN set -eux; \
     cd /tmp/r2 && ./configure --prefix=/usr/local >/dev/null \
       && make -j"$(nproc)" >/dev/null && make install >/dev/null; \
     cd / && rm -rf /tmp/r2 /tmp/r2.tar.gz; \
+    ldconfig; \
     r2 -v | head -1 | grep -q "radare2 ${R2_VERSION}"
 
-# jadx: APK/DEX decompiler (Java is already present).
+# Temurin JDK 25 for Ghidra; the distro only ships 17.
+RUN set -eux; \
+    curl -fsSL -o /tmp/jdk.tar.gz \
+      "https://api.adoptium.net/v3/binary/latest/${JDK_VERSION}/ga/linux/x64/jdk/hotspot/normal/eclipse"; \
+    mkdir -p /opt/jdk; tar -xzf /tmp/jdk.tar.gz -C /opt/jdk --strip-components=1; \
+    rm /tmp/jdk.tar.gz; \
+    /opt/jdk/bin/java -version 2>&1 | grep -q "version \"${JDK_VERSION}"
+
+# jadx: APK/DEX decompiler.
 RUN set -eux; \
     curl -fsSL -o /tmp/jadx.zip \
       "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"; \

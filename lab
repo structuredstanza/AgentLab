@@ -20,7 +20,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 MSB = ROOT / '.venv/bin/msb'
-NAME = 'artex-agentlab-astra-reviewed-20261031t010522z'
+NAME = 'artex-agentlab-toolchain-20261103t2125z'
 URL = 'http://127.0.0.1:8787'
 PRIMARY_URL = 'http://host.microsandbox.internal:8080/v1'
 PRIMARY_NAME = 'AgentLab Bonsai Thinking'
@@ -143,7 +143,7 @@ def stage_vpn(profile):
 
 def start(vpn=None):
     start_provider_proxy()
-    for name in ('artex-agentlab', 'artex-agentlab-reasoning', 'artex-agentlab-capture', 'artex-agentlab-english', 'artex-agentlab-sdk', 'artex-agentlab-allocation', 'artex-agentlab-quota', 'artex-agentlab-integrated', 'artex-agentlab-native', 'artex-agentlab-native-allocation', 'artex-agentlab-native-codex-capture', 'artex-agentlab-astra-reviewed-20261031t010522z'):
+    for name in ('artex-agentlab', 'artex-agentlab-reasoning', 'artex-agentlab-capture', 'artex-agentlab-english', 'artex-agentlab-sdk', 'artex-agentlab-allocation', 'artex-agentlab-quota', 'artex-agentlab-integrated', 'artex-agentlab-native', 'artex-agentlab-native-allocation', 'artex-agentlab-native-codex-capture', 'artex-agentlab-astra-reviewed-20261031t010522z', 'artex-agentlab-toolchain-20261103t2115z'):
         if name == NAME:
             continue
         previous = subprocess.run([str(MSB), 'inspect', name, '--format', 'json'],

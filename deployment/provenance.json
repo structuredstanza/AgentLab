@@ -537,5 +537,76 @@
       "gtfobins.json and lolbas.json load inside the guest (458 / 248 entries)",
       "sh -n scripts/linpeas.sh passes in the guest"
     ]
+  },
+  "toolchain_and_vpn_20261103": {
+    "source_commit": "877ee73",
+    "sandbox": "artex-agentlab-toolchain-20261103t2125z",
+    "replaced_sandbox": "artex-agentlab-astra-reviewed-20261031t010522z (retained stopped, rootfs intact)",
+    "pre_cutover_export": "exports/20261103T211359.944713Z",
+    "image": "agentlab/artex:toolchain-skills",
+    "image_id": "sha256:61177db1dbde",
+    "image_layers": "Dockerfile.toolchain adds the offensive toolchain to the astra-reviewed base; a second overlay adds the binary and skills. A full Dockerfile rebuild was not possible: the Playwright Chromium CDN answers 403 'not available in your location' on this network, and the Dockerfile now tolerates that rather than failing the build.",
+    "toolchain": {
+      "exploit_dev": [
+        "pwntools 4.15.0",
+        "ropper 1.13.13",
+        "ROPgadget 7.7",
+        "gdb 13.1",
+        "pwndbg 2026.10.28",
+        "qemu-user 7.2.22 (x86_64, aarch64)",
+        "gcc/g++",
+        "patchelf 0.14.3",
+        "libc6-dbg"
+      ],
+      "reverse_engineering": [
+        "radare2 6.2.4 (built from source)",
+        "rabin2",
+        "jadx 1.5.6",
+        "ghidra 12.2 headless",
+        "binwalk 2.3.3",
+        "Temurin JDK 25"
+      ],
+      "recon_credentials": [
+        "gobuster 3.5",
+        "hashcat 6.2.6",
+        "john 1.9.0 core",
+        "searchsploit/exploitdb",
+        "nikto 2.6.0",
+        "yara 4.2.3",
+        "exiftool",
+        "sleuthkit",
+        "steghost",
+        "foremost"
+      ],
+      "network": [
+        "openvpn 2.6.14",
+        "iproute2",
+        "iptables"
+      ]
+    },
+    "verification": [
+      "every tool executed in the live guest, not just --version: pwntools checksec on a compiled binary, cyclic offset 40, pwndbg loaded in gdb with a real SIGSEGV, r2 aaa+pdf on main, ghidra headless imported and decompiled win() to 'void win(void) { puts(\"p\"); }', searchsploit returned rows, john cracked a sha512crypt shadow hash, binwalk parsed the ELF"
+    ],
+    "known_limits": [
+      "john is the core build: shadow formats only, no jumbo formats; use hashcat for raw hashes and archives",
+      "one_gadget, angr, pwninit and a local libc-database are not installed",
+      "capa and clamscan are not installed"
+    ],
+    "openvpn": {
+      "flag": "./lab start --vpn PROFILE",
+      "behaviour": "profile streamed into /run/secrets with a checksum comparison, tunnel address verified on a tun/tap interface before capture starts, supervisor stops the engagement if openvpn exits, profile deleted on stop and on any start without --vpn",
+      "tests": "5 unit tests in deployment/test_guest_start.py covering no-profile, missing openvpn, no address, tun-only address selection, and the kill switch"
+    },
+    "skills_added": [
+      "exploit-dev",
+      "binary-patching",
+      "malware-triage",
+      "recon-orchestration"
+    ],
+    "skills_total": 15,
+    "not_verified": [
+      "no OpenVPN profile was available, so the tunnel path was exercised by unit test and code review only, not against a real VPN endpoint",
+      "live cloud provider OAuth login, refresh and entitlement"
+    ]
   }
 }
