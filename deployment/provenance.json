@@ -501,5 +501,41 @@
       "the fresh-create image was not booted; the running VM holds the shared /state bind",
       "live cloud provider OAuth login, refresh and entitlement"
     ]
+  },
+  "privesc_skill_20261103": {
+    "scope": "first-party privilege-escalation skill with vendored offline reference data",
+    "skill": "skills/privesc",
+    "vendored": {
+      "gtfobins.json": {
+        "source": "GTFOBins/GTFOBins.github.io",
+        "licence": "GPL-3.0",
+        "entries": 458
+      },
+      "lolbas.json": {
+        "source": "LOLBAS-Project/LOLBAS",
+        "licence": "MIT",
+        "entries": 248
+      },
+      "scripts/linpeas.sh": {
+        "source": "peass-ng/PEASS-ng release artifact",
+        "licence": "NOASSERTION",
+        "sha256": "37f4ba2301de3c1342fe71d96a51de849e4d2f5fa6de1898dc9b1c8f8839602a",
+        "bytes": 1822417
+      }
+    },
+    "generator": "skills/privesc/scripts/build-indexes.py",
+    "applied_to_running_vm": "artex-agentlab-astra-reviewed-20261031t010522z",
+    "deployment": "skill tree streamed into /opt/artex/skills/privesc; no binary change, the Go build is unchanged from the previous cutover",
+    "runtime_binary_sha256": "ca5e81866647406124c49fb26b131082375284bb16e45ee2972a90cbe1527f45",
+    "fresh_create_image": "agentlab/artex:privesc-20261103t191800z",
+    "fresh_create_image_id": "sha256:ab3242bce98c",
+    "fresh_create_image_note": "overlay FROM astra-reviewed adding the binary and the skills tree",
+    "verified": [
+      "TestShippedSkillsParseCleanly passes with 11 skills",
+      "Norma loader parses privesc with a 441-char description",
+      "GET /api/skills on the live VM lists privesc with 8 files",
+      "gtfobins.json and lolbas.json load inside the guest (458 / 248 entries)",
+      "sh -n scripts/linpeas.sh passes in the guest"
+    ]
   }
 }

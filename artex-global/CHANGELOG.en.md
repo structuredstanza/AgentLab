@@ -98,6 +98,11 @@ Four behaviours that this fork had lost relative to its own base commit (`7f8c7c
 - **Behaviour change.** The `mcp_status` platform tool reports each MCP server's transport, enabled state, cached tool count and last connect outcome, so an agent can tell a broken server from one it never needed. It seeds on the next start and defaults to the Auto agent, like the other platform tools. (`server/platform_tools.go`)
 - **Behaviour change.** Testing a saved LLM profile with the form's `streaming` field omitted now uses the profile's stored stream mode. A non-streaming profile tested from the list view was sent a streaming request and reported "no return text" for a provider that had answered correctly. (`server/llm_test_fallback_test.go`)
 
+### Added
+
+- **`privesc` skill** covering Linux and Windows escalation: enumeration order, sudo/SUID/capability escapes, service and cron misconfiguration, credential discovery, and the four-part proof standard for an escalation finding. Ships two generated indexes — `reference/gtfobins.json` (458 executables by escape class and context) and `reference/lolbas.json` (248 signed Windows binaries by category) — plus the PEASS-ng `linpeas.sh` release artifact, all usable offline at a pinned version. `scripts/build-indexes.py` regenerates the indexes from the upstream trees; provenance and checksums are in `reference/README.md`.
+
+
 ## [0.3.15-global.1] · 2026-10-14 · ARTEX-global transition release
 
 The release that turns the Korean edition (`0.3.15-ko.1`) into ARTEX-global, a multilingual edition for defenders and researchers worldwide. Based on upstream ARTEX 0.3.15; no agent features were changed.

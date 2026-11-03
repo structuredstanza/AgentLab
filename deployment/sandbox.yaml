@@ -1,4 +1,4 @@
-image: agentlab/artex:regressions-20261103t190955z
+image: agentlab/artex:privesc-20261103t191800z
 pull_policy: never
 cpus: 4
 memory: 8G

