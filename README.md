@@ -20,11 +20,22 @@ Run from this directory:
 
 ```sh
 ./lab start       # Create or restart the VM, start services, enable capture
+./lab start --vpn ~/engagement.ovpn   # Same, but egress through an OpenVPN profile first
 ./lab status      # VM details and effective ARTEX settings
 ./lab primary     # Select/verify the installed local thinking model, without paid fallbacks
 ./lab export      # Consistent database rows + backups, artifact snapshot, training export
 ./lab stop        # Gracefully stop ARTEX, flush tcpdump, stop PostgreSQL, then stop VM
 ```
+
+### Optional OpenVPN egress
+
+`./lab start --vpn PROFILE` stages an `.ovpn`/`.conf` profile into the guest and brings the tunnel up **before** packet capture starts, so the pcap records what actually left the machine. Three properties matter:
+
+- **The tunnel is verified, not assumed.** Startup waits for an IPv4 address on a `tun`/`tap` interface and fails if none appears within 90 seconds. An `auth-user-pass` profile without an inline block is rejected before launch, because it would hang waiting for a password that cannot be typed.
+- **A dropped tunnel stops the engagement.** If `openvpn` exits while ARTEX is running, the supervisor treats it like a failed capture and shuts down, rather than letting egress resume over the host's own address.
+- **The profile does not persist.** It is streamed in as a credential, checksum-verified, written mode `0600`, and deleted by `./lab stop` or by the next start without `--vpn`.
+
+Without `--vpn` nothing changes. A profile staged for one run is never reused by the next.
 
 The VM is currently left running. After a host reboot, run `./lab start`; it also starts the host native provider proxy and the selected local model. Detached task execution does not depend on a browser tab remaining open. Use `./lab stop`, not a force-kill, so packet statistics and session end-state are finalized. The separate host proxy can be stopped with `systemctl --user stop artex-cliproxy.service`; its private credential stores persist.
 

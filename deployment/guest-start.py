@@ -55,6 +55,11 @@ ARTEX_ARGS = ["-addr", ":8787", "-proxy", "127.0.0.1:8788", "-data", ARTEX_DATA]
 STRACE_ARGS = ["-ff", "-ttt", "-T", "-yy", "-s256", "-e", "trace=process,file,network"]
 SEGMENT_MB = 128   # tcpdump -C counts millions of bytes
 MAX_SEGMENTS = 32  # tcpdump -W ring size
+# Optional OpenVPN profile, streamed in by `lab start --vpn <file>` before the
+# supervisor launches. Absent means no VPN, which is the default.
+VPN_PROFILE = "/run/secrets/openvpn-profile.ovpn"
+VPN_LOG = f"{RUNTIME}/logs/openvpn.log"
+VPN_TIMEOUT = 90  # seconds to reach an address on the tunnel interface
 CAPTURE_LIMITS = {
     "tool": "tcpdump",
     "interface": "any",
@@ -396,6 +401,91 @@ def list_segments(d):
     return segs
 
 
+def start_vpn(sess):
+    """Bring up the OpenVPN tunnel an operator supplied, and prove it carries traffic.
+
+    The profile is streamed into VPN_PROFILE by `lab start --vpn`; without it this
+    returns None and nothing changes. Bringing the tunnel up before tcpdump means
+    the capture sees the encrypted egress on the real interface, which is the point:
+    an engagement's traffic must be attributable and the pcap must show what left.
+    """
+    if not os.path.exists(VPN_PROFILE):
+        return None
+    openvpn = shutil.which("openvpn")
+    if openvpn is None:
+        raise Fatal("an OpenVPN profile was supplied but openvpn is not installed")
+    os.makedirs(os.path.dirname(VPN_LOG), exist_ok=True)
+    # --auth-nocache keeps credentials out of the process list; --config-file is
+    # explicit so a stray /etc/openvpn default cannot be picked up instead.
+    cmd = [openvpn, "--config", VPN_PROFILE, "--auth-nocache", "--log", VPN_LOG]
+    with open(VPN_LOG, "ab") as logf:
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, start_new_session=True)
+    with open(VPN_PROFILE, "rb") as profile:
+        profile_digest = hashlib.sha256(profile.read()).hexdigest()
+    sess.m["vpn"] = {"status": "starting", "pid": p.pid, "argv": cmd[:2] + ["<profile>"],
+                     "profile_sha256": profile_digest,
+                     "log": VPN_LOG, "started_at": now_iso()}
+    sess.save()
+    try:
+        deadline = time.monotonic() + VPN_TIMEOUT
+        address = ""
+        while True:
+            if p.poll() is not None:
+                raise Fatal(f"openvpn exited during start (rc={p.returncode}); see {VPN_LOG}")
+            address = vpn_address()
+            if address:
+                break
+            if time.monotonic() > deadline:
+                raise Fatal(f"openvpn did not bring up a tunnel address within {VPN_TIMEOUT}s; see {VPN_LOG}")
+            time.sleep(0.5)
+        sess.m["vpn"].update(status="running", address=address, interface=vpn_interface(address))
+        sess.save()
+        log(f"openvpn tunnel up: {address}")
+    except BaseException:
+        try:
+            stop_vpn(sess, p)
+        except Exception as error:
+            sess.error(f"openvpn startup cleanup failed: {error}")
+        raise
+    return p
+
+def vpn_interface(address):
+    """Name of the interface holding the tunnel address, or '' when it is not up."""
+    try:
+        out = subprocess.run(["ip", "-o", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return ""
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) > 3 and parts[3].split("/")[0] == address:
+            return parts[1]
+    return ""
+
+def vpn_address():
+    """The first non-loopback IPv4 on a tun/tap interface, or '' if none yet."""
+    try:
+        out = subprocess.run(["ip", "-o", "-4", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return ""
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) > 3 and parts[1].startswith(("tun", "tap")):
+            return parts[3].split("/")[0]
+    return ""
+
+def stop_vpn(sess, p):
+    vpn = sess.m.get("vpn") or {}
+    if p.poll() is None:
+        p.send_signal(signal.SIGTERM)
+        try:
+            p.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            signal_group(p.pid, signal.SIGKILL)
+            p.wait(timeout=5)
+    vpn.update(status="stopped", stopped_at=now_iso(), exit_code=p.returncode)
+    sess.m["vpn"] = vpn
+    sess.save()
+
 def start_tcpdump(sess):
     tcpdump = shutil.which("tcpdump")
     if tcpdump is None:
@@ -508,17 +598,19 @@ def stop_app(sess, p):
 
 # ---------- lifecycle ----------
 
-def shutdown(sess, app, tcpd, bindir):
+def shutdown(sess, app, tcpd, bindir, vpn=None):
     try:
         sess.set_state("stopping")
     except Exception as error:
         sess.error(f"could not persist stopping state: {error}")
-    for name, process, stop in (("artex", app, stop_app), ("capture", tcpd, stop_tcpdump)):
+    for name, process, stop in (("artex", app, stop_app), ("capture", tcpd, stop_tcpdump),
+                                ("vpn", vpn, stop_vpn)):
         if process is not None:
             try:
                 stop(sess, process)
             except Exception as error:
-                sess.m[name]["status"] = "failed"
+                if name in sess.m:
+                    sess.m[name]["status"] = "failed"
                 sess.error(f"{name} cleanup failed: {error}")
     if bindir is not None:
         try:
@@ -545,6 +637,7 @@ def main():
     bindir = None
     tcpd = None
     app = None
+    vpn = None
     rc = 0
     try:
         log(f"session {sess.id} -> {sess.dir}")
@@ -562,6 +655,7 @@ def main():
         binary, digest = install_binary()
         sess.m["artex"]["sha256"] = digest
         env = app_env(dsn, admin_password())
+        vpn = start_vpn(sess)
         tcpd = start_tcpdump(sess)
         if STOP["signal"] is None:
             app = start_app(sess, binary, env)
@@ -570,6 +664,10 @@ def main():
         while app is not None and app.poll() is None and STOP["signal"] is None:
             if tcpd.poll() is not None:
                 raise Fatal(f"tcpdump exited while ARTEX was running (rc={tcpd.returncode}); ARTEX stopped to avoid uncaptured runs")
+            # Kill switch: a dropped tunnel must stop the engagement, not silently
+            # resume egress over the host's own address.
+            if vpn is not None and vpn.poll() is not None:
+                raise Fatal(f"openvpn exited while ARTEX was running (rc={vpn.returncode}); ARTEX stopped to avoid traffic leaving outside the tunnel")
             if time.monotonic() - last_sample >= 1:
                 sess.sample_resources()
                 last_sample = time.monotonic()
@@ -584,7 +682,7 @@ def main():
             sess.m["capture"]["status"] = "failed"
     finally:
         owned_pg = bindir if sess.m["postgres"]["status"] in ("starting", "running") else None
-        shutdown(sess, app, tcpd, owned_pg)
+        shutdown(sess, app, tcpd, owned_pg, vpn)
         try:
             with open(SUPERVISOR_PID) as stream:
                 owned_pid = stream.read().strip() == str(os.getpid())

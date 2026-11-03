@@ -97,7 +97,51 @@ def start_provider_proxy():
         time.sleep(0.2)
 
 
-def start():
+def stage_vpn(profile):
+    """Copy an OpenVPN profile into the guest, or clear a previously staged one.
+
+    Staged before the supervisor starts so guest-start.py can bring the tunnel up
+    ahead of tcpdump. Always rewritten or removed: a profile left from an earlier
+    start would silently route a later engagement through someone else's tunnel.
+    """
+    target = '/run/secrets/openvpn-profile.ovpn'
+    if profile is None:
+        guest('python3', '-c',
+              f'import os\np = {target!r}\n'
+              'if os.path.exists(p):\n    os.unlink(p)\n')
+        return
+    source = Path(profile).expanduser().resolve()
+    if not source.is_file():
+        raise RuntimeError(f'OpenVPN profile not found: {source}')
+    if source.suffix not in ('.ovpn', '.conf'):
+        raise RuntimeError(f'OpenVPN profile must be .ovpn or .conf, got {source.suffix or "no extension"}')
+    payload = source.read_bytes()
+    if b'auth-user-pass' in payload and b'<' not in payload:
+        raise RuntimeError('profile uses auth-user-pass without an inline block; a start would hang waiting for a password')
+    # Stream the bytes in rather than copying through a bind mount: the profile is
+    # a credential, and it should exist in the guest only for the run that asked.
+    proc = subprocess.run([str(MSB), 'exec', '--stream', NAME, '--', 'python3', '-c',
+                           'import os, sys, hashlib\n'
+                           f'p = {target!r}\n'
+                           'os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)\n'
+                           'data = sys.stdin.buffer.read()\n'
+                           'fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n'
+                           'os.write(fd, data)\n'
+                           'os.fsync(fd)\n'
+                           'os.close(fd)\n'
+                           'os.chmod(p, 0o600)\n'
+                           'print(hashlib.sha256(data).hexdigest())\n'],
+                          input=payload, capture_output=True)
+    if proc.returncode:
+        raise RuntimeError('could not stage the OpenVPN profile in the guest: '
+                           + proc.stderr.decode(errors='replace').strip()[:300])
+    remote = proc.stdout.decode().strip().splitlines()[-1]
+    local = hashlib.sha256(payload).hexdigest()
+    if remote != local:
+        raise RuntimeError(f'OpenVPN profile checksum mismatch: guest {remote[:16]}… host {local[:16]}…')
+    print(f'OpenVPN profile staged ({len(payload)} bytes, sha256 {local[:16]}…)')
+
+def start(vpn=None):
     start_provider_proxy()
     for name in ('artex-agentlab', 'artex-agentlab-reasoning', 'artex-agentlab-capture', 'artex-agentlab-english', 'artex-agentlab-sdk', 'artex-agentlab-allocation', 'artex-agentlab-quota', 'artex-agentlab-integrated', 'artex-agentlab-native', 'artex-agentlab-native-allocation', 'artex-agentlab-native-codex-capture', 'artex-agentlab-astra-reviewed-20261031t010522z'):
         if name == NAME:
@@ -114,9 +158,16 @@ def start():
             '--net-rule', 'allow@host:tcp:8080', '--net-rule', 'allow@host:tcp:8788')
     elif json.loads(result.stdout)['status'].lower() != 'running':
         msb('start', NAME)
+    healthy = True
     try:
         api('/api/health')
     except Exception:
+        healthy = False
+    if healthy:
+        if vpn is not None:
+            raise RuntimeError('ARTEX is already running without the requested VPN; run ./lab stop and start again with --vpn')
+    else:
+        stage_vpn(vpn)
         msb('exec', '-d', NAME, '--', 'python3', '/opt/agentlab/guest-start.py')
         deadline = time.monotonic() + 120
         while True:
@@ -241,6 +292,11 @@ if path.exists():
         else:
             raise RuntimeError('Supervisor did not shut down cleanly; VM left running')
 """)
+    # The staged OpenVPN profile is a credential; it must not outlive the run that
+    # asked for it, or a later start would tunnel through someone else's endpoint.
+    guest('python3', '-c',
+          "import os\np = '/run/secrets/openvpn-profile.ovpn'\n"
+          "if os.path.exists(p):\n    os.unlink(p)\n")
     msb('stop', NAME)
 
 
@@ -432,13 +488,16 @@ def export():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    for name in ('start', 'stop', 'status', 'export', 'primary'):
+    for name in ('stop', 'status', 'export', 'primary'):
         sub.add_parser(name)
+    boot = sub.add_parser('start', help='Start the VM, optionally through an OpenVPN profile')
+    boot.add_argument('--vpn', metavar='PROFILE',
+                      help='OpenVPN .ovpn/.conf to bring up before capture; egress is refused if the tunnel drops')
     run = sub.add_parser('exec', help='Execute an adaptable guest command and record its output')
     run.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.action == 'start':
-        start()
+        start(args.vpn)
     elif args.action == 'stop':
         stop()
     elif args.action == 'status':

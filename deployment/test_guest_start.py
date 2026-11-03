@@ -217,5 +217,88 @@ class SupervisorCleanupTests(unittest.TestCase):
                     tcpd.stdout.close()
 
 
+
+class VpnSupervisionTests(unittest.TestCase):
+    """A supplied OpenVPN profile must be proven up before capture starts, and a
+    dropped tunnel must stop the engagement rather than let egress escape it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.profile = self.root / 'profile.ovpn'
+        self.profile.write_text('client\nremote vpn.example 1194\n')
+        self.vpn_log = self.root / 'openvpn.log'
+        for name, value in {'VPN_PROFILE': str(self.profile), 'VPN_LOG': str(self.vpn_log),
+                            'VPN_TIMEOUT': 5}.items():
+            patch = mock.patch.object(supervisor, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.session = mock.Mock()
+        self.session.m = {}
+
+    def test_no_profile_means_no_tunnel(self):
+        self.profile.unlink()
+        self.assertIsNone(supervisor.start_vpn(self.session))
+        self.session.save.assert_not_called()
+
+    def test_missing_openvpn_is_fatal_not_silent(self):
+        with mock.patch.object(supervisor.shutil, 'which', return_value=None):
+            with self.assertRaises(supervisor.Fatal):
+                supervisor.start_vpn(self.session)
+
+    def test_tunnel_must_produce_an_address(self):
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        with mock.patch.object(supervisor.subprocess, 'Popen', return_value=proc), \
+             mock.patch.object(supervisor, 'vpn_address', return_value=''), \
+             mock.patch.object(supervisor, 'stop_vpn'):
+            with self.assertRaises(supervisor.Fatal):
+                supervisor.start_vpn(self.session)
+
+    def test_address_selects_tun_interface_only(self):
+        output = ('1: lo    inet 127.0.0.1/8 scope host lo\n'
+                  '2: eth0    inet 10.0.0.5/24 scope global eth0\n'
+                  '3: tun0    inet 10.8.0.6/24 scope global tun0\n')
+        done = mock.Mock(returncode=0, stdout=output)
+        with mock.patch.object(supervisor.subprocess, 'run', return_value=done):
+            self.assertEqual(supervisor.vpn_address(), '10.8.0.6')
+        done.stdout = output.replace('tun0    inet 10.8.0.6/24 scope global tun0\n', '')
+        with mock.patch.object(supervisor.subprocess, 'run', return_value=done):
+            self.assertEqual(supervisor.vpn_address(), '', 'a host address must not count as a tunnel')
+
+    def test_exited_tunnel_is_fatal_while_running(self):
+        """The kill switch: openvpn dying mid-run must stop ARTEX, not fail open."""
+        app = mock.Mock()
+        app.poll.return_value = None
+        vpn = mock.Mock()
+        vpn.poll.return_value = 1
+        vpn.returncode = 1
+        tcpd = mock.Mock()
+        tcpd.poll.return_value = None
+        sess = mock.Mock()
+        sess.m = {'capture': {'status': 'running'}, 'artex': {}, 'postgres': {'status': 'not_started'}}
+        with mock.patch.object(supervisor, 'start_vpn', return_value=vpn), \
+             mock.patch.object(supervisor, 'start_tcpdump', return_value=tcpd), \
+             mock.patch.object(supervisor, 'start_app', return_value=app), \
+             mock.patch.object(supervisor, 'pg_bindir', return_value='/nonexistent'), \
+             mock.patch.object(supervisor, 'pg_init'), \
+             mock.patch.object(supervisor, 'pg_write_hba'), \
+             mock.patch.object(supervisor, 'pg_start', return_value=1), \
+             mock.patch.object(supervisor, 'pg_provision', return_value='dsn'), \
+             mock.patch.object(supervisor, 'install_binary', return_value=('/bin/true', 'sha')), \
+             mock.patch.object(supervisor, 'app_env', return_value={}), \
+             mock.patch.object(supervisor, 'admin_password', return_value='pw'), \
+             mock.patch.object(supervisor, 'shutdown') as shutdown, \
+             mock.patch.object(supervisor, 'acquire_lock'), \
+             mock.patch.object(supervisor, 'prepare_dirs'), \
+             mock.patch.object(supervisor, 'Session', return_value=sess), \
+             mock.patch.object(supervisor, 'write_file'), \
+             mock.patch.object(supervisor, 'log'):
+            supervisor.main()
+        errors = [call.args[0] for call in sess.error.call_args_list]
+        self.assertTrue(any('openvpn exited' in str(e) for e in errors), errors)
+        self.assertTrue(shutdown.called, 'cleanup must still run after the kill switch fires')
+
 if __name__ == '__main__':
     unittest.main()

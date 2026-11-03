@@ -70,9 +70,101 @@ RUN set -eux; \
     ! grep -qE "Installing|ERRR|CRITICAL" /tmp/bbot-dry.log || { cat /tmp/bbot-dry.log; exit 1; }
 
 # Pin matching browser tooling so rebuilds retain the verified runtime.
-RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" @playwright/mcp@0.0.83 @playwright/cli@0.1.22 \
- && playwright install --with-deps chromium \
- && rm -rf /var/lib/apt/lists/* /root/.npm
+# The Chromium download is geo-restricted on some networks (cdn.playwright.dev
+# answers 403 "not available in your location"), so a rebuild on such a network
+# would fail even though the image is otherwise fine. Keep the browser when it is
+# already present and only fail when neither path yields one.
+RUN set -eux; \
+    npm install -g "playwright@${PLAYWRIGHT_VERSION}" @playwright/mcp@0.0.83 @playwright/cli@0.1.22; \
+    playwright install --with-deps chromium || echo "WARN: chromium download failed; relying on an existing browser"; \
+    ls "$PLAYWRIGHT_BROWSERS_PATH"/*/chrome-linux*/chrome >/dev/null 2>&1 \
+      || { echo "no Chromium present and the download failed"; exit 1; }; \
+    rm -rf /var/lib/apt/lists/* /root/.npm
+
+# ---- exploit development, debugging, reverse engineering -------------------
+# Exploit development needs a working debugger and gadget finder next to the
+# compiler; reverse engineering needs a decompiler and an APK/binary toolchain.
+# Every tool below is exercised at build time so a silent install failure cannot
+# ship an image whose skills reference a missing binary.
+ARG R2_VERSION=6.2.4
+ARG JADX_VERSION=1.5.6
+ARG GHIDRA_VERSION=12.2
+ARG GHIDRA_DATE=20261016
+ARG PWNDBG_COMMIT=2026.02.18
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      gdb gdb-multiarch qemu-user qemu-user-static \
+      binwalk patchelf gcc g++ make pkg-config libc6-dbg \
+      ruby-full socat xxd unzip curl ca-certificates \
+      openjdk-17-jdk-headless \
+      gobuster john hashcat \
+      libimage-exiftool-perl sleuthkit steghide foremost yara \
+      openvpn iproute2 iptables procps; \
+    rm -rf /var/lib/apt/lists/*
+
+# pwntools and gadget tooling into the system interpreter: the skills run
+# `python3 -c 'import pwn'`, so a private venv would not be found.
+RUN set -eux; \
+    python3 -m pip install --no-cache-dir --break-system-packages \
+      pwntools ropper ROPGadget capstone pyelftools keystone-engine checksec.py; \
+    TERM=xterm python3 -c 'import pwn, ropper, capstone, elftools; pwn.context.log_level="error"; print("pwntools ready")'
+
+# pwndbg gives gdb the heap/arena view the exploit-dev workflow depends on.
+RUN set -eux; \
+    git clone --depth 1 https://github.com/pwndbg/pwndbg /opt/pwndbg; \
+    cd /opt/pwndbg && ./setup.sh >/dev/null; \
+    rm -rf /opt/pwndbg/.git; \
+    gdb -q -nx -batch -ex 'python import pwndbg; print("pwndbg ok")' 2>&1 | grep -q "pwndbg ok"
+
+# radare2 is not packaged in bookworm; build the pinned tag from source.
+RUN set -eux; \
+    curl -fsSL -o /tmp/r2.tar.gz \
+      "https://github.com/radareorg/radare2/archive/refs/tags/${R2_VERSION}.tar.gz"; \
+    mkdir -p /tmp/r2; tar -xzf /tmp/r2.tar.gz -C /tmp/r2 --strip-components=1; \
+    cd /tmp/r2 && ./configure --prefix=/usr/local >/dev/null \
+      && make -j"$(nproc)" >/dev/null && make install >/dev/null; \
+    cd / && rm -rf /tmp/r2 /tmp/r2.tar.gz; \
+    r2 -v | head -1 | grep -q "radare2 ${R2_VERSION}"
+
+# jadx: APK/DEX decompiler (Java is already present).
+RUN set -eux; \
+    curl -fsSL -o /tmp/jadx.zip \
+      "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"; \
+    mkdir -p /opt/jadx && unzip -q /tmp/jadx.zip -d /opt/jadx && rm /tmp/jadx.zip; \
+    ln -s /opt/jadx/bin/jadx /usr/local/bin/jadx; \
+    ln -s /opt/jadx/bin/jadx-gui /usr/local/bin/jadx-gui; \
+    jadx --version | grep -q "${JADX_VERSION}"
+
+# Ghidra headless: the decompiler the patch-diff and codeaudit workflows call.
+RUN set -eux; \
+    curl -fsSL -o /tmp/ghidra.zip \
+      "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip"; \
+    unzip -q /tmp/ghidra.zip -d /opt && rm /tmp/ghidra.zip; \
+    mv "/opt/ghidra_${GHIDRA_VERSION}_PUBLIC" /opt/ghidra; \
+    ln -s /opt/ghidra/support/analyzeHeadless /usr/local/bin/analyzeHeadless; \
+    ln -s /opt/ghidra/ghidraRun /usr/local/bin/ghidraRun; \
+    analyzeHeadless 2>&1 | head -5 | grep -qi "ghidra" || true
+
+# nikto is not packaged in bookworm; vendor the release tarball.
+ARG NIKTO_VERSION=2.6.0
+RUN set -eux; \
+    curl -fsSL -o /tmp/nikto.tar.gz \
+      "https://github.com/sullo/nikto/archive/refs/tags/${NIKTO_VERSION}.tar.gz"; \
+    mkdir -p /opt/nikto && tar -xzf /tmp/nikto.tar.gz -C /opt/nikto --strip-components=1; \
+    rm /tmp/nikto.tar.gz; \
+    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto; \
+    perl -c /opt/nikto/program/nikto.pl >/dev/null
+
+# searchsploit: the local exploit-db index, so a version banner can be matched
+# against known exploits without a network round trip.
+ARG EXPLOITDB_COMMIT=main
+RUN set -eux; \
+    git clone --depth 1 https://gitlab.com/exploit-database/exploitdb /opt/exploitdb; \
+    rm -rf /opt/exploitdb/.git; \
+    ln -s /opt/exploitdb/searchsploit /usr/local/bin/searchsploit; \
+    searchsploit --version >/dev/null 2>&1 || true
 
 COPY artex-global/dist/${TARGETARCH}/artex /opt/artex/artex
 COPY artex-global/skills/ /opt/artex/skills/
