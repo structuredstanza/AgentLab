@@ -1,0 +1,1 @@
+{"name":"api.target.example","domain":"target.example","addresses":[{"ip":"10.0.0.5"}],"tag":"cert","sources":["crtsh"]}

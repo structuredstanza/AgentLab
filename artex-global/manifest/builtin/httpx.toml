@@ -1,0 +1,29 @@
+id = "httpx"
+name = "httpx"
+description = "HTTP probing: status, title, technologies and response headers"
+category = "web"
+accepts = ["url", "domain", "subdomain", "ip"]
+requires = ["httpx"]
+
+[params]
+status_codes = { type = "string", label = "Status codes", default = "200,204,301,302,307,401,403,500" }
+threads = { type = "number", label = "Threads", default = "50" }
+tech_detect = { type = "bool", label = "Technology detection", default = "true" }
+
+[command]
+program = "httpx"
+args = ["-u", "{{ target.value }}", "-json", "-silent", "-nc", "-threads", "{{ params.threads }}", "-mc", "{{ params.status_codes }}", "{{ params.tech_detect | -td }}"]
+timeout_seconds = 900
+
+[emit]
+parser = "jsonl"
+fields = ["url", "input", "status_code", "title", "tech", "webserver", "content_type", "host"]
+
+[[emit.targets]]
+kind = "url"
+value = "{{ record.url }}"
+parent = "input"
+
+[[emit.facts]]
+kind = "http_service"
+data = { url = "{{ record.url }}", status_code = "{{ record.status_code }}", title = "{{ record.title }}", webserver = "{{ record.webserver }}", content_type = "{{ record.content_type }}" }

@@ -1,0 +1,1 @@
+{"template-id":"CVE-2021-41773","info":{"name":"Apache Path Traversal","severity":"high"},"host":"https://target.example","matched-at":"https://target.example/cgi-bin/etc/passwd","type":"http"}

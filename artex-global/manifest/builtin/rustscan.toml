@@ -1,0 +1,28 @@
+id = "rustscan"
+name = "RustScan"
+description = "Fast port scanner that hands open ports to nmap"
+category = "scan"
+accepts = ["ip", "cidr", "domain"]
+requires = ["rustscan"]
+
+[params]
+batch = { type = "number", label = "Batch size", default = "4500", description = "Ports scanned per batch; lower it on a fragile target" }
+ulimit = { type = "number", label = "File descriptor limit", default = "5000" }
+
+[command]
+program = "rustscan"
+args = ["-a", "{{ target.value }}", "-g", "-b", "{{ params.batch }}", "--ulimit", "{{ params.ulimit }}"]
+timeout_seconds = 900
+
+[emit]
+parser = "regex"
+pattern = '^(?P<host>[0-9a-fA-F.:]+) -> \[(?P<ports>[0-9,]+)\]$'
+fields = ["host", "ports"]
+
+[[emit.targets]]
+kind = "ip"
+value = "{{ record.host }}"
+
+[[emit.facts]]
+kind = "port_list"
+data = { ports = "{{ record.ports }}" }

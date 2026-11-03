@@ -1,0 +1,23 @@
+{
+  "manifest": "httpx",
+  "records": [
+    {
+      "url": "http://127.0.0.1:8099",
+      "status_code": 200,
+      "title": "Directory listing for /"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "url",
+      "value": "http://127.0.0.1:8099"
+    }
+  ],
+  "facts": [
+    {
+      "kind": "http_service",
+      "status_code": "200"
+    }
+  ],
+  "fixture": "httpx.out.jsonl"
+}

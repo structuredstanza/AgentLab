@@ -1,0 +1,26 @@
+id = "masscan"
+name = "Masscan"
+description = "High-rate port scan, parsed from its JSON array"
+category = "scan"
+accepts = ["ip", "cidr"]
+requires = ["masscan"]
+
+[params]
+ports = { type = "string", label = "Ports", default = "0-65535", required = true, description = "Port range, for example 80,443 or 0-65535" }
+rate = { type = "number", label = "Packets per second", default = "1000", description = "Higher values are faster and noisier" }
+
+[command]
+program = "masscan"
+args = ["{{ target.value }}", "-p", "{{ params.ports }}", "--rate", "{{ params.rate }}", "-oJ", "-"]
+timeout_seconds = 1800
+
+[emit]
+parser = "json"
+
+[[emit.targets]]
+kind = "ip"
+value = "{{ record.ip }}"
+
+[[emit.facts]]
+kind = "port"
+data = { port = "{{ record.ports.0.port }}", protocol = "{{ record.ports.0.proto? }}", state = "{{ record.ports.0.status? }}" }

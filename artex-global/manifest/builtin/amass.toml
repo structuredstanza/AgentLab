@@ -1,0 +1,28 @@
+id = "amass"
+name = "Amass"
+description = "Attack-surface mapping and asset discovery"
+category = "recon"
+accepts = ["domain"]
+requires = ["amass"]
+
+[params]
+mode = { type = "enum", label = "Mode", default = "passive", options = ["passive", "active"] }
+timeout_minutes = { type = "number", label = "Timeout (minutes)", default = "10" }
+
+[command]
+program = "amass"
+args = ["enum", "-d", "{{ target.value }}", "-json", "/dev/stdout", "-timeout", "{{ params.timeout_minutes }}", "-{{ params.mode }}"]
+timeout_seconds = 1800
+
+[emit]
+parser = "jsonl"
+fields = ["name", "domain", "addresses", "tag", "sources"]
+
+[[emit.targets]]
+kind = "subdomain"
+value = "{{ record.name }}"
+parent = "input"
+
+[[emit.facts]]
+kind = "asset"
+data = { name = "{{ record.name }}", tag = "{{ record.tag }}" }

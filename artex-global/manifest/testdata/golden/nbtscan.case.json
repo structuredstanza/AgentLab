@@ -1,0 +1,23 @@
+{
+  "manifest": "nbtscan",
+  "records": [
+    {
+      "ip": "10.0.0.5",
+      "name": "CORP-DC",
+      "type": "00"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "ip",
+      "value": "10.0.0.5"
+    }
+  ],
+  "facts": [
+    {
+      "kind": "netbios",
+      "name": "CORP-DC"
+    }
+  ],
+  "fixture": "nbtscan.out.txt"
+}

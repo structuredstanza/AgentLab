@@ -1,0 +1,23 @@
+id = "testssl"
+name = "testssl.sh"
+description = "Thorough TLS and cipher audit"
+category = "network"
+accepts = ["ip", "domain", "url"]
+requires = ["testssl.sh"]
+
+[params]
+port = { type = "number", label = "Port", default = "443" }
+severity = { type = "enum", label = "Minimum severity", default = "low", options = ["low", "medium", "high", "critical"] }
+
+[command]
+program = "testssl.sh"
+args = ["--jsonfile", "/dev/stdout", "--quiet", "--severity", "{{ params.severity }}", "{{ target.value }}:{{ params.port }}"]
+timeout_seconds = 1800
+
+[emit]
+parser = "jsonl"
+fields = ["id", "severity", "finding"]
+
+[[emit.facts]]
+kind = "tls"
+data = { id = "{{ record.id }}", severity = "{{ record.severity? }}", finding = "{{ record.finding? }}" }

@@ -1,0 +1,16 @@
+{
+  "manifest": "sqlmap",
+  "records": [
+    {
+      "technique": "boolean-based blind"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "vulnerability",
+      "technique": "boolean-based blind"
+    }
+  ],
+  "fixture": "sqlmap.out.txt"
+}

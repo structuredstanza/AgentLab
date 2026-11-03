@@ -1,0 +1,28 @@
+id = "dnsx"
+name = "dnsx"
+description = "DNS resolution and record enumeration"
+category = "recon"
+accepts = ["domain", "subdomain"]
+requires = ["dnsx"]
+
+[params]
+record_types = { type = "string", label = "Record types", default = "a,aaaa,cname,mx,ns,txt" }
+threads = { type = "number", label = "Threads", default = "100" }
+
+[command]
+program = "dnsx"
+args = ["-d", "{{ target.value }}", "-json", "-silent", "-a", "-aaaa", "-cname", "-mx", "-ns", "-txt", "-t", "{{ params.threads }}"]
+timeout_seconds = 900
+
+[emit]
+parser = "jsonl"
+fields = ["host", "a", "aaaa", "cname", "mx", "ns", "txt"]
+
+[[emit.targets]]
+kind = "subdomain"
+value = "{{ record.host }}"
+parent = "input"
+
+[[emit.facts]]
+kind = "dns"
+data = { host = "{{ record.host }}", a = "{{ record.a? }}", cname = "{{ record.cname? }}", mx = "{{ record.mx? }}" }

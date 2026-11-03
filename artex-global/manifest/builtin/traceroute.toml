@@ -1,0 +1,28 @@
+id = "traceroute"
+name = "Traceroute"
+description = "Path to a host, one hop per line"
+category = "network"
+accepts = ["ip", "domain"]
+requires = ["traceroute"]
+
+[params]
+max_hops = { type = "number", label = "Max hops", default = "30" }
+queries = { type = "number", label = "Probes per hop", default = "3" }
+
+[command]
+program = "traceroute"
+args = ["-n", "-m", "{{ params.max_hops }}", "-q", "{{ params.queries }}", "{{ target.value }}"]
+timeout_seconds = 300
+
+[emit]
+parser = "regex"
+pattern = '^\s*(?P<hop>\d+)\s+(?P<host>\S+)\s+(?P<rtt>.*)$'
+fields = ["hop", "host", "rtt"]
+
+[[emit.targets]]
+kind = "ip"
+value = "{{ record.host }}"
+
+[[emit.facts]]
+kind = "hop"
+data = { hop = "{{ record.hop }}", host = "{{ record.host }}", rtt = "{{ record.rtt }}" }

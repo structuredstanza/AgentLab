@@ -1,0 +1,25 @@
+id = "katana"
+name = "Katana"
+description = "Web crawler that emits discovered endpoints"
+category = "web"
+accepts = ["url", "domain", "subdomain"]
+requires = ["katana"]
+
+[params]
+depth = { type = "number", label = "Crawl depth", default = "3" }
+concurrency = { type = "number", label = "Concurrency", default = "10" }
+js_crawl = { type = "bool", label = "Parse JavaScript", default = "true", description = "Follow endpoints found in JavaScript files" }
+
+[command]
+program = "katana"
+args = ["-u", "{{ target.value }}", "-jsonl", "-silent", "-d", "{{ params.depth }}", "-c", "{{ params.concurrency }}", "{{ params.js_crawl | -jc }}"]
+timeout_seconds = 1800
+
+[emit]
+parser = "jsonl"
+fields = ["request.endpoint", "request.method", "response.status_code"]
+
+[[emit.targets]]
+kind = "url"
+value = "{{ record.request.endpoint }}"
+parent = "input"

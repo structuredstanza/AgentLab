@@ -1,0 +1,19 @@
+{
+  "manifest": "dalfox",
+  "records": [
+    {
+      "severity": "High",
+      "param": "q",
+      "payload": "\"><script>alert(1)</script>"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "vulnerability",
+      "severity": "High",
+      "param": "q"
+    }
+  ],
+  "fixture": "dalfox.out.jsonl"
+}

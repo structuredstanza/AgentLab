@@ -614,5 +614,71 @@
       "live cloud provider OAuth login, refresh and entitlement"
     ],
     "image_fix": "Dockerfile.toolchain now COPYs deployment/guest-start.py and guest-export.py. Without it the layer inherited the base image's supervisor, so a staged VPN profile was never read — found by running the real staging path, not by the unit tests."
+  },
+  "scope_manifests_evidence_20261103": {
+    "source_commit": "pending",
+    "sandbox": "artex-agentlab-scope-20261103t2300z",
+    "image": "agentlab/artex:scope-manifests-v2",
+    "image_id": "sha256:5ebcf0bb39af",
+    "runtime_binary_sha256": "78f7d4a75484b3409f1fe69ce8997aaa2cfb51ff3ac565b66762085ddf0918b0",
+    "adaptations": {
+      "enforced_scope": "scope/ evaluates include/exclude rules; guard/scope.go refuses a tool call naming an excluded asset; task_scope gains an effect column, enforced through db/task_scope_check.go including inherited rows",
+      "asset_kind_derivation": "db/scope_kind.go decides apex/subdomain/ip/cidr from the value; AddAutoScope uses it",
+      "manifest_layer": "manifest/ loads 32 embedded TOML manifests with params, argv templating, parsers (json/jsonl/lines/regex/xml) and emit rules; run_tool and list_tools expose them to the agent; GET /api/tool-manifests to the UI",
+      "golden_tests": "every manifest has a case in manifest/testdata/golden; TestEveryManifestHasAGoldenCase fails when one is missing",
+      "evidence_paths": "evidence above 8 KiB is content-addressed on disk and referenced by findings.evidence_path"
+    },
+    "toolchain": {
+      "recon_scan_web_network": [
+        "dalfox",
+        "feroxbuster",
+        "ffuf",
+        "gau",
+        "gobuster",
+        "gowitness",
+        "httpx",
+        "katana",
+        "sqlmap",
+        "whatweb",
+        "wpscan",
+        "masscan",
+        "naabu",
+        "nmap",
+        "nuclei",
+        "rustscan",
+        "enum4linux",
+        "enum4linux-ng",
+        "hydra",
+        "mtr",
+        "nbtscan",
+        "netexec/nxc",
+        "searchsploit",
+        "sslscan",
+        "testssl.sh",
+        "traceroute",
+        "dig",
+        "subfinder",
+        "dnsx",
+        "amass",
+        "whois",
+        "wafw00f"
+      ],
+      "removed": [
+        "nikto (per operator: worthless these days)",
+        "theHarvester (setup.py does not build; PyPI name is a stub)"
+      ],
+      "verified": "all 33 binaries executed in the guest; nmap, nuclei, ffuf, dnsx, testssl.sh and wpscan spot-checked for real"
+    },
+    "live_verification": [
+      "GET /api/tool-manifests: 32 manifests, all 32 report available in the guest",
+      "/api/tools: 57 core tools, list_tools and run_tool present",
+      "task_scope.effect column migrated; an exclude row surfaces through GET /api/tasks/3/scope",
+      "findings.evidence_path column migrated",
+      "TestLiveDigAgainstLoopback: a real dig run parsed through the embedded manifest produced a dns fact"
+    ],
+    "not_verified": [
+      "no agent conversation was driven end to end, so run_tool was exercised through its Go test path and the HTTP catalog rather than by a model choosing it",
+      "the nmap live check skips where a SYN scan needs root; the golden case uses real captured nmap XML instead"
+    ]
   }
 }

@@ -1,0 +1,24 @@
+id = "dalfox"
+name = "Dalfox"
+description = "XSS scanner, parsed from its JSON output"
+category = "web"
+accepts = ["url"]
+requires = ["dalfox"]
+
+[params]
+deep = { type = "bool", label = "Deep scan", default = "true", description = "Test every parameter rather than the first finding" }
+blind = { type = "string", label = "Blind XSS callback", placeholder = "https://your.xss.ht" }
+worker = { type = "number", label = "Concurrency", default = "10" }
+
+[command]
+program = "dalfox"
+args = ["url", "{{ target.value }}", "--format", "json", "--silence", "--worker", "{{ params.worker }}", "{{ params.deep | --deep-domxss }}", "{{ params.blind | -b }}"]
+timeout_seconds = 1800
+
+[emit]
+parser = "jsonl"
+fields = ["type", "severity", "method", "param", "payload", "evidence", "message_str"]
+
+[[emit.facts]]
+kind = "vulnerability"
+data = { template = "xss", severity = "{{ record.severity }}", param = "{{ record.param }}", payload = "{{ record.payload }}", evidence = "{{ record.evidence }}" }

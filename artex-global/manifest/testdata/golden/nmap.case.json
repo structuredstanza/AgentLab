@@ -1,0 +1,25 @@
+{
+  "manifest": "nmap",
+  "records": [
+    {
+      "host": "127.0.0.1",
+      "port": "8099",
+      "state": "open",
+      "service": "http"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "ip",
+      "value": "127.0.0.1"
+    }
+  ],
+  "facts": [
+    {
+      "kind": "port",
+      "port": "8099",
+      "state": "open"
+    }
+  ],
+  "fixture": "nmap.out.xml"
+}

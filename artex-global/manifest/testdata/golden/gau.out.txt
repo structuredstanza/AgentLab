@@ -1,0 +1,2 @@
+https://target.example/api/v1/users
+https://target.example/api/v1/orders?id=1

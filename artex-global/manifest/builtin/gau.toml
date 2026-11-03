@@ -1,0 +1,24 @@
+id = "gau"
+name = "GAU"
+description = "Fetches known URLs from public archives"
+category = "recon"
+accepts = ["domain", "subdomain"]
+requires = ["gau"]
+
+[params]
+providers = { type = "string", label = "Providers", default = "wayback,commoncrawl,otx,urlscan" }
+threads = { type = "number", label = "Threads", default = "5" }
+
+[command]
+program = "gau"
+args = ["{{ target.value }}", "--threads", "{{ params.threads }}", "--providers", "{{ params.providers }}"]
+timeout_seconds = 900
+
+[emit]
+parser = "lines"
+fields = ["url"]
+
+[[emit.targets]]
+kind = "url"
+value = "{{ record.url }}"
+parent = "input"

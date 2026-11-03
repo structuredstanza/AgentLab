@@ -1,0 +1,4 @@
+[INFO] testing connection to the target URL
+Parameter: id (GET)
+    Type: boolean-based blind
+    Payload: id=1 AND 1=1

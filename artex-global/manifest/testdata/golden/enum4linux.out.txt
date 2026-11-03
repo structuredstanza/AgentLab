@@ -1,0 +1,3 @@
+[+] Server 10.0.0.5 allows sessions
+[+] Domain Name: CORP
+[+] OS: Windows Server 2016

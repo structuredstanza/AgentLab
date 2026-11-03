@@ -1,0 +1,18 @@
+{
+  "manifest": "enum4linux",
+  "records": [
+    {
+      "field": "[+] Domain Name",
+      "value": "CORP"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "smb",
+      "field": "[+] Domain Name",
+      "value": "CORP"
+    }
+  ],
+  "fixture": "enum4linux.out.txt"
+}

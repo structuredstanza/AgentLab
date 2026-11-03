@@ -22,14 +22,22 @@ func TestProfilePricingRoundTrip(t *testing.T) {
 	for name, load := range map[string]func() (*LLMProfile, error){
 		"list": func() (*LLMProfile, error) {
 			profiles, err := d.ListProfiles()
-			if err != nil { return nil, err }
-			for _, profile := range profiles { if profile.ID == id { return profile, nil } }
+			if err != nil {
+				return nil, err
+			}
+			for _, profile := range profiles {
+				if profile.ID == id {
+					return profile, nil
+				}
+			}
 			return nil, nil
 		},
 		"by id": func() (*LLMProfile, error) { return d.ProfileByID(id) },
 	} {
 		stored, err := load()
-		if err != nil || stored == nil { t.Fatalf("%s lookup: profile=%v err=%v", name, stored, err) }
+		if err != nil || stored == nil {
+			t.Fatalf("%s lookup: profile=%v err=%v", name, stored, err)
+		}
 		if stored.PriceInputPerM != p.PriceInputPerM || stored.PriceOutputPerM != p.PriceOutputPerM ||
 			stored.PriceCacheReadPerM != p.PriceCacheReadPerM || stored.PriceCacheWritePerM != p.PriceCacheWritePerM {
 			t.Errorf("%s pricing = (%v, %v, %v, %v), want (%v, %v, %v, %v)", name,

@@ -1,0 +1,18 @@
+{
+  "manifest": "wafw00f",
+  "records": [
+    {
+      "url": "https://target.example",
+      "detected": true,
+      "firewall": "Cloudflare"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "waf",
+      "detected": "true"
+    }
+  ],
+  "fixture": "wafw00f.out.json"
+}

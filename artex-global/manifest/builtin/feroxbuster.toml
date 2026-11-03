@@ -1,0 +1,30 @@
+id = "feroxbuster"
+name = "Feroxbuster"
+description = "Recursive content discovery, parsed from its JSON lines"
+category = "web"
+accepts = ["url", "domain", "subdomain"]
+requires = ["feroxbuster"]
+
+[params]
+wordlist = { type = "string", label = "Wordlist", default = "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt", required = true }
+depth = { type = "number", label = "Recursion depth", default = "2" }
+status_codes = { type = "string", label = "Status codes to keep", default = "200,204,301,302,307,401,403,405" }
+rate_limit = { type = "number", label = "Requests per second", default = "50" }
+
+[command]
+program = "feroxbuster"
+args = ["-u", "{{ target.value }}", "-w", "{{ params.wordlist }}", "--json", "--silent", "--depth", "{{ params.depth }}", "-s", "{{ params.status_codes }}", "--rate-limit", "{{ params.rate_limit }}"]
+timeout_seconds = 1800
+
+[emit]
+parser = "jsonl"
+fields = ["url", "status", "content_length", "content_type"]
+
+[[emit.targets]]
+kind = "url"
+value = "{{ record.url }}"
+parent = "input"
+
+[[emit.facts]]
+kind = "http_service"
+data = { url = "{{ record.url }}", status_code = "{{ record.status }}", content_type = "{{ record.content_type }}", length = "{{ record.content_length }}" }

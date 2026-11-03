@@ -1,0 +1,23 @@
+id = "wpscan"
+name = "WPScan"
+description = "WordPress enumeration: version, plugins, themes and users"
+category = "web"
+accepts = ["url", "domain", "subdomain"]
+requires = ["wpscan"]
+
+[params]
+enumerate = { type = "string", label = "Enumerate", default = "vp,vt,u", description = "vulnerable plugins, vulnerable themes, users" }
+api_token = { type = "string", label = "WPScan API token", description = "Optional; without it vulnerability data is omitted" }
+
+[command]
+program = "wpscan"
+args = ["--url", "{{ target.value }}", "--format", "json", "--no-banner", "--no-update", "-e", "{{ params.enumerate }}", "{{ params.api_token | --api-token }}"]
+timeout_seconds = 1800
+
+[emit]
+parser = "json"
+fields = ["version.number", "plugins", "themes", "users", "interesting_findings"]
+
+[[emit.facts]]
+kind = "cms"
+data = { product = "wordpress", version = "{{ record.version.number }}" }

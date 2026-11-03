@@ -1,0 +1,27 @@
+id = "naabu"
+name = "Naabu"
+description = "Fast port scanner, parsed from its JSON lines"
+category = "scan"
+accepts = ["ip", "cidr", "domain", "subdomain"]
+requires = ["naabu"]
+
+[params]
+top_ports = { type = "string", label = "Top ports", placeholder = "100", description = "Scan the N most common ports instead of the default set" }
+rate = { type = "number", label = "Packets per second", default = "1000" }
+
+[command]
+program = "naabu"
+args = ["-host", "{{ target.value }}", "-json", "-silent", "{{ params.top_ports | -top-ports }}", "{{ params.rate | -rate }}"]
+timeout_seconds = 1800
+
+[emit]
+parser = "jsonl"
+fields = ["host", "ip", "port"]
+
+[[emit.targets]]
+kind = "ip"
+value = "{{ record.ip }}"
+
+[[emit.facts]]
+kind = "port"
+data = { port = "{{ record.port }}", host = "{{ record.host }}" }

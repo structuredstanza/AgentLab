@@ -1,0 +1,31 @@
+id = "ffuf"
+name = "ffuf"
+description = "Content and parameter discovery, parsed from its JSON report"
+category = "web"
+accepts = ["url", "domain", "subdomain"]
+requires = ["ffuf"]
+
+[params]
+wordlist = { type = "string", label = "Wordlist", placeholder = "/usr/share/wordlists/common.txt", default = "/usr/share/seclists/Discovery/Web-Content/common.txt", required = true }
+extensions = { type = "string", label = "Extensions", placeholder = "php,html,bak" }
+match_codes = { type = "string", label = "Match status codes", default = "200,204,301,302,307,401,403" }
+rate = { type = "number", label = "Requests per second", default = "50" }
+
+[command]
+program = "ffuf"
+args = ["-u", "{{ target.value }}/FUZZ", "-w", "{{ params.wordlist }}", "-of", "json", "-o", "/dev/stdout", "-mc", "{{ params.match_codes }}", "-rate", "{{ params.rate }}", "{{ params.extensions | -e }}"]
+timeout_seconds = 1800
+
+[emit]
+parser = "json"
+records = "$.results"
+fields = ["url", "status", "length", "words", "content-type"]
+
+[[emit.targets]]
+kind = "url"
+value = "{{ record.url }}"
+parent = "input"
+
+[[emit.facts]]
+kind = "http_service"
+data = { url = "{{ record.url }}", status_code = "{{ record.status }}", content_type = "{{ record.content-type }}", length = "{{ record.length }}" }

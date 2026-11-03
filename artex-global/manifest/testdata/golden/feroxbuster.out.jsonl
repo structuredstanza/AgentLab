@@ -1,0 +1,3 @@
+{"type":"response","url":"https://target.example/admin","status":301,"content_length":312,"content_type":"text/html"}
+{"type":"response","url":"https://target.example/api","status":200,"content_length":2048,"content_type":"application/json"}
+{"type":"statistics","total_requests":1000}

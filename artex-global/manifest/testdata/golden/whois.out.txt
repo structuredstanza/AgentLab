@@ -1,0 +1,3 @@
+Domain Name: TARGET.EXAMPLE
+Registrar: Example Registrar, Inc.
+Creation Date: 1995-08-14T04:00:00Z

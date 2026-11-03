@@ -1,0 +1,27 @@
+id = "hydra"
+name = "Hydra"
+description = "Credential brute forcing against a named service"
+category = "creds"
+accepts = ["ip", "domain"]
+requires = ["hydra"]
+
+[params]
+service = { type = "enum", label = "Service", default = "ssh", options = ["ssh", "ftp", "rdp", "smb", "http-get", "https-get", "mysql", "postgres"] }
+username = { type = "string", label = "Username", description = "A single login to test, or leave empty to use the user list" }
+userlist = { type = "string", label = "Username list", placeholder = "/usr/share/wordlists/users.txt" }
+passwordlist = { type = "string", label = "Password list", default = "/usr/share/wordlists/rockyou.txt", required = true }
+threads = { type = "number", label = "Threads", default = "4", description = "Keep this low: most services lock out above 8" }
+
+[command]
+program = "hydra"
+args = ["-t", "{{ params.threads }}", "-f", "{{ params.username | -l }}", "{{ params.userlist | -L }}", "-P", "{{ params.passwordlist }}", "{{ target.value }}", "{{ params.service }}"]
+timeout_seconds = 3600
+
+[emit]
+parser = "regex"
+pattern = '^\[\d+\]\[\w+\]\s+host:\s+(?P<host>\S+)\s+login:\s+(?P<login>\S+)\s+password:\s+(?P<password>\S+)'
+fields = ["host", "login", "password"]
+
+[[emit.facts]]
+kind = "credential"
+data = { host = "{{ record.host }}", login = "{{ record.login }}", password = "{{ record.password }}" }

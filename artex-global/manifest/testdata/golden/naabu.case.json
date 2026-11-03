@@ -1,0 +1,23 @@
+{
+  "manifest": "naabu",
+  "records": [
+    {
+      "host": "api.example.com",
+      "ip": "10.0.0.5",
+      "port": 443
+    }
+  ],
+  "targets": [
+    {
+      "kind": "ip",
+      "value": "10.0.0.5"
+    }
+  ],
+  "facts": [
+    {
+      "kind": "port",
+      "port": "443"
+    }
+  ],
+  "fixture": "naabu.out.jsonl"
+}

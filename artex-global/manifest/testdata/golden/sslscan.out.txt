@@ -1,0 +1,3 @@
+Accepted  TLSv1.2  256 bits  ECDHE-RSA-AES256-GCM-SHA384
+Accepted  TLSv1.3  256 bits  TLS_AES_256_GCM_SHA384
+Rejected  TLSv1.0  0 bits  -

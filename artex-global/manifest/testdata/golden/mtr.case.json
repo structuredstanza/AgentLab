@@ -1,0 +1,18 @@
+{
+  "manifest": "mtr",
+  "records": [
+    {
+      "count": 1,
+      "host": "10.0.0.1"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "hop",
+      "hop": "1",
+      "host": "10.0.0.1"
+    }
+  ],
+  "fixture": "mtr.out.json"
+}

@@ -1,0 +1,18 @@
+{
+  "manifest": "hydra",
+  "records": [
+    {
+      "host": "10.0.0.5",
+      "login": "admin",
+      "password": "Summer2024!"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "credential",
+      "login": "admin"
+    }
+  ],
+  "fixture": "hydra.out.txt"
+}

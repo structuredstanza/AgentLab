@@ -1,0 +1,182 @@
+package manifest
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// Resolve renders a manifest's command into a concrete argv.
+//
+// The template language is intentionally tiny: `{{ target.value }}`,
+// `{{ params.name }}`, and the two argument forms `{{ params.name | -flag }}`
+// (emit `-flag value`, or nothing when the value is empty) and
+// `{{ params.name? }}` (emit the value alone, or nothing). That is every shape
+// the tool manifests need, and a larger language would be a scripting surface
+// pretending to be configuration.
+//
+// Values are never shell-quoted here because the argv is executed without a
+// shell. A parameter that contains a space therefore stays one argument, which
+// is the behaviour an operator expects and the behaviour a shell would break.
+func (m *Manifest) Resolve(targetValue string, values map[string]string) ([]string, error) {
+	args := make([]string, 0, len(m.Command.Args))
+	for _, tmpl := range m.Command.Args {
+		rendered, err := renderArg(tmpl, targetValue, values)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", m.ID, err)
+		}
+		if rendered != "" {
+			args = append(args, rendered)
+		}
+	}
+	return args, nil
+}
+
+// Effective returns the parameter values with defaults applied, so a caller
+// sees exactly what would be sent. Required parameters left empty are an error:
+// running the tool without them produces output that looks valid and is not.
+func (m *Manifest) Effective(values map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(m.Params))
+	for name, p := range m.Params {
+		v, ok := values[name]
+		if !ok || strings.TrimSpace(v) == "" {
+			v = p.Default
+		}
+		if p.Required && strings.TrimSpace(v) == "" {
+			return nil, fmt.Errorf("%s: parameter %q is required", m.ID, name)
+		}
+		if p.Type == ParamEnum && v != "" && !contains(p.Options, v) {
+			return nil, fmt.Errorf("%s: parameter %q must be one of %s, got %q",
+				m.ID, name, strings.Join(p.Options, ", "), v)
+		}
+		out[name] = v
+	}
+	return out, nil
+}
+
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// renderArg expands one argv template element.
+//
+// Two shapes are supported, and the distinction matters:
+//
+//   - the whole element is one placeholder (`{{ params.rate }}`, `{{ x | -flag }}`,
+//     `{{ x? }}`): the flag forms apply, and a `| -flag` joins flag and value
+//     with a space;
+//   - the placeholder sits inside surrounding text (`-{{ params.timing }}`,
+//     `{{ target.value }}/FUZZ`): only bare placeholders may appear, each is
+//     substituted in place, and if any resolves empty the whole element is
+//     dropped — `-{{ x }}` with an empty x must not become a bare "-", which
+//     several tools read as a real flag.
+func renderArg(tmpl, targetValue string, values map[string]string) (string, error) {
+	if !strings.Contains(tmpl, "{{") {
+		return tmpl, nil
+	}
+
+	// Whole-element placeholder: the flag forms are available.
+	if strings.HasPrefix(tmpl, "{{") && strings.HasSuffix(tmpl, "}}") &&
+		strings.Count(tmpl, "{{") == 1 {
+		inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(tmpl, "{{"), "}}"))
+
+		// `name?` renders the value alone and vanishes when empty.
+		if strings.HasSuffix(inner, "?") {
+			expr := strings.TrimSpace(strings.TrimSuffix(inner, "?"))
+			return lookup(expr, targetValue, values)
+		}
+
+		// `name | -flag` renders "-flag value", or nothing when the value is empty.
+		if idx := strings.Index(inner, "|"); idx >= 0 {
+			expr := strings.TrimSpace(inner[:idx])
+			flag := strings.TrimSpace(inner[idx+1:])
+			v, err := lookup(expr, targetValue, values)
+			if err != nil {
+				return "", err
+			}
+			if v == "" {
+				return "", nil
+			}
+			if flag == "" {
+				return v, nil
+			}
+			return flag + " " + v, nil
+		}
+
+		return lookup(inner, targetValue, values)
+	}
+
+	// Embedded placeholders: substitute in place, drop the element if one is empty.
+	var b strings.Builder
+	rest := tmpl
+	for {
+		start := strings.Index(rest, "{{")
+		if start < 0 {
+			b.WriteString(rest)
+			break
+		}
+		end := strings.Index(rest[start:], "}}")
+		if end < 0 {
+			return "", fmt.Errorf("unterminated placeholder in %q", tmpl)
+		}
+		end += start
+		b.WriteString(rest[:start])
+		expr := strings.TrimSpace(rest[start+2 : end])
+		v, err := lookup(expr, targetValue, values)
+		if err != nil {
+			return "", err
+		}
+		if v == "" {
+			return "", nil
+		}
+		b.WriteString(v)
+		rest = rest[end+2:]
+	}
+	return b.String(), nil
+}
+
+// lookup resolves `target.value` or `params.name`.
+func lookup(expr, targetValue string, values map[string]string) (string, error) {
+	switch expr {
+	case "target.value":
+		return targetValue, nil
+	case "":
+		return "", fmt.Errorf("empty placeholder")
+	}
+	if name, ok := strings.CutPrefix(expr, "params."); ok {
+		v, present := values[name]
+		if !present {
+			// An unknown parameter is a manifest bug, not an operator error, so it
+			// fails loudly instead of rendering an empty string into the argv.
+			return "", fmt.Errorf("unknown parameter %q", name)
+		}
+		return v, nil
+	}
+	return "", fmt.Errorf("unknown placeholder %q (expected target.value or params.<name>)", expr)
+}
+
+// ParseParam converts a manifest parameter's string value to its declared type.
+// The result is what a caller stores; it is not used for argv rendering, where
+// everything is already a string.
+func ParseParam(p Param, raw string) (any, error) {
+	switch p.Type {
+	case ParamBool:
+		if raw == "" {
+			return false, nil
+		}
+		return strconv.ParseBool(raw)
+	case ParamNumber:
+		if raw == "" {
+			return 0, nil
+		}
+		return strconv.ParseFloat(raw, 64)
+	case ParamString, ParamEnum:
+		return raw, nil
+	}
+	return nil, fmt.Errorf("unknown parameter type %q", p.Type)
+}

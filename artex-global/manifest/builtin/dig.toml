@@ -1,0 +1,22 @@
+id = "dig"
+name = "dig"
+description = "Direct DNS query for one record type"
+category = "recon"
+accepts = ["domain", "subdomain", "ip"]
+requires = ["dig"]
+
+[params]
+record_type = { type = "enum", label = "Record type", default = "A", options = ["A", "AAAA", "CNAME", "MX", "NS", "TXT", "SOA", "AXFR"] }
+
+[command]
+program = "dig"
+args = ["+short", "{{ target.value }}", "{{ params.record_type }}"]
+timeout_seconds = 60
+
+[emit]
+parser = "lines"
+fields = ["value"]
+
+[[emit.facts]]
+kind = "dns"
+data = { value = "{{ record.value }}" }

@@ -1,0 +1,22 @@
+id = "enum4linux-ng"
+name = "Enum4linux-ng"
+description = "Maintained SMB enumeration with JSON output"
+category = "network"
+accepts = ["ip", "domain"]
+requires = ["enum4linux-ng"]
+
+[params]
+json_out = { type = "bool", label = "JSON output", default = "true" }
+
+[command]
+program = "enum4linux-ng"
+args = ["-A", "-oJ", "/dev/stdout", "{{ target.value }}"]
+timeout_seconds = 900
+
+[emit]
+parser = "json"
+fields = ["target.host", "smb1_supported", "smb2_supported", "smb3_supported", "signing.required", "os_info"]
+
+[[emit.facts]]
+kind = "smb"
+data = { host = "{{ record.target.host }}", smb1 = "{{ record.smb1_supported }}", signing_required = "{{ record.signing.required }}", os = "{{ record.os_info }}" }

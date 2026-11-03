@@ -23,11 +23,14 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 	return wrTool("ask_operator",
 		"Ask the human operator for input you cannot obtain yourself (a captcha solution, an email/SMS OTP code, a 2FA answer, a decision, or an action only they can perform). The question appears in this intent's chat for the operator, optionally with a screenshot, and this intent then pauses; the operator's reply resumes this run with the answer as your next input. Ask precisely, and only when you are genuinely blocked. When the block is environmental (a sandboxed or filtered network path, a missing binary or key, a proxy or TLS failure this runtime cannot fix), do not retry or work around it: include in the question the exact single command the operator should run in their own terminal, as one copy-pastable line, plus what to paste back, then wait.",
 		map[string]any{"type": "object", "properties": map[string]any{
-			"question": map[string]any{"type": "string", "description": "What you need from the operator, precisely. For environmental blocks: the exact single command they should run in their own terminal (one line, copy-pastable) and what to paste back."},
+			"question":   map[string]any{"type": "string", "description": "What you need from the operator, precisely. For environmental blocks: the exact single command they should run in their own terminal (one line, copy-pastable) and what to paste back."},
 			"image_path": map[string]any{"type": "string", "description": "Optional path to a screenshot (png/jpg/jpeg/webp/gif, max 10MB)."},
 		}, "required": []any{"question"}},
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
-			var req struct { Question string `json:"question"`; ImagePath string `json:"image_path"` }
+			var req struct {
+				Question  string `json:"question"`
+				ImagePath string `json:"image_path"`
+			}
 			_ = json.Unmarshal(in, &req)
 			q := strings.TrimSpace(req.Question)
 			q = s.redactProviderCredentials(q)
@@ -38,12 +41,18 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 				return actool.Errorf("Error: screenshots are disabled when provider credentials are configured; remove sensitive content before attaching an image"), nil
 			}
 			ri := agent.RunInfoFrom(ctx)
-			if ri.TaskID == 0 || ri.IntentID == 0 { return actool.Errorf("Error: ask_operator can only be used inside a worker intent run"), nil }
+			if ri.TaskID == 0 || ri.IntentID == 0 {
+				return actool.Errorf("Error: ask_operator can only be used inside a worker intent run"), nil
+			}
 			taskID := fmt.Sprintf("%d", ri.TaskID)
 			t := s.m.ResolveTask(taskID)
-			if t == nil { return actool.Errorf("Error: task not found"), nil }
+			if t == nil {
+				return actool.Errorf("Error: task not found"), nil
+			}
 			att, err := stageAskOperatorImage(s.m.dir, taskID, req.ImagePath)
-			if err != nil { return actool.Errorf("Error: " + err.Error()), nil }
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
 			text := "OPERATOR INPUT REQUESTED: " + q + " (this intent is pausing; reply here to resume it with your answer)"
 			act := userActivityWithAttachments("worker", text, att)
 			node := ri.IntentID
@@ -92,21 +101,37 @@ func (s *Server) redactProviderCredentials(text string) string {
 
 func stageAskOperatorImage(dataDir, taskID, src string) ([]chatAttachment, error) {
 	src = strings.TrimSpace(src)
-	if src == "" { return nil, nil }
+	if src == "" {
+		return nil, nil
+	}
 	ext := strings.ToLower(filepath.Ext(src))
-	if !askOperatorImageExt[ext] { return nil, fmt.Errorf("image_path must be a png/jpg/jpeg/webp/gif file, got %q", filepath.Base(src)) }
+	if !askOperatorImageExt[ext] {
+		return nil, fmt.Errorf("image_path must be a png/jpg/jpeg/webp/gif file, got %q", filepath.Base(src))
+	}
 	st, err := os.Stat(src)
-	if err != nil { return nil, fmt.Errorf("image not readable: %v", err) }
-	if st.Size() > askOperatorMaxImage { return nil, fmt.Errorf("image too large (%s, max 10MB)", humanBytes(st.Size())) }
+	if err != nil {
+		return nil, fmt.Errorf("image not readable: %v", err)
+	}
+	if st.Size() > askOperatorMaxImage {
+		return nil, fmt.Errorf("image too large (%s, max 10MB)", humanBytes(st.Size()))
+	}
 	dir := filepath.Join(dataDir, "tasks", taskID, "uploads")
-	if err := os.MkdirAll(dir, 0o755); err != nil { return nil, err }
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
 	name := fmt.Sprintf("ask-operator-%d%s", time.Now().Unix(), ext)
 	in, err := os.Open(src)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer in.Close()
 	out, err := os.Create(filepath.Join(dir, name))
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil { return nil, err }
+	if _, err := io.Copy(out, in); err != nil {
+		return nil, err
+	}
 	return []chatAttachment{{Name: name, Path: "uploads/" + name, Size: st.Size()}}, nil
 }

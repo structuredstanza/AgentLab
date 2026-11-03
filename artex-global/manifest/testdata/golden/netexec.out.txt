@@ -1,0 +1,2 @@
+SMB         10.0.0.5       445    CORP-DC          [*] Windows Server 2016 Build 14393 x64
+SMB         10.0.0.5       445    CORP-DC          [+] corp.local\admin:Summer2024!

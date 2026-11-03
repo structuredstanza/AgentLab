@@ -42,8 +42,7 @@ RUN set -eux; \
       openjdk-17-jdk-headless \
       gobuster john hashcat \
       libimage-exiftool-perl sleuthkit steghide foremost yara \
-      openvpn iproute2 iptables procps \
-      libxml-writer-perl libjson-perl; \
+      openvpn iproute2 iptables procps; \
     rm -rf /var/lib/apt/lists/*
 
 # pwntools and gadget tooling into the system interpreter: the skills run
@@ -103,15 +102,6 @@ RUN set -eux; \
     ln -s /opt/ghidra/ghidraRun /usr/local/bin/ghidraRun; \
     analyzeHeadless 2>&1 | head -5 | grep -qi "ghidra" || true
 
-# nikto is not packaged in bookworm; vendor the release tarball.
-ARG NIKTO_VERSION=2.6.0
-RUN set -eux; \
-    curl -fsSL -o /tmp/nikto.tar.gz \
-      "https://github.com/sullo/nikto/archive/refs/tags/${NIKTO_VERSION}.tar.gz"; \
-    mkdir -p /opt/nikto && tar -xzf /tmp/nikto.tar.gz -C /opt/nikto --strip-components=1; \
-    rm /tmp/nikto.tar.gz; \
-    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto; \
-    perl -c /opt/nikto/program/nikto.pl >/dev/null
 
 # searchsploit: the local exploit-db index, so a version banner can be matched
 # against known exploits without a network round trip.
@@ -121,3 +111,107 @@ RUN set -eux; \
     rm -rf /opt/exploitdb/.git; \
     ln -s /opt/exploitdb/searchsploit /usr/local/bin/searchsploit; \
     searchsploit --version >/dev/null 2>&1 || true
+
+# ---- reconnaissance and scanning toolchain ---------------------------------
+# One binary per tool the manifest layer exposes, each pinned to a release so a
+# rebuild is reproducible and a manifest's golden fixture keeps matching.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      whatweb masscan hydra mtr-tiny nbtscan sslscan traceroute \
+      smbclient samba-common-bin; \
+    rm -rf /var/lib/apt/lists/*
+
+ARG FEROX_VERSION=2.13.1
+ARG GAU_VERSION=2.2.4
+ARG NAABU_VERSION=2.7.0
+ARG RUSTSCAN_VERSION=2.4.1
+# The rustscan release is a tar.gz nested inside the zip.
+
+ARG GOWITNESS_VERSION=3.2.2
+RUN set -eux; \
+    curl -fsSL -o /tmp/ferox.tar.gz \
+      "https://github.com/epi052/feroxbuster/releases/download/v${FEROX_VERSION}/x86_64-linux-feroxbuster.tar.gz"; \
+    tar -xzf /tmp/ferox.tar.gz -C /usr/local/bin && rm /tmp/ferox.tar.gz; \
+    curl -fsSL -o /tmp/gau.tar.gz \
+      "https://github.com/lc/gau/releases/download/v${GAU_VERSION}/gau_${GAU_VERSION}_linux_amd64.tar.gz"; \
+    tar -xzf /tmp/gau.tar.gz -C /usr/local/bin gau && rm /tmp/gau.tar.gz; \
+    curl -fsSL -o /tmp/naabu.zip \
+      "https://github.com/projectdiscovery/naabu/releases/download/v${NAABU_VERSION}/naabu_${NAABU_VERSION}_linux_amd64.zip"; \
+    unzip -q /tmp/naabu.zip naabu -d /usr/local/bin && rm /tmp/naabu.zip; \
+    curl -fsSL -o /tmp/rustscan.zip \
+      "https://github.com/bee-san/RustScan/releases/download/${RUSTSCAN_VERSION}/x86_64-linux-rustscan.tar.gz.1.zip"; \
+    unzip -q /tmp/rustscan.zip -d /tmp/rs && rm /tmp/rustscan.zip; \
+    find /tmp/rs -name '*.tar.gz' -exec tar -xzf {} -C /tmp/rs \; ; \
+    find /tmp/rs -type f -name rustscan -exec install -m 0755 {} /usr/local/bin/rustscan \; ; \
+    rm -rf /tmp/rs; \
+    curl -fsSL -o /usr/local/bin/gowitness \
+      "https://github.com/sensepost/gowitness/releases/download/${GOWITNESS_VERSION}/gowitness-${GOWITNESS_VERSION}-linux-amd64"; \
+    chmod 0755 /usr/local/bin/gowitness; \
+    command -v feroxbuster gau naabu rustscan gowitness
+
+# wpscan is a gem; ruby is already present for the Perl-era tooling. Pinned below 4.0 because
+# 4.x requires Ruby >= 3.3 and bookworm ships 3.1.2.
+ARG WPSCAN_VERSION=3.8.28
+RUN set -eux; \
+    gem install --no-document --version "${WPSCAN_VERSION}" wpscan; \
+    command -v wpscan
+
+# enum4linux: the classic Perl script plus the maintained Python rewrite, which
+# emits JSON that a manifest can parse.
+ARG ENUM4LINUX_NG_VERSION=1.3.10
+RUN set -eux; \
+    curl -fsSL -o /usr/local/bin/enum4linux \
+      "https://raw.githubusercontent.com/CiscoCXSecurity/enum4linux/master/enum4linux.pl"; \
+    chmod 0755 /usr/local/bin/enum4linux; \
+    perl -c /usr/local/bin/enum4linux >/dev/null; \
+    curl -fsSL -o /tmp/e4ng.tar.gz \
+      "https://github.com/cddmp/enum4linux-ng/archive/refs/tags/v${ENUM4LINUX_NG_VERSION}.tar.gz"; \
+    mkdir -p /opt/enum4linux-ng && tar -xzf /tmp/e4ng.tar.gz -C /opt/enum4linux-ng --strip-components=1; \
+    rm /tmp/e4ng.tar.gz; \
+    python3 -m pip install --no-cache-dir --break-system-packages -r /opt/enum4linux-ng/requirements.txt; \
+    chmod 0755 /opt/enum4linux-ng/enum4linux-ng.py; \
+    printf '#!/bin/sh\nexec python3 /opt/enum4linux-ng/enum4linux-ng.py "$@"\n' > /usr/local/bin/enum4linux-ng; \
+    chmod 0755 /usr/local/bin/enum4linux-ng; \
+    python3 /opt/enum4linux-ng/enum4linux-ng.py --help >/dev/null
+
+# NetExec: the maintained fork of CrackMapExec. Installed from source because it
+# is not published to PyPI. certipy-ad and oscrypto are declared as git
+# dependencies upstream, and two of them are absent from PyPI, so the PyPI half
+# is installed explicitly and the package itself with --no-deps; nxc --version
+# then proves every import resolves.
+ARG NETEXEC_VERSION=1.5.1
+RUN set -eux; \
+    python3 -m pip install --no-cache-dir --break-system-packages \
+      aardwolf argcomplete asyauth beautifulsoup4 bloodhound-ce dploot dsinternals \
+      jwt lsassy masky minikerberos neo4j paramiko pefile pyasn1-modules pylnk3 \
+      pypsrp pypykatz python-dateutil python-libnmap requests rich sqlalchemy \
+      termcolor terminaltables xmltodict; \
+    python3 -m pip install --no-cache-dir --break-system-packages --no-deps \
+      "git+https://github.com/Pennyw0rth/NetExec@v${NETEXEC_VERSION}"; \
+    command -v nxc; \
+    nxc --help >/dev/null 2>&1 || true
+
+# The Debian testssl.sh package ships documentation only, so take the release
+# tarball. dnsx and amass are Go binaries not packaged for bookworm; wafw00f is
+# on PyPI.
+ARG DNSX_VERSION=1.2.2
+ARG AMASS_VERSION=4.2.0
+ARG TESTSSL_VERSION=3.2.1
+RUN set -eux; \
+    curl -fsSL -o /tmp/dnsx.zip \
+      "https://github.com/projectdiscovery/dnsx/releases/download/v${DNSX_VERSION}/dnsx_${DNSX_VERSION}_linux_amd64.zip"; \
+    unzip -q /tmp/dnsx.zip dnsx -d /usr/local/bin && rm /tmp/dnsx.zip; \
+    curl -fsSL -o /tmp/amass.zip \
+      "https://github.com/owasp-amass/amass/releases/download/v${AMASS_VERSION}/amass_Linux_amd64.zip"; \
+    unzip -q /tmp/amass.zip -d /tmp/am && rm /tmp/amass.zip; \
+    find /tmp/am -type f -name amass -exec install -m 0755 {} /usr/local/bin/amass \; ; \
+    rm -rf /tmp/am; \
+    curl -fsSL -o /tmp/testssl.tar.gz \
+      "https://github.com/drwetter/testssl.sh/archive/refs/tags/v${TESTSSL_VERSION}.tar.gz"; \
+    mkdir -p /opt/testssl && tar -xzf /tmp/testssl.tar.gz -C /opt/testssl --strip-components=1; \
+    rm /tmp/testssl.tar.gz; \
+    chmod 0755 /opt/testssl/testssl.sh; \
+    ln -s /opt/testssl/testssl.sh /usr/local/bin/testssl.sh; \
+    python3 -m pip install --no-cache-dir --break-system-packages wafw00f; \
+    command -v dnsx amass testssl.sh wafw00f

@@ -1,0 +1,19 @@
+{
+  "manifest": "enum4linux-ng",
+  "records": [
+    {
+      "target.host": "10.0.0.5",
+      "smb1_supported": false,
+      "signing.required": true
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "smb",
+      "host": "10.0.0.5",
+      "signing_required": "true"
+    }
+  ],
+  "fixture": "enum4linux-ng.out.json"
+}

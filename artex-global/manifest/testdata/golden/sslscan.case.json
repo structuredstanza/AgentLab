@@ -1,0 +1,17 @@
+{
+  "manifest": "sslscan",
+  "records": [
+    {
+      "version": "TLSv1.2",
+      "bits": "256"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "tls",
+      "version": "TLSv1.2"
+    }
+  ],
+  "fixture": "sslscan.out.txt"
+}

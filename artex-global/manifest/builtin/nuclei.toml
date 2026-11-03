@@ -1,0 +1,25 @@
+id = "nuclei"
+name = "Nuclei"
+description = "Template scanner, parsed from its JSON lines"
+category = "scan"
+accepts = ["url", "domain", "subdomain", "ip"]
+requires = ["nuclei"]
+
+[params]
+tags = { type = "string", label = "Tags", placeholder = "cve,xss,sqli", description = "Comma-separated template tags to include" }
+severity = { type = "string", label = "Severity", placeholder = "high,critical", description = "Comma-separated severity levels" }
+templates = { type = "string", label = "Templates", placeholder = "/opt/nuclei-templates", description = "Custom template directory or file; empty uses the installed set" }
+rate_limit = { type = "number", label = "Requests per second", default = "150" }
+
+[command]
+program = "nuclei"
+args = ["-u", "{{ target.value }}", "-jsonl", "-silent", "-rate-limit", "{{ params.rate_limit }}", "{{ params.tags | -tags }}", "{{ params.severity | -severity }}", "{{ params.templates | -t }}"]
+timeout_seconds = 1800
+
+[emit]
+parser = "jsonl"
+fields = ["template-id", "info.name", "info.severity", "matched-at", "host", "type"]
+
+[[emit.facts]]
+kind = "vulnerability"
+data = { template = "{{ record.template-id }}", name = "{{ record.info.name }}", severity = "{{ record.info.severity }}", matched_at = "{{ record.matched-at }}", host = "{{ record.host }}" }

@@ -767,6 +767,9 @@ WHERE t.active_llm_profile_id IS NULL
 -- Assets derived through side-effect are not in scope (the hook is at the top level of the handler, while the derivation happens inside the db layer).
 --   agent fills in (source='agent'): add_task_scope adds company/root_domain/subdomain/ip.
 -- Coverage = share of the assets (denominator) matching active rows that are anchored by a fact node (numerator).
+-- effect: include (default) or exclude. An exclude row is enforced by the tool
+-- guard: a call naming that asset is refused before it runs. Added after the
+-- original table so existing rows keep their meaning as includes.
 CREATE TABLE IF NOT EXISTS task_scope (
     id          BIGSERIAL PRIMARY KEY,
     task_id     BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -791,6 +794,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_task_scope_v2 ON task_scope(
 CREATE INDEX IF NOT EXISTS idx_ts_domain  ON task_scope(domain) WHERE kind IN ('root_domain','subdomain');
 CREATE INDEX IF NOT EXISTS idx_ts_net     ON task_scope USING GIST(net inet_ops) WHERE kind IN ('ip','cidr');
 CREATE INDEX IF NOT EXISTS idx_ts_company ON task_scope(company_id) WHERE kind = 'company';
+ALTER TABLE task_scope ADD COLUMN IF NOT EXISTS effect TEXT NOT NULL DEFAULT 'include';
+ALTER TABLE task_scope DROP CONSTRAINT IF EXISTS task_scope_effect_check;
+ALTER TABLE task_scope ADD CONSTRAINT task_scope_effect_check CHECK (effect IN ('include','exclude'));
 
 -- =====================================================================
 -- E. Agents / Prompt Templates / Variable Catalog
@@ -1176,6 +1182,11 @@ DROP TRIGGER IF EXISTS trg_conversation_retest_delete ON conversations;
 CREATE TRIGGER trg_conversation_retest_delete BEFORE DELETE ON conversations
     FOR EACH ROW EXECUTE FUNCTION stop_deleted_conversation_retest();
 
+-- Evidence above InlineEvidenceLimit is content-addressed under the evidence
+-- directory and referenced here, so a list query does not carry megabytes of
+-- request bodies it never reads. Empty means the evidence is inline in the
+-- `evidence` column, which stays the source for small findings.
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS evidence_path TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS evidence_version BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report_evidence_version BIGINT NOT NULL DEFAULT 0;
 

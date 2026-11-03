@@ -1,0 +1,31 @@
+id = "netexec"
+name = "NetExec"
+description = "SMB, WinRM and LDAP enumeration and authentication"
+category = "network"
+accepts = ["ip", "cidr", "domain"]
+requires = ["nxc"]
+
+[params]
+protocol = { type = "enum", label = "Protocol", default = "smb", options = ["smb", "winrm", "ldap", "ssh", "mssql", "rdp"] }
+username = { type = "string", label = "Username" }
+password = { type = "string", label = "Password" }
+hash = { type = "string", label = "NTLM hash" }
+shares = { type = "bool", label = "List shares", default = "true" }
+
+[command]
+program = "nxc"
+args = ["{{ params.protocol }}", "{{ target.value }}", "{{ params.username | -u }}", "{{ params.password | -p }}", "{{ params.hash | -H }}", "{{ params.shares | --shares }}"]
+timeout_seconds = 900
+
+[emit]
+parser = "regex"
+pattern = '^(?P<protocol>\w+)\s+(?P<ip>\d+\.\d+\.\d+\.\d+)\s+(?P<port>\d+)\s+(?P<host>\S+)\s+\[(?P<marker>.+?)\]'
+fields = ["protocol", "ip", "port", "host", "marker"]
+
+[[emit.targets]]
+kind = "ip"
+value = "{{ record.ip }}"
+
+[[emit.facts]]
+kind = "auth"
+data = { protocol = "{{ record.protocol }}", host = "{{ record.host }}", result = "{{ record.marker }}" }

@@ -180,6 +180,17 @@ func (s *Store) prepare(ctx context.Context, refs []db.TrafficRef) ([]db.Prepare
 }
 
 func (s *Store) Record(ctx context.Context, in db.RecordFindingInput, refs []db.TrafficRef) (out *db.RecordedFinding, err error) {
+	// Evidence above the inline limit is written to disk before the transaction
+	// opens: a file write inside a transaction that then rolls back would leave
+	// an orphan, and the path is only recorded once the row commits.
+	spilledPath := ""
+	if len(in.Evidence) > InlineEvidenceLimit {
+		spilledPath, err = s.WriteFindingEvidence(in.TaskID, in.Evidence)
+		if err != nil {
+			return nil, err
+		}
+		in.Evidence = ""
+	}
 	err = s.DB.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
 		if err := db.LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 			return err
@@ -189,7 +200,15 @@ func (s *Store) Record(ctx context.Context, in db.RecordFindingInput, refs []db.
 			return err
 		}
 		out, err = db.RecordFindingTx(ctx, tx, in, prepared)
-		return err
+		if err != nil {
+			return err
+		}
+		if spilledPath != "" {
+			if err := db.SetFindingEvidencePathTx(tx, out.FindingID, spilledPath); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return
 }

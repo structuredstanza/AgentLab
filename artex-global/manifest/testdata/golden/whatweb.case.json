@@ -1,0 +1,17 @@
+{
+  "manifest": "whatweb",
+  "records": [
+    {
+      "target": "https://target.example",
+      "http_status": 200
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "technology",
+      "status_code": "200"
+    }
+  ],
+  "fixture": "whatweb.out.jsonl"
+}

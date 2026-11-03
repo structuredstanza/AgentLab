@@ -1,0 +1,17 @@
+{
+  "manifest": "testssl",
+  "records": [
+    {
+      "id": "SSLv2",
+      "severity": "critical"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "tls",
+      "id": "SSLv2"
+    }
+  ],
+  "fixture": "testssl.out.jsonl"
+}

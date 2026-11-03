@@ -25,6 +25,9 @@ type TaskScope struct {
 	Value       string `json:"value,omitempty"`
 	Source      string `json:"source"`
 	Reason      string `json:"reason,omitempty"`
+	// Effect is include (default) or exclude. An exclude row is enforced by the
+	// tool guard, so it blocks rather than advising.
+	Effect string `json:"effect,omitempty"`
 }
 
 // stripHostPort drops a trailing :port from a host:port / ip:port / [ipv6]:port
@@ -109,32 +112,18 @@ func (s *AssetStore) AddAutoScope(taskID int64, assetType, domain, rawURL, ip st
 	if taskID <= 0 {
 		return nil
 	}
-	switch assetType {
+	// The kind comes from the value, not from the caller's label: a host filed
+	// as both domain and subdomain makes a boundary that matches neither.
+	kind, value := DeriveScopeKind(assetType, domain, rawURL, ip)
+	switch kind {
 	case "root_domain":
-		if d := DomainKey(domain); d != "" {
-			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "root_domain", Domain: d})
-		}
+		return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "root_domain", Domain: value})
 	case "subdomain":
-		if d := DomainKey(domain); d != "" {
-			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "subdomain", Domain: d})
-		}
-	case "service", "endpoint":
-		host := domain
-		if host == "" && rawURL != "" {
-			host, _, _ = parseURL(normalizeURL(rawURL))
-		}
-		host = DomainKey(host)
-		if host != "" && net.ParseIP(host) == nil {
-			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "subdomain", Domain: host})
-		}
-		// IP-literal host or no host → fall back to ip scope if we have one.
-		if c := ipToHostCIDR(ip); c != "" {
-			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "ip", Net: c})
-		}
+		return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "subdomain", Domain: value})
 	case "ip":
-		if c := ipToHostCIDR(ip); c != "" {
-			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "ip", Net: c})
-		}
+		return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "ip", Net: value})
+	case "cidr":
+		return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "cidr", Net: value})
 	}
 	return nil
 }
@@ -235,7 +224,8 @@ func (s *AssetStore) DeleteTaskScope(taskID, scopeID int64) (bool, error) {
 func (s *AssetStore) ListTaskScope(taskID int64) ([]TaskScope, error) {
 	rows, err := s.db.Query(`
 SELECT ts.id, ts.kind, COALESCE(ts.company_id,0), COALESCE(c.name,''), COALESCE(ts.domain,''),
-       COALESCE(ts.net::text,''), COALESCE(ts.value,''), ts.source, COALESCE(ts.reason,'')
+       COALESCE(ts.net::text,''), COALESCE(ts.value,''), ts.source, COALESCE(ts.reason,''),
+       COALESCE(ts.effect,'include')
 FROM task_scope ts
 LEFT JOIN companies c ON c.id=ts.company_id
 WHERE ts.task_id=$1 ORDER BY ts.id`, taskID)
@@ -247,7 +237,7 @@ WHERE ts.task_id=$1 ORDER BY ts.id`, taskID)
 	for rows.Next() {
 		var t TaskScope
 		var cid int64
-		if err := rows.Scan(&t.ID, &t.Kind, &cid, &t.CompanyName, &t.Domain, &t.Net, &t.Value, &t.Source, &t.Reason); err != nil {
+		if err := rows.Scan(&t.ID, &t.Kind, &cid, &t.CompanyName, &t.Domain, &t.Net, &t.Value, &t.Source, &t.Reason, &t.Effect); err != nil {
 			return nil, err
 		}
 		t.TaskID = taskID

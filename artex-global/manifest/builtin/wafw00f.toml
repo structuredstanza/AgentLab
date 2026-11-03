@@ -1,0 +1,22 @@
+id = "wafw00f"
+name = "wafw00f"
+description = "Identifies the web application firewall in front of a host"
+category = "recon"
+accepts = ["url", "domain", "subdomain"]
+requires = ["wafw00f"]
+
+[params]
+find_all = { type = "bool", label = "Find all WAFs", default = "true", description = "Stop at the first match or enumerate every match" }
+
+[command]
+program = "wafw00f"
+args = ["{{ target.value }}", "-f", "json", "-o", "/dev/stdout", "{{ params.find_all | -a }}"]
+timeout_seconds = 300
+
+[emit]
+parser = "json"
+fields = ["url", "detected", "firewall", "manufacturer"]
+
+[[emit.facts]]
+kind = "waf"
+data = { url = "{{ record.url }}", detected = "{{ record.detected }}", firewall = "{{ record.firewall }}", manufacturer = "{{ record.manufacturer }}" }

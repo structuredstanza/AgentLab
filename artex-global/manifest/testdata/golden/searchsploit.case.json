@@ -1,0 +1,17 @@
+{
+  "manifest": "searchsploit",
+  "records": [
+    {
+      "EDB-ID": "50383",
+      "Title": "Apache 2.4.49 - Path Traversal"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "exploit",
+      "edb_id": "50383"
+    }
+  ],
+  "fixture": "searchsploit.out.json"
+}

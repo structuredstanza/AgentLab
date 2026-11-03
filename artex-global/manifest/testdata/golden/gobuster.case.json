@@ -1,0 +1,22 @@
+{
+  "manifest": "gobuster",
+  "records": [
+    {
+      "path": "/admin",
+      "status": "301"
+    },
+    {
+      "path": "/login",
+      "status": "200"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "http_path",
+      "path": "/admin",
+      "status_code": "301"
+    }
+  ],
+  "fixture": "gobuster.out.txt"
+}

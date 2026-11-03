@@ -1,0 +1,16 @@
+{
+  "manifest": "dig",
+  "records": [
+    {
+      "value": "127.0.0.1"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "dns",
+      "value": "127.0.0.1"
+    }
+  ],
+  "fixture": "dig.out.txt"
+}

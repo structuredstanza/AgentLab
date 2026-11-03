@@ -1,0 +1,2 @@
+10.0.0.5       CORP-DC        <00> UNIQUE Registered
+10.0.0.5       CORP           <00> GROUP  Registered

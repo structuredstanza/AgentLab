@@ -1,0 +1,18 @@
+{
+  "manifest": "whois",
+  "records": [
+    {
+      "key": "Domain Name",
+      "value": "TARGET.EXAMPLE"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "whois",
+      "key": "Domain Name",
+      "value": "TARGET.EXAMPLE"
+    }
+  ],
+  "fixture": "whois.out.txt"
+}

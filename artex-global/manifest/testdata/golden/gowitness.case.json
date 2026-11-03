@@ -1,0 +1,18 @@
+{
+  "manifest": "gowitness",
+  "records": [
+    {
+      "url": "https://target.example",
+      "response_code": 200,
+      "title": "Example Domain"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "screenshot",
+      "status_code": "200"
+    }
+  ],
+  "fixture": "gowitness.out.json"
+}

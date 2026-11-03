@@ -25,6 +25,8 @@ func (s *Server) platformTools() []actool.CoreTool {
 		s.toolCreateMCP(),
 		s.toolUpdateMCP(),
 		s.toolMCPStatus(),
+		s.toolListManifests(),
+		s.toolRunManifest(),
 		s.toolDeleteAssetsByHost(),
 	}
 }
@@ -34,6 +36,7 @@ var platformToolKeys = []string{
 	"create_skill", "update_skill_file",
 	"create_custom_tool", "update_custom_tool",
 	"create_mcp", "update_mcp", "mcp_status",
+	"list_tools", "run_tool",
 	"delete_assets_by_host",
 }
 

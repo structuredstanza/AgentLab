@@ -1,0 +1,2 @@
+{"type": "V", "severity": "High", "method": "GET", "param": "q", "payload": "\"><script>alert(1)</script>", "evidence": "\"><script>alert(1)</script>", "message_str": "Reflected XSS in q"}
+{"type": "G", "severity": "Info", "method": "GET", "param": "", "payload": "", "evidence": "", "message_str": "DOM check"}

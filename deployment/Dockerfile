@@ -108,8 +108,7 @@ RUN set -eux; \
       openjdk-17-jdk-headless \
       gobuster john hashcat \
       libimage-exiftool-perl sleuthkit steghide foremost yara \
-      openvpn iproute2 iptables procps \
-      libxml-writer-perl libjson-perl; \
+      openvpn iproute2 iptables procps; \
     rm -rf /var/lib/apt/lists/*
 
 # pwntools and gadget tooling into the system interpreter: the skills run
@@ -168,15 +167,6 @@ RUN set -eux; \
     ln -s /opt/ghidra/ghidraRun /usr/local/bin/ghidraRun; \
     analyzeHeadless 2>&1 | head -5 | grep -qi "ghidra" || true
 
-# nikto is not packaged in bookworm; vendor the release tarball.
-ARG NIKTO_VERSION=2.6.0
-RUN set -eux; \
-    curl -fsSL -o /tmp/nikto.tar.gz \
-      "https://github.com/sullo/nikto/archive/refs/tags/${NIKTO_VERSION}.tar.gz"; \
-    mkdir -p /opt/nikto && tar -xzf /tmp/nikto.tar.gz -C /opt/nikto --strip-components=1; \
-    rm /tmp/nikto.tar.gz; \
-    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto; \
-    perl -c /opt/nikto/program/nikto.pl >/dev/null
 
 # searchsploit: the local exploit-db index, so a version banner can be matched
 # against known exploits without a network round trip.

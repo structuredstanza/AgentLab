@@ -1,0 +1,25 @@
+id = "gobuster"
+name = "Gobuster"
+description = "Directory and DNS brute forcing, parsed from its text output"
+category = "web"
+accepts = ["url", "domain", "subdomain"]
+requires = ["gobuster"]
+
+[params]
+mode = { type = "enum", label = "Mode", default = "dir", options = ["dir", "dns", "vhost"] }
+wordlist = { type = "string", label = "Wordlist", default = "/usr/share/seclists/Discovery/Web-Content/common.txt", required = true }
+threads = { type = "number", label = "Threads", default = "10" }
+
+[command]
+program = "gobuster"
+args = ["{{ params.mode }}", "-u", "{{ target.value }}", "-w", "{{ params.wordlist }}", "-t", "{{ params.threads }}", "--no-progress", "--no-error"]
+timeout_seconds = 1800
+
+[emit]
+parser = "regex"
+pattern = '^(?P<path>/\S*)\s+\(Status:\s*(?P<status>\d+)\)'
+fields = ["path", "status"]
+
+[[emit.facts]]
+kind = "http_path"
+data = { path = "{{ record.path }}", status_code = "{{ record.status }}" }

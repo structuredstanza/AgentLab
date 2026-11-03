@@ -1,0 +1,16 @@
+{
+  "manifest": "gau",
+  "records": [
+    {
+      "url": "https://target.example/api/v1/users"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "url",
+      "value": "https://target.example/api/v1/users"
+    }
+  ],
+  "facts": [],
+  "fixture": "gau.out.txt"
+}

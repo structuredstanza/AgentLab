@@ -1,0 +1,22 @@
+{
+  "manifest": "amass",
+  "records": [
+    {
+      "name": "api.target.example",
+      "tag": "cert"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "subdomain",
+      "value": "api.target.example"
+    }
+  ],
+  "facts": [
+    {
+      "kind": "asset",
+      "name": "api.target.example"
+    }
+  ],
+  "fixture": "amass.out.jsonl"
+}

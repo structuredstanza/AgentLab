@@ -1,0 +1,26 @@
+id = "sqlmap"
+name = "sqlmap"
+description = "SQL injection detection and exploitation"
+category = "web"
+accepts = ["url"]
+requires = ["sqlmap"]
+
+[params]
+level = { type = "number", label = "Level", default = "1", description = "1-5; higher tests more injection points" }
+risk = { type = "number", label = "Risk", default = "1", description = "1-3; higher uses heavier payloads" }
+batch = { type = "bool", label = "Never ask for input", default = "true" }
+data = { type = "string", label = "POST body", placeholder = "id=1&name=x" }
+
+[command]
+program = "sqlmap"
+args = ["-u", "{{ target.value }}", "--batch", "--level", "{{ params.level }}", "--risk", "{{ params.risk }}", "{{ params.data | --data }}"]
+timeout_seconds = 3600
+
+[emit]
+parser = "regex"
+pattern = '^\s+Type:\s+(?P<technique>\S.*)$'
+fields = ["parameter", "technique"]
+
+[[emit.facts]]
+kind = "vulnerability"
+data = { template = "sql-injection", technique = "{{ record.technique }}" }

@@ -1,0 +1,17 @@
+{
+  "manifest": "katana",
+  "records": [
+    {
+      "request.method": "GET",
+      "request.endpoint": "http://127.0.0.1:8099"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "url",
+      "value": "http://127.0.0.1:8099"
+    }
+  ],
+  "facts": [],
+  "fixture": "katana.out.jsonl"
+}

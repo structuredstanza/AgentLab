@@ -1,0 +1,23 @@
+id = "whois"
+name = "WHOIS"
+description = "Registration and ownership records for a domain or netblock"
+category = "recon"
+accepts = ["domain", "ip", "cidr"]
+requires = ["whois"]
+
+[params]
+raw = { type = "bool", label = "Raw output", default = "true" }
+
+[command]
+program = "whois"
+args = ["{{ target.value }}"]
+timeout_seconds = 120
+
+[emit]
+parser = "regex"
+pattern = '^(?P<key>[A-Za-z][A-Za-z -]*?):\s+(?P<value>\S.*)$'
+fields = ["key", "value"]
+
+[[emit.facts]]
+kind = "whois"
+data = { key = "{{ record.key }}", value = "{{ record.value }}" }

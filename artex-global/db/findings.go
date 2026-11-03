@@ -34,6 +34,10 @@ type DBFinding struct {
 	Report          string // Detailed report (Markdown); populated only by GetFinding, not included in list queries
 	CreatedAt       time.Time
 	TaskDescription string // populated via LEFT JOIN on tasks
+	// EvidencePath is set when the evidence was spilled to a file under the
+	// evidence directory instead of being stored inline. The caller resolves it
+	// (evidence.Store.ReadFindingEvidence); the row alone does not carry the bytes.
+	EvidencePath string
 }
 
 // Finding triage states (findings.status).
@@ -79,6 +83,24 @@ func ValidSeverity(s string) bool {
 // AddFinding inserts a finding into the standalone findings table. taskID and
 // nodeID may be 0 (stored as NULL). name may be "" (frontend falls back to
 // vulnclass). Returns the new finding id.
+// SetFindingEvidencePath records where a finding's evidence lives on disk. The
+// caller writes the file (evidence.Store does) and this only records the path,
+// so the db layer stays unaware of the filesystem layout.
+// SetFindingEvidencePathTx is the in-transaction form, so the path is recorded
+// in the same commit as the row it belongs to.
+func SetFindingEvidencePathTx(tx *sql.Tx, findingID int64, path string) error {
+	_, err := tx.Exec(`UPDATE findings SET evidence_path=$2 WHERE id=$1`, findingID, path)
+	return err
+}
+
+func (d *DB) SetFindingEvidencePath(findingID int64, path string) error {
+	if findingID <= 0 {
+		return fmt.Errorf("invalid finding id")
+	}
+	_, err := d.Exec(`UPDATE findings SET evidence_path=$2 WHERE id=$1`, findingID, path)
+	return err
+}
+
 func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, worker string, assetIDs []int64) (int64, error) {
 	aidsJSON, _ := json.Marshal(assetIDs)
 	if assetIDs == nil {
@@ -105,6 +127,7 @@ func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary
 const findingSelectCols = `f.id, f.task_id, f.node_id, f.vulnclass, COALESCE(f.name, ''), f.severity, f.summary,
 	       f.evidence, f.worker, f.asset_ids, COALESCE(f.status, 'pending'), f.created_at,
 	       COALESCE(t.description, '') AS task_description, f.evidence_version, f.report_evidence_version,
+       COALESCE(f.evidence_path, ''),
  (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id)`
 
 // scanFindings materializes rows selected via findingSelectCols.
@@ -118,7 +141,8 @@ func scanFindings(rows interface {
 		f := &DBFinding{}
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
-			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt, &f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount); err != nil {
+			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt, &f.TaskDescription,
+			&f.EvidenceVersion, &f.ReportEvidenceVersion, &f.EvidencePath, &f.TrafficCount); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -511,7 +535,8 @@ func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, 
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
-			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.Report); err != nil {
+			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.EvidencePath,
+			&f.TrafficCount, &f.Report); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -639,7 +664,8 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 		WHERE f.id = $1`, id).Scan(
 		&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 		&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
-		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.Report)
+		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.EvidencePath,
+		&f.TrafficCount, &f.Report)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

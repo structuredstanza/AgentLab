@@ -1,0 +1,24 @@
+id = "subfinder"
+name = "Subfinder"
+description = "Passive subdomain enumeration from public sources"
+category = "recon"
+accepts = ["domain"]
+requires = ["subfinder"]
+
+[params]
+all_sources = { type = "bool", label = "All sources", default = "true", description = "Query every source instead of the fast set" }
+recursive = { type = "bool", label = "Recursive", default = "false" }
+
+[command]
+program = "subfinder"
+args = ["-d", "{{ target.value }}", "-json", "-silent", "{{ params.all_sources | -all }}", "{{ params.recursive | -recursive }}"]
+timeout_seconds = 900
+
+[emit]
+parser = "jsonl"
+fields = ["host", "source", "input"]
+
+[[emit.targets]]
+kind = "subdomain"
+value = "{{ record.host }}"
+parent = "input"

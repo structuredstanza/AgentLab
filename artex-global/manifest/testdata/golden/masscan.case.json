@@ -1,0 +1,24 @@
+{
+  "manifest": "masscan",
+  "records": [
+    {
+      "ip": "10.0.0.5",
+      "ports.0.port": 22,
+      "ports.0.status": "open"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "ip",
+      "value": "10.0.0.5"
+    }
+  ],
+  "facts": [
+    {
+      "kind": "port",
+      "port": "22",
+      "state": "open"
+    }
+  ],
+  "fixture": "masscan.out.json"
+}

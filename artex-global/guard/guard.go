@@ -34,6 +34,16 @@ type Guard struct {
 	attrib      map[string]int // failure attribution counts (Observer / G5)
 	reg         *hook.Registry
 	interceptor *intercept.Interceptor // optional; nil disables user-configured rules
+	scope       ScopeChecker           // optional; nil disables scope enforcement
+}
+
+// ScopeChecker decides whether an asset is inside the engagement's boundary.
+// The guard only blocks on a positive exclusion: an engagement whose rules are
+// still empty reports every asset as unknown, and treating unknown as out would
+// refuse every tool call on a fresh task.
+type ScopeChecker interface {
+	// Judge returns "out" when the asset is explicitly excluded, and the reason.
+	Judge(asset string) (out bool, reason string)
 }
 
 // New creates a Guard without user-configured intercept rules (used for pentest
@@ -42,6 +52,14 @@ func New() *Guard { return newGuard(nil) }
 
 // NewWithInterceptor creates a Guard with user-configured intercept rules.
 func NewWithInterceptor(ic *intercept.Interceptor) *Guard { return newGuard(ic) }
+
+// WithScope attaches the engagement boundary. A tool call naming an asset the
+// boundary excludes is refused before it runs, which is the difference between
+// a scope rule that is advice and one that is enforced.
+func (g *Guard) WithScope(sc ScopeChecker) *Guard {
+	g.scope = sc
+	return g
+}
 
 func newGuard(ic *intercept.Interceptor) *Guard {
 	g := &Guard{attrib: map[string]int{}, interceptor: ic}
@@ -78,6 +96,11 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 	// block() made one denied call appear as both allow and block, and the block
 	// row carried no command because block() passes "".
 	res := g.applyIntercept(ctx, ev)
+	if res.Decision != "block" && g.scope != nil {
+		if blocked, reason := g.checkScope(ev); blocked {
+			res = g.block(ev.ToolName, reason, cmd)
+		}
+	}
 	action := "allow"
 	if res.Decision == "block" {
 		action = "block"

@@ -1,0 +1,24 @@
+{
+  "manifest": "netexec",
+  "records": [
+    {
+      "protocol": "SMB",
+      "ip": "10.0.0.5",
+      "port": "445",
+      "host": "CORP-DC"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "ip",
+      "value": "10.0.0.5"
+    }
+  ],
+  "facts": [
+    {
+      "kind": "auth",
+      "protocol": "SMB"
+    }
+  ],
+  "fixture": "netexec.out.txt"
+}

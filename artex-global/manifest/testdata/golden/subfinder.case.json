@@ -1,0 +1,17 @@
+{
+  "manifest": "subfinder",
+  "records": [
+    {
+      "host": "api.target.example",
+      "source": "crtsh"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "subdomain",
+      "value": "api.target.example"
+    }
+  ],
+  "facts": [],
+  "fixture": "subfinder.out.jsonl"
+}

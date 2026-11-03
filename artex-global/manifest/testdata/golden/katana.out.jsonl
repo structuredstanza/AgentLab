@@ -1,0 +1,2 @@
+{"request":{"method":"GET","endpoint":"http://127.0.0.1:8099"},"response":{"status_code":200}}
+{"request":{"method":"GET","endpoint":"http://127.0.0.1:8099/admin"},"response":{"status_code":301}}

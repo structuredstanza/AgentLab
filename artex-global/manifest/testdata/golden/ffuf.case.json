@@ -1,0 +1,27 @@
+{
+  "manifest": "ffuf",
+  "records": [
+    {
+      "url": "https://target.example/admin",
+      "status": 301,
+      "length": 312
+    }
+  ],
+  "targets": [
+    {
+      "kind": "url",
+      "value": "https://target.example/admin"
+    },
+    {
+      "kind": "url",
+      "value": "https://target.example/login"
+    }
+  ],
+  "facts": [
+    {
+      "kind": "http_service",
+      "status_code": "301"
+    }
+  ],
+  "fixture": "ffuf.out.json"
+}

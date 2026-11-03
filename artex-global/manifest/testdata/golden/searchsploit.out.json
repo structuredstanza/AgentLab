@@ -1,0 +1,4 @@
+{"SEARCH":"apache","DB_PATH_EXPLOIT":"/opt/exploitdb","RESULTS_EXPLOIT":[
+{"Title":"Apache 2.4.49 - Path Traversal","EDB-ID":"50383","Date_Published":"2021-10-05","Type":"remote","Platform":"linux","Path":"/opt/exploitdb/exploits/linux/remote/50383.py"},
+{"Title":"Apache < 2.4.50 - Local File Inclusion","EDB-ID":"50406","Date_Published":"2021-10-12","Type":"webapps","Platform":"linux","Path":"/opt/exploitdb/exploits/linux/webapps/50406.py"}
+]}

@@ -1,0 +1,23 @@
+id = "searchsploit"
+name = "SearchSploit"
+description = "Offline search of the local exploit-db index"
+category = "intel"
+accepts = ["domain", "subdomain", "ip"]
+requires = ["searchsploit"]
+
+[params]
+query = { type = "string", label = "Query", placeholder = "apache 2.4.49", required = true, description = "Product and version to match against exploit-db" }
+
+[command]
+program = "searchsploit"
+args = ["-j", "{{ params.query }}"]
+timeout_seconds = 120
+
+[emit]
+parser = "json"
+records = "$.RESULTS_EXPLOIT"
+fields = ["Title", "EDB-ID", "Date_Published", "Type", "Platform", "Path"]
+
+[[emit.facts]]
+kind = "exploit"
+data = { title = "{{ record.Title }}", edb_id = "{{ record.EDB-ID }}", published = "{{ record.Date_Published }}", platform = "{{ record.Platform }}" }

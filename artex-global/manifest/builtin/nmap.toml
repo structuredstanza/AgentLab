@@ -1,0 +1,28 @@
+id = "nmap"
+name = "Nmap"
+description = "Port and service discovery, parsed from XML output"
+category = "scan"
+accepts = ["ip", "cidr", "domain"]
+requires = ["nmap"]
+
+[params]
+ports = { type = "string", label = "Ports", placeholder = "22,80,443 or -", default = "-", description = "Port spec passed to -p; '-' means the top 1000" }
+service = { type = "bool", label = "Service detection", default = "true", description = "Add -sV to fingerprint the service behind each open port" }
+scripts = { type = "string", label = "NSE scripts", placeholder = "default,safe", description = "NSE script names passed to --script" }
+timing = { type = "enum", label = "Timing template", default = "T4", options = ["T2", "T3", "T4"] }
+
+[command]
+program = "nmap"
+args = ["-oX", "-", "-p", "{{ params.ports }}", "-{{ params.timing }}", "{{ params.service | -sV }}", "{{ params.scripts | -script }}", "{{ target.value }}"]
+timeout_seconds = 900
+
+[emit]
+parser = "xml"
+
+[[emit.targets]]
+kind = "ip"
+value = "{{ record.host }}"
+
+[[emit.facts]]
+kind = "port"
+data = { port = "{{ record.port }}", protocol = "{{ record.protocol? }}", state = "{{ record.state }}", service = "{{ record.service? }}", product = "{{ record.product? }}", version = "{{ record.version? }}" }

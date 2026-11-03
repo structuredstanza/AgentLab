@@ -245,7 +245,7 @@ func TestChatMentionCatalogAndContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _, _ = pg.Exec(`DELETE FROM assets WHERE id=$1`, id) })
-	fmt.Fprintf(&refs, "@[%s#%d 条目] ", kind, id)
+		fmt.Fprintf(&refs, "@[%s#%d 条目] ", kind, id)
 		items, err := pg.SearchChatMentions(t.Context(), kind, fmt.Sprint(id))
 		if err != nil || len(items) == 0 || items[0].ID != id || items[0].Kind != kind {
 			t.Fatalf("search %s: %+v %v", kind, items, err)

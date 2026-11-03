@@ -1,0 +1,27 @@
+id = "nbtscan"
+name = "Nbtscan"
+description = "NetBIOS name service scan"
+category = "network"
+accepts = ["ip", "cidr"]
+requires = ["nbtscan"]
+
+[params]
+verbose = { type = "bool", label = "Verbose", default = "true" }
+
+[command]
+program = "nbtscan"
+args = ["-v", "{{ target.value }}"]
+timeout_seconds = 600
+
+[emit]
+parser = "regex"
+pattern = '^(?P<ip>\d+\.\d+\.\d+\.\d+)\s+(?P<name>\S+)\s+<(?P<type>[0-9A-F]{2})>\s+\S+\s+(?P<flags>\S+)'
+fields = ["ip", "name", "type", "flags"]
+
+[[emit.targets]]
+kind = "ip"
+value = "{{ record.ip }}"
+
+[[emit.facts]]
+kind = "netbios"
+data = { name = "{{ record.name }}", type = "{{ record.type }}" }

@@ -1,0 +1,23 @@
+id = "sslscan"
+name = "SSLScan"
+description = "TLS configuration audit, parsed from XML"
+category = "network"
+accepts = ["ip", "domain", "url"]
+requires = ["sslscan"]
+
+[params]
+port = { type = "number", label = "Port", default = "443" }
+
+[command]
+program = "sslscan"
+args = ["--xml=-", "{{ target.value }}:{{ params.port }}"]
+timeout_seconds = 600
+
+[emit]
+parser = "regex"
+pattern = 'Accepted\s+(?P<version>TLSv?[0-9.]+)\s+(?P<bits>\d+)\s+bits\s+(?P<cipher>\S+)'
+fields = ["version", "bits", "cipher"]
+
+[[emit.facts]]
+kind = "tls"
+data = { version = "{{ record.version }}", bits = "{{ record.bits }}", cipher = "{{ record.cipher }}" }

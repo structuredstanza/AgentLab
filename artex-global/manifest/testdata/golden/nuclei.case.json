@@ -1,0 +1,18 @@
+{
+  "manifest": "nuclei",
+  "records": [
+    {
+      "template-id": "CVE-2021-41773",
+      "info.severity": "high"
+    }
+  ],
+  "targets": [],
+  "facts": [
+    {
+      "kind": "vulnerability",
+      "template": "CVE-2021-41773",
+      "severity": "high"
+    }
+  ],
+  "fixture": "nuclei.out.jsonl"
+}

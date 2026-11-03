@@ -1,0 +1,17 @@
+{
+  "manifest": "feroxbuster",
+  "records": [
+    {
+      "url": "https://target.example/admin",
+      "status": 301
+    }
+  ],
+  "targets": [
+    {
+      "kind": "url",
+      "value": "https://target.example/admin"
+    }
+  ],
+  "facts": [],
+  "fixture": "feroxbuster.out.jsonl"
+}

@@ -1,0 +1,22 @@
+id = "gowitness"
+name = "Gowitness"
+description = "Screenshots web services as evidence"
+category = "web"
+accepts = ["url"]
+requires = ["gowitness"]
+
+[params]
+timeout = { type = "number", label = "Page timeout (s)", default = "30" }
+
+[command]
+program = "gowitness"
+args = ["scan", "single", "{{ target.value }}", "--write-json", "/dev/stdout", "--screenshot-path", "/tmp/gowitness", "--timeout", "{{ params.timeout }}"]
+timeout_seconds = 300
+
+[emit]
+parser = "json"
+fields = ["url", "final_url", "response_code", "title", "filename"]
+
+[[emit.facts]]
+kind = "screenshot"
+data = { url = "{{ record.url }}", status_code = "{{ record.response_code }}", title = "{{ record.title }}", file = "{{ record.filename }}" }

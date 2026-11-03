@@ -1,0 +1,22 @@
+{
+  "manifest": "dnsx",
+  "records": [
+    {
+      "host": "api.target.example",
+      "cname": "lb.example.net"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "subdomain",
+      "value": "api.target.example"
+    }
+  ],
+  "facts": [
+    {
+      "kind": "dns",
+      "host": "api.target.example"
+    }
+  ],
+  "fixture": "dnsx.out.jsonl"
+}

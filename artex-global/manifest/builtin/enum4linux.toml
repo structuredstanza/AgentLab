@@ -1,0 +1,23 @@
+id = "enum4linux"
+name = "Enum4linux"
+description = "SMB and NetBIOS enumeration for Windows hosts"
+category = "network"
+accepts = ["ip", "domain"]
+requires = ["enum4linux"]
+
+[params]
+all_ = { type = "bool", label = "All checks", default = "true", description = "Run the full check set rather than users only" }
+
+[command]
+program = "enum4linux"
+args = ["-a", "{{ target.value }}"]
+timeout_seconds = 900
+
+[emit]
+parser = "regex"
+pattern = '^(?P<field>(?:\[\+\]|\[\*\])[^:]*?):\s+(?P<value>.+)$'
+fields = ["field", "value"]
+
+[[emit.facts]]
+kind = "smb"
+data = { field = "{{ record.field }}", value = "{{ record.value }}" }

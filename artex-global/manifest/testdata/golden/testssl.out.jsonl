@@ -1,0 +1,2 @@
+{"id":"SSLv2","severity":"critical","finding":"offered (deprecated)"}
+{"id":"TLS1_2","severity":"ok","finding":"offered"}
