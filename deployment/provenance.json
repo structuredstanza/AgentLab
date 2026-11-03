@@ -617,10 +617,10 @@
   },
   "scope_manifests_evidence_20261103": {
     "source_commit": "c6fb5ecb61ee1929025ead141b052e3fa6bfc6e9",
-    "sandbox": "artex-agentlab-scope-20261103t2300z",
-    "image": "agentlab/artex:scope-manifests-v2",
-    "image_id": "sha256:5ebcf0bb39af",
-    "runtime_binary_sha256": "78f7d4a75484b3409f1fe69ce8997aaa2cfb51ff3ac565b66762085ddf0918b0",
+    "sandbox": "artex-agentlab-scope-20261103t2320z",
+    "image": "agentlab/artex:scope-manifests-v3",
+    "image_id": "sha256:cc87851c2407",
+    "runtime_binary_sha256": "977221e0aae7c9ddcef7fdba8e1ae61f76e63a64ce2fd8bed7b350c247055401",
     "adaptations": {
       "enforced_scope": "scope/ evaluates include/exclude rules; guard/scope.go refuses a tool call naming an excluded asset; task_scope gains an effect column, enforced through db/task_scope_check.go including inherited rows",
       "asset_kind_derivation": "db/scope_kind.go decides apex/subdomain/ip/cidr from the value; AddAutoScope uses it",
@@ -670,17 +670,25 @@
       "verified": "all 33 binaries executed in the guest; nmap, nuclei, ffuf, dnsx, testssl.sh and wpscan spot-checked for real"
     },
     "live_verification": [
-      "GET /api/tool-manifests: 32 manifests, all 32 report available in the guest",
+      "GET /api/tool-manifests: 32 manifests, all 32 available",
       "/api/tools: 57 core tools, list_tools and run_tool present",
-      "task_scope.effect column migrated; an exclude row surfaces through GET /api/tasks/3/scope",
-      "findings.evidence_path column migrated",
-      "TestLiveDigAgainstLoopback: a real dig run parsed through the embedded manifest produced a dns fact",
-      "skills synced: 15 present, recon-orchestration and privesc carry the new tool tables",
-      "probe task deleted; 0 tasks remain, settings re-enforced"
+      "task_scope.effect migrated; an exclude row surfaces through GET /api/tasks/{id}/scope",
+      "findings.evidence_path migrated",
+      "skills: 15 present; capture settings enforced",
+      "guest /state/runtime/artex sha256 matches the host build"
     ],
     "not_verified": [
       "no agent conversation was driven end to end, so run_tool was exercised through its Go test path and the HTTP catalog rather than by a model choosing it",
       "the nmap live check skips where a SYN scan needs root; the golden case uses real captured nmap XML instead"
-    ]
+    ],
+    "redeploy_reason": "the first cutover ran 78f7d4a7, which predated the URL-host extraction in guard/scope.go and the inherited-scope change in db/task_scope_check.go; both are now deployed",
+    "tests": {
+      "scope": "16 pass (exclusion precedence, apex wildcard, lookalike rejection, CIDR containment, path glob, policy rejection)",
+      "guard": "5 pass (block, allow, no-checker, audit row, asset extraction)",
+      "manifest": "32 golden cases, coverage gate, live dig against loopback",
+      "derivation": "11 subtests",
+      "evidence": "content addressing, escape rejection, and a DB-backed spill test proving large bodies leave the row",
+      "full_suite": "17 packages, 0 failures, with PostgreSQL"
+    }
   }
 }

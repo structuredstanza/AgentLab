@@ -1,4 +1,4 @@
-image: agentlab/artex:scope-manifests-v2
+image: agentlab/artex:scope-manifests-v3
 pull_policy: never
 cpus: 4
 memory: 8G
