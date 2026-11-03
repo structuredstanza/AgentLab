@@ -39,6 +39,9 @@ export interface Task {
   archive_blocked_by_task_id?: string; // live direct dependent that must be archived first
   company_ids?: number[]; // associated company scopes; current company assets join the task at creation
   coverage_enabled?: boolean; // Asset coverage feature switch (set at creation, enabled by default); false = coverage is not computed or displayed.
+  plan_quiet_mode?: boolean; // Planner quiet mode (#86); default true
+  llm_rotate?: boolean; // Worker chain-head rotation (#85); default false
+  paused_at?: string | null;
 }
 
 export interface TaskCategory {
@@ -818,6 +821,8 @@ export interface ProfileUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  // EUR cost from the profile's stored prices; absent when the profile has no price set.
+  cost_eur?: number | null;
 }
 
 // One (profile, UTC day) token bucket for the dashboard's daily chart (new source).
@@ -1040,7 +1045,7 @@ export interface LLMRefusalFallbackStep {
 export interface LLMProfile {
   id: string;
   name: string;
-  format: "openai" | "anthropic" | "openai-responses" | "antigravity";
+  format: "openai" | "anthropic" | "openai-responses" | "antigravity" | "ollama";
   auth_method: LLMAuthMethod;
   has_grant: boolean;
   grant_email?: string;
@@ -1051,6 +1056,10 @@ export interface LLMProfile {
   proxy?: string;
   model: string;
   api_key_hint?: string;
+  price_input_per_m?: number;
+  price_output_per_m?: number;
+  price_cache_read_per_m?: number;
+  price_cache_write_per_m?: number;
   rate_per_second: number;
   rate_per_minute: number;
   context_window_k?: number;
@@ -1226,6 +1235,10 @@ export interface MCPServer {
   enabled: boolean;
   insecure?: boolean; // http: skip TLS cert verification (self-signed servers)
   tools?: string[]; // mcp_tools_cache (names only, for the count)
+  timeout_seconds?: number; // http/sse: per-request timeout in seconds (default 120)
+  last_connect_at?: string | null; // last connect attempt (ISO time)
+  last_connect_ok?: boolean | null; // outcome of the last connect attempt
+  last_connect_err?: string | null; // failure reason when last_connect_ok is false
 }
 
 export interface MCPTool {
@@ -1339,6 +1352,24 @@ export interface AssetInterceptRuleInput {
   note: string;
   enabled: boolean;
 }
+
+// Task credentials (#3): per-task test accounts. An empty password on a user-declared
+// entry means "agent generates": the agent registers that account and records it back.
+export type TaskCredentialInput = {
+  domain: string;
+  username: string;
+  password: string;
+  note?: string;
+};
+
+export type TaskCredential = TaskCredentialInput & {
+  id: number;
+  task_id: number;
+  source: "user" | "agent";
+  note: string;
+  created_at: string;
+  updated_at: string;
+};
 
 export interface AssetInterceptRule {
   id: number;
@@ -1608,46 +1639,6 @@ export interface FindingTrafficDetail {
   response: EvidenceBodyPreview;
 }
 
-/** GET /api/update/check —— Result of comparing the current version with the latest stable release on GitHub. */
-export interface UpdateCheck {
-  /** The version currently running; development builds use "dev" or the suffixed form from git describe. */
-  current: string;
-  /** Run mode. Under docker, a swap only affects the container's writable layer; recreating the container reverts to the image version. */
-  mode: "docker" | "binary";
-  os: string;
-  arch: string;
-  repo: string;
-  /** Whether a previous version (artex.old) exists that can be rolled back to. */
-  has_backup: boolean;
-  /** Conclusion of the self-update bootstrap performed at this startup (swap failed / rolled back, etc.). Empty when nothing happened. */
-  boot_notice?: string;
-  rolled_back?: boolean;
-  /** Reason the GitHub query failed. When this is set, none of the fields below will be present. */
-  error?: string;
-  latest?: string;
-  notes?: string;
-  html_url?: string;
-  published_at?: string;
-  /** Release package name for the current platform, and whether that Release actually includes it. */
-  asset?: string;
-  asset_available?: boolean;
-  size?: number;
-  has_update?: boolean;
-  /** Whether the two version numbers can be compared. False for development builds, in which case one-click update is disabled. */
-  comparable?: boolean;
-  /** Description of the case where comparable is false. */
-  reason?: string;
-}
-
-/** One update progress event pushed by /api/update/stream. */
-export interface UpdateProgress {
-  phase: "idle" | "downloading" | "verifying" | "extracting" | "staged" | "failed";
-  /** Only meaningful during the download stage (0-100); -1 for all other stages. */
-  percent: number;
-  message: string;
-  version?: string;
-  error?: string;
-}
 
 // Original execution selected from an approval, never submitted to the reviewer.
 export interface InterceptExecution {

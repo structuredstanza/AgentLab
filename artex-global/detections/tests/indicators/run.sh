@@ -25,7 +25,6 @@ docker run --rm \
   -e ARTEX_REPO_ROOT=/repo \
   -v "$REPO/detections:/repo/detections:ro" \
   -v "$REPO/enrich:/repo/enrich:ro" \
-  -v "$REPO/selfupdate:/repo/selfupdate:ro" \
   -v "$REPO/guard:/repo/guard:ro" \
   -v "$REPO/db:/repo/db:ro" \
   -v "$REPO/cmd:/repo/cmd:ro" \

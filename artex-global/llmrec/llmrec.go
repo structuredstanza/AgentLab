@@ -18,6 +18,29 @@ import (
 
 type taskIDContextKey struct{}
 type workerContextKey struct{}
+type handoffContextKey struct{}
+
+// HandoffMetadata records explicit readable-history refusal fallback transition metadata.
+type HandoffMetadata struct {
+	FromModels  []string `json:"from_models,omitempty"`
+	ToModel     string   `json:"to_model,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
+	PrefixCount int      `json:"prefix_count,omitempty"`
+}
+
+// WithHandoffMetadata attaches refusal fallback readable-history handoff metadata to the context.
+func WithHandoffMetadata(ctx context.Context, meta HandoffMetadata) context.Context {
+	return context.WithValue(ctx, handoffContextKey{}, meta)
+}
+
+// HandoffMetadataFrom retrieves handoff metadata from ctx, or false if not present.
+func HandoffMetadataFrom(ctx context.Context) (HandoffMetadata, bool) {
+	if ctx == nil {
+		return HandoffMetadata{}, false
+	}
+	v, ok := ctx.Value(handoffContextKey{}).(HandoffMetadata)
+	return v, ok
+}
 
 // WithTaskID attaches the owning task registry id to an LLM call. Session ids
 // are based on exploration ids, which are not interchangeable with task ids.
@@ -85,6 +108,12 @@ func Wrap(inner llm.Provider, pg *db.DB, model, profName, thinkingType, reasonin
 	}
 }
 
+func (r *Recorder) RequiresComplete() bool { return llm.RequiresComplete(r.inner) }
+
+func (r *Recorder) PrepareModelCall(ctx context.Context, req llm.CompletionRequest, nonStreaming bool) (context.Context, bool, error) {
+	return llm.PrepareModelCall(ctx, r.inner, req, nonStreaming)
+}
+
 // parseSession extracts task id and worker role from session strings like
 // "exp1-worker-i3" → ("1", "worker") or "exp2-planner" → ("2", "planner").
 func parseSession(s string) (taskID, worker string) {
@@ -144,7 +173,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 	reqBody := ""
 	var capt *Capture
 	if recordBodies {
-		reqBody = r.serializeRequest(req)
+		reqBody = r.serializeRequestWithContext(ctx, req)
 		ctx, capt = NewCapture(ctx)
 	}
 
@@ -168,7 +197,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
-				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err, status)
+				r.record(req, session, taskID, worker, reqBody, capt, start, llm.Message{}, textBuf.String(), thinkingBuf.String(), usage, stopReason, err, status)
 			}
 		}
 		defer func() { finish(ctx.Err()) }()
@@ -235,7 +264,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	reqBody := ""
 	var capt *Capture
 	if recordBodies {
-		reqBody = r.serializeRequest(req)
+		reqBody = r.serializeRequestWithContext(ctx, req)
 		ctx, capt = NewCapture(ctx)
 	}
 
@@ -243,7 +272,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	status := callStatus(ctx, stopReason, err)
 	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
 	if recordBodies {
-		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err, status)
+		r.record(req, session, taskID, worker, reqBody, capt, start, msg, msg.Text(), thinkingText(msg), usage, stopReason, err, status)
 	}
 	return msg, stopReason, usage, err
 }
@@ -289,28 +318,14 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 // record persists one LLM call to PostgreSQL before the provider stream returns.
 // Keeping the write inside the owning task operation means task deletion can
 // drain calls and then remove records without a late async insert recreating one.
-func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, text, thinking string, usage llm.Usage, stopReason string, streamErr error, status string) {
+func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, response llm.Message, text, thinking string, usage llm.Usage, stopReason string, streamErr error, status string) {
 	latency := int(time.Since(start).Milliseconds())
 	errMsg := ""
 	if streamErr != nil {
 		errMsg = streamErr.Error()
 	}
 
-	// Build response body JSON.
-	resp := map[string]any{
-		"text":        text,
-		"stop_reason": stopReason,
-		"usage": map[string]int{
-			"input_tokens":       usage.InputTokens,
-			"output_tokens":      usage.OutputTokens,
-			"cache_read_tokens":  usage.CacheReadTokens,
-			"cache_write_tokens": usage.CacheWriteTokens,
-		},
-	}
-	if thinking != "" {
-		resp["thinking"] = thinking
-	}
-	respBody, _ := json.Marshal(resp)
+	respBody := serializeResponse(response, text, thinking, usage, stopReason)
 
 	model := ""
 	if len(req.System) > 0 {
@@ -345,12 +360,48 @@ func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, re
 	}
 }
 
+func serializeResponse(response llm.Message, text, thinking string, usage llm.Usage, stopReason string) []byte {
+	resp := map[string]any{
+		"text":        text,
+		"stop_reason": stopReason,
+		"usage": map[string]int{
+			"input_tokens":       usage.InputTokens,
+			"output_tokens":      usage.OutputTokens,
+			"cache_read_tokens":  usage.CacheReadTokens,
+			"cache_write_tokens": usage.CacheWriteTokens,
+		},
+	}
+	if thinking != "" {
+		resp["thinking"] = thinking
+	}
+	for _, block := range response.Content {
+		if block.Type != "provider_state" || len(block.Input) == 0 {
+			continue
+		}
+		if json.Valid(block.Input) {
+			resp["provider_state"] = json.RawMessage(block.Input)
+		} else {
+			resp["provider_state"] = string(block.Input)
+		}
+		break
+	}
+	body, _ := json.Marshal(resp)
+	return body
+}
+
 // serializeRequest builds a JSON representation of the completion request.
 func (r *Recorder) serializeRequest(req llm.CompletionRequest) string {
+	return r.serializeRequestWithContext(context.Background(), req)
+}
+
+func (r *Recorder) serializeRequestWithContext(ctx context.Context, req llm.CompletionRequest) string {
 	m := map[string]any{
 		"system":     req.System,
 		"messages":   req.Messages,
 		"max_tokens": req.MaxTokens,
+	}
+	if handoff, ok := HandoffMetadataFrom(ctx); ok && handoff.ToModel != "" {
+		m["handoff"] = handoff
 	}
 	// Record the thinking parameters actually sent in this call. The type uses the "effective value": the per-request override req.Thinking takes precedence
 	// over the config-level thinkingType (consistent with the decision in norma buildBody, e.g. a compaction summary will

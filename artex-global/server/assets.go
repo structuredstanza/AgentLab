@@ -276,6 +276,7 @@ func (s *Server) deleteCompany(w http.ResponseWriter, r *http.Request) {
 	}
 	// The body is optional. Only an actual empty body is ignored; malformed or
 	// trailing JSON is a client error.
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(&req); err != nil {
 		if !errors.Is(err, io.EOF) {
@@ -442,7 +443,7 @@ func (s *Server) deleteAssets(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs []int64 `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
 		return
 	}
@@ -504,7 +505,7 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 			Params []map[string]any `json:"params"`
 		} `json:"assets"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
 		return
 	}

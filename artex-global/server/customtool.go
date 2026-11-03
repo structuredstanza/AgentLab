@@ -163,7 +163,7 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req testToolReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, errCustomToolBadBody)
 		return
 	}

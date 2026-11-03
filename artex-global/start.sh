@@ -6,16 +6,10 @@
 #   nohup ./start.sh >artex.log 2>&1 &   Run in the background as a resident process
 #   ./start.sh -addr :9000           Any extra arguments are passed through to artex as-is
 #
-# This script does one thing. It runs artex, and when the process exits, it checks the exit code to decide whether to start it again.
+# This script runs artex, and when the process exits, it checks the exit code:
 #
 #   0      User stopped normally     → exit the loop
-#   75     Program requests a restart → restart immediately (triggered on screen by clicking "One-click update" or "Rollback")
 #   Other  Abnormal exit             → restart after backoff (1→2→4… up to 60 seconds)
-#
-# Downloading, SHA256 checksum verification, and binary replacement are intentionally not done here. That logic would have to be written twice, once in sh and once in bat,
-# This is exactly the part that must never go wrong. Once a non-executable binary has been swapped in, this script will faithfully
-# keep launching it again and again, and the user has no option but to log into the machine and recover it by hand. That is why verification and replacement are all kept in Go (the selfupdate package),
-# so that artex handles them itself at startup, and the script stays simple.
 set -u
 
 cd "$(dirname "$0")" || exit 1
@@ -23,7 +17,6 @@ cd "$(dirname "$0")" || exit 1
 BIN=./artex
 [ -x "$BIN" ] || { echo "[artex] executable not found: $BIN" >&2; exit 1; }
 
-RESTART_CODE=75
 MAX_DELAY=60
 
 child=0
@@ -66,11 +59,6 @@ while :; do
 		0)
 			echo "[artex] exited normally"
 			exit 0
-			;;
-		"$RESTART_CODE")
-			# The update/rollback is ready. Running it again makes artex complete the version swap at startup (see selfupdate.Bootstrap).
-			echo "[artex] restart requested (applying new version)…"
-			delay=1
 			;;
 		*)
 			echo "[artex] abnormal exit (code=$code), restarting in ${delay}s" >&2

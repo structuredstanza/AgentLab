@@ -12,6 +12,76 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
+// normalizeDirection fingerprints summaries while ignoring case, whitespace, and changing digits.
+func normalizeDirection(summary string) string {
+	var b strings.Builder
+	digit := false
+	for _, r := range strings.ToLower(strings.Join(strings.Fields(summary), " ")) {
+		if r >= '0' && r <= '9' {
+			if !digit {
+				b.WriteByte('#')
+			}
+			digit = true
+			continue
+		}
+		digit = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+const stagnationMinRepeats = 3
+
+func detectStagnation(done, findings []*db.Node) []map[string]any {
+	type direction struct {
+		firstID int64
+		repeats int
+		summary string
+	}
+	byFingerprint := make(map[string]*direction)
+	var order []string
+	for _, node := range done {
+		var payload map[string]any
+		_ = json.Unmarshal(node.Payload, &payload)
+		summary, _ := payload["summary"].(string)
+		fingerprint := normalizeDirection(summary)
+		if fingerprint == "" {
+			continue
+		}
+		d := byFingerprint[fingerprint]
+		if d == nil {
+			d = &direction{firstID: node.ID, summary: summary}
+			byFingerprint[fingerprint] = d
+			order = append(order, fingerprint)
+		}
+		if node.ID < d.firstID {
+			d.firstID, d.summary = node.ID, summary
+		}
+		d.repeats++
+	}
+	var out []map[string]any
+	for _, fingerprint := range order {
+		d := byFingerprint[fingerprint]
+		if d.repeats < stagnationMinRepeats {
+			continue
+		}
+		produced := false
+		for _, finding := range findings {
+			if finding.ID > d.firstID {
+				produced = true
+				break
+			}
+		}
+		if !produced {
+			out = append(out, map[string]any{"direction": d.summary, "repeats": d.repeats, "since": d.firstID})
+			if len(out) == 3 {
+				break
+			}
+		}
+	}
+	return out
+}
+
 // compactIntents distills intents to {id, summary, state, asset_ids, parents,
 // yields} so the planner sees both the direction and its LINEAGE — parents (the
 // upstream nodes it derived from: facts/intents/findings) and yields (the facts/
@@ -445,6 +515,16 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000) // newest first
 	out["findings_total"] = len(vulnNodes)             // Total count of confirmed vulnerabilities (goal judgment uses this); details in finding_list (latest window)
 	out["facts"] = len(factNodes)                      // Count of exploration facts/conclusions (including negative conclusions)
+	if creds := t.taskCredentialOverview(); creds != nil {
+		out["task_credentials"] = creds
+		out["task_credentials_note"] = "test accounts for this task; reuse matching entries for authenticated testing; an empty password means register the account with a strong unique password and record it with save_task_credential"
+	}
+	if stale := detectStagnation(recentDone, vulnNodes); len(stale) > 0 {
+		out["stagnation_warning"] = map[string]any{
+			"directions": stale,
+			"instruction": "these directions were dispatched repeatedly with zero findings produced since their first attempt — do NOT re-dispatch the same approach again; open a materially different direction, or judge the goal on the existing evidence instead of grinding",
+		}
+	}
 	// findings are the highest-value output of the task → the overview carries the latest window (≤10 items; vulnNodes is already sorted by id descending, so newest first),
 	// Lets the planner see the most recently confirmed vulnerabilities at a glance each round when deciding goals; use list_findings for the full set or older ones.
 	// Each entry keeps only {id, summary, from_intent?}: from_intent is the intent that produced this vulnerability.
@@ -1756,7 +1836,7 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 			if intentNode == nil || intentNode.Kind != db.KindIntent {
 				return actool.Errorf("intent_id is not owned by this task or its directly related tasks"), nil
 			}
-			acts, _, err := t.ts.ActivityListWithSources(id, 0, 1000)
+			acts, _, err := t.ts.ActivityPageWithSources(id, 1000)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}

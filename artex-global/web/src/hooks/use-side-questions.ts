@@ -177,6 +177,9 @@ export function useSideQuestions(parent: string | null) {
       if (version === epoch.current) {
         submitting.current = false;
         setBusy(false);
+        // clear() takes a new epoch, which makes the in-flight history load bail
+        // before its own finally runs; without this the panel keeps its spinner.
+        setLoading(false);
       }
     }
   };

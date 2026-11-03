@@ -147,6 +147,12 @@ type boundProvider struct {
 // Bind belongs immediately around a concrete provider, inside any routing pool.
 func Bind(inner llm.Provider, model Model) llm.Provider { return &boundProvider{inner, model} }
 
+func (p *boundProvider) RequiresComplete() bool { return llm.RequiresComplete(p.inner) }
+
+func (p *boundProvider) PrepareModelCall(ctx context.Context, req llm.CompletionRequest, nonStreaming bool) (context.Context, bool, error) {
+	return llm.PrepareModelCall(ctx, p.inner, req, nonStreaming)
+}
+
 func (p *boundProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		c, _ := ctx.Value(attemptKey{}).(*Capture)

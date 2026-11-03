@@ -443,7 +443,7 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	tmpl := db.TemplatePath(f.Request.URL.EscapedPath())
 	n := t.seq.Add(1)
 	now := time.Now()
-	id := fmt.Sprintf("%d-%04d", now.Unix(), n%10000)
+	id := fmt.Sprintf("%d-%08d", now.Unix(), n) // no modulo: keeps every id unique
 
 	ct := f.Response.Header.Get("Content-Type")
 	url := f.Request.URL.String()
@@ -980,6 +980,9 @@ FROM exchange_bodies b JOIN exchanges e ON e.id=b.id WHERE b.id=?`, id).
 func assembleRaw(head string, body []byte, blob sql.NullString, total int) string {
 	var b strings.Builder
 	b.WriteString(head)
+	if !strings.HasSuffix(head, "\n") {
+		b.WriteByte('\n')
+	}
 	b.WriteByte('\n')
 	b.Write(body)
 	if blob.Valid && blob.String != "" {
@@ -1407,21 +1410,39 @@ func (s *HostDeleteStage) Deleted() int64 {
 
 // StageDeleteHostsExact prepares a reversible exact-host deletion. Callers must
 // finish every successful stage with Commit or Rollback.
-func (t *Traffic) StageDeleteHostsExact(hosts []string) (*HostDeleteStage, error) {
-	return t.stageDeleteHostsExact(hosts, 0, 0)
+// Passing the task id records it in the staging journal, so a process exit
+// between the PostgreSQL and SQLite commits can be resolved on restart; without
+// it the journal cannot tell "the task is gone" from "the traffic must return".
+func (t *Traffic) StageDeleteHostsExact(hosts []string, taskID ...int64) (*HostDeleteStage, error) {
+	var id int64
+	if len(taskID) > 0 {
+		id = taskID[0]
+	}
+	return t.stageDeleteHostsExact(hosts, 0, id, nil)
 }
 
 // StageDeleteHostsExactForArchive ties the reversible traffic deletion to a
 // persistent task archive. Startup recovery uses archiveCommitted to decide
 // whether an interrupted stage must be completed or rolled back.
-func (t *Traffic) StageDeleteHostsExactForArchive(hosts []string, archiveID, taskID int64) (*HostDeleteStage, error) {
+// Passing the per-host counts from ExportHostsCounted enables the growth guard;
+// omitting them keeps the unconditional behaviour.
+func (t *Traffic) StageDeleteHostsExactForArchive(hosts []string, archiveID, taskID int64, expected ...map[string]int64) (*HostDeleteStage, error) {
 	if archiveID <= 0 || taskID <= 0 {
 		return nil, errors.New("archive and task ids must be positive")
 	}
-	return t.stageDeleteHostsExact(hosts, archiveID, taskID)
+	var counts map[string]int64
+	if len(expected) > 0 {
+		counts = expected[0]
+	}
+	return t.stageDeleteHostsExact(hosts, archiveID, taskID, counts)
 }
 
-func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64) (*HostDeleteStage, error) {
+// ErrTrafficGrewDuringArchive means a host gained exchanges after the archive
+// snapshot was written. Deleting them would destroy evidence that is in neither
+// the package nor the hot store, so the compaction is refused instead.
+var ErrTrafficGrewDuringArchive = errors.New("traffic captured after the archive snapshot; hot-store compaction skipped")
+
+func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64, expected map[string]int64) (*HostDeleteStage, error) {
 	t.wmu.Lock()
 	stage := &HostDeleteStage{traffic: t}
 	fail := func(cause error) (*HostDeleteStage, error) {
@@ -1452,6 +1473,18 @@ func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64)
 	legacy := make([]string, 0, len(unique))
 	for _, h := range unique {
 		legacy = append(legacy, filepath.Join(t.dir, sanitize(h)))
+	}
+
+	if expected != nil {
+		for _, h := range unique {
+			var live int64
+			if err := t.db.QueryRow(`SELECT count(*) FROM exchanges WHERE host=?`, h).Scan(&live); err != nil {
+				return abort(err)
+			}
+			if live > expected[h] {
+				return abort(fmt.Errorf("%w: host %s has %d rows, %d were archived", ErrTrafficGrewDuringArchive, h, live, expected[h]))
+			}
+		}
 	}
 
 	tx, err := t.db.Begin()
@@ -1542,6 +1575,19 @@ func (t *Traffic) RecoverHostDeleteStages(archiveCommitted func(int64, int64) (b
 				continue
 			}
 			committed, err = archiveCommitted(journal.ArchiveID, journal.TaskID)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		} else if journal.TaskID > 0 {
+			// A task-delete stage: ask PostgreSQL whether the task still exists.
+			// hostsHaveNoExchanges cannot decide this, because SQLite has already
+			// rolled the rows back by the time recovery runs.
+			if archiveCommitted == nil {
+				errs = append(errs, fmt.Errorf("traffic staging journal %s needs a task lookup", stageDir))
+				continue
+			}
+			committed, err = archiveCommitted(0, journal.TaskID)
 			if err != nil {
 				errs = append(errs, err)
 				continue

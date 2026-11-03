@@ -75,6 +75,10 @@ function fmtTime(ts: string) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+// One cap for both the live tail and the history pages: a smaller live cap
+// silently discarded lines that "load older" had just paged in.
+const LOG_LINE_CAP = 5000;
+
 export default function LogsPage() {
   const t = useTranslations("logsPage");
   const [lines, setLines] = React.useState<LogLine[]>([]);
@@ -109,7 +113,7 @@ export default function LogsPage() {
       if (pausedRef.current) return;
       try {
         const l = JSON.parse(e.data) as LogLine;
-        setLines((prev) => (prev.some((x) => x.seq === l.seq) ? prev : [...prev, l].slice(-3000)));
+        setLines((prev) => (prev.some((x) => x.seq === l.seq) ? prev : [...prev, l].slice(-LOG_LINE_CAP)));
       } catch {
         /* ignore malformed frame */
       }
@@ -147,7 +151,7 @@ export default function LogsPage() {
             seen.add(l.db_id);
             return true;
           });
-          return deduped.slice(-5000);
+          return deduped.slice(-LOG_LINE_CAP);
         });
       }
       setHasMore(data.has_more ?? false);

@@ -7,7 +7,6 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -496,12 +495,8 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	}
 	_ = pg.TouchConversation(c.ID)
 
-	// Append the uploaded files' ABSOLUTE paths so the ChatAgent opens them with its
-	// Read/Bash tools. baseDir = the agent's per-session CWD (<workDir>/sessions/
-	// conv-<id>/), matching chatUpload's landing dir and agent/chat.go's sessionWorkDir
-	// — busyKey == convBusyKey(c.ID) == "conv-<id>" == that session id.
-	baseDir := filepath.Join(s.m.dir, "sessions", busyKey)
-	s.runConversation(c, composeAgentMessage(agentMessage, req.Attachments, baseDir), busyKey, msg)
+	// Append workspace-relative attachment paths for the ChatAgent's Read/Bash tools.
+	s.runConversation(c, composeAgentMessage(agentMessage, req.Attachments), busyKey, msg)
 	writeJSON(w, 202, map[string]any{"status": "accepted"})
 }
 

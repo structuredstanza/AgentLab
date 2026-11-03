@@ -3,19 +3,20 @@ package server
 import (
 	"bytes"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
 // Workspace file manager — browse / view / edit / download / upload / delete the
-// shared work dir (s.m.dir), where all agents write their artifacts. Every path is
-// confined to the work dir root (traversal via ".." is neutralised). All routes sit
+// shared work dir (s.m.dir), where all agents write their artifacts. Root-relative
+// operations prevent symlink traversal outside that directory. All routes sit
 // behind requireAuth (see Handler()).
 
 const (
@@ -23,7 +24,7 @@ const (
 	maxWorkspaceUpload = 512 << 20 // 512 MiB per upload request
 )
 
-// User-facing error messages (Korean). Paths, payloads, and the raw err.Error() text are left as-is.
+// User-facing workspace errors.
 const (
 	errWsIllegalPath      = "Invalid path"
 	errWsPathNotFound     = "The path does not exist"
@@ -37,28 +38,20 @@ const (
 	errWsNoUploadFile     = "There is no file to upload (form field file)"
 )
 
-// wsResolve maps a user-supplied relative path to an absolute path INSIDE the work
-// dir. It returns ok=false if the path would escape the root. filepath.Clean on a
-// rooted copy collapses any ".." so nothing can climb above the root.
-func (s *Server) wsResolve(rel string) (string, bool) {
-	base := filepath.Clean(s.m.dir)
-	rel = strings.TrimPrefix(strings.TrimSpace(rel), "/")
-	clean := filepath.Clean("/" + rel) // e.g. "/a/../../etc" → "/etc" (still rooted at "/")
-	abs := filepath.Clean(filepath.Join(base, clean))
-	if abs != base && !strings.HasPrefix(abs, base+string(os.PathSeparator)) {
-		return "", false
+// workspacePath retains the file manager's rooted path normalization.
+func workspacePath(rel string) string {
+	name := strings.TrimPrefix(filepath.Clean("/"+strings.TrimSpace(rel)), string(os.PathSeparator))
+	if name == "" {
+		return "."
 	}
-	return abs, true
+	return name
 }
 
-// wsRel renders an absolute path back as a workspace-relative path (forward slashes).
-func (s *Server) wsRel(abs string) string {
-	base := filepath.Clean(s.m.dir)
-	rel, err := filepath.Rel(base, abs)
-	if err != nil || rel == "." {
+func workspaceRel(name string) string {
+	if name == "." {
 		return ""
 	}
-	return filepath.ToSlash(rel)
+	return filepath.ToSlash(name)
 }
 
 type wsEntry struct {
@@ -71,12 +64,20 @@ type wsEntry struct {
 
 // GET /api/workspace/list?path=<rel>
 func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
-	abs, ok := s.wsResolve(r.URL.Query().Get("path"))
-	if !ok {
-		writeErr(w, 400, errWsIllegalPath)
+	name := workspacePath(r.URL.Query().Get("path"))
+	root, err := os.OpenRoot(s.m.dir)
+	if err != nil {
+		writeErr(w, 500, err.Error())
 		return
 	}
-	fi, err := os.Stat(abs)
+	defer root.Close()
+	dir, err := root.Open(name)
+	if err != nil {
+		writeErr(w, 404, errWsPathNotFound)
+		return
+	}
+	defer dir.Close()
+	fi, err := dir.Stat()
 	if err != nil {
 		writeErr(w, 404, errWsPathNotFound)
 		return
@@ -85,21 +86,21 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errWsNotDir)
 		return
 	}
-	ents, err := os.ReadDir(abs)
+	ents, err := dir.ReadDir(-1)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	out := make([]wsEntry, 0, len(ents))
 	for _, e := range ents {
-		info, err := e.Info()
+		info, err := root.Lstat(filepath.Join(name, e.Name()))
 		if err != nil {
 			continue
 		}
 		out = append(out, wsEntry{
 			Name:  e.Name(),
-			Path:  s.wsRel(filepath.Join(abs, e.Name())),
-			Dir:   e.IsDir(),
+			Path:  workspaceRel(filepath.Join(name, e.Name())),
+			Dir:   info.IsDir(),
 			Size:  info.Size(),
 			MTime: info.ModTime().UnixMilli(),
 		})
@@ -111,18 +112,26 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 		}
 		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 	})
-	writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "entries": out})
+	writeJSON(w, 200, map[string]any{"path": workspaceRel(name), "entries": out})
 }
 
 // GET /api/workspace/read?path=<rel> — inline text for view/edit. Binary or oversize
 // files return {binary:true}/{too_large:true} with no content (use download instead).
 func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
-	abs, ok := s.wsResolve(r.URL.Query().Get("path"))
-	if !ok {
-		writeErr(w, 400, errWsIllegalPath)
+	name := workspacePath(r.URL.Query().Get("path"))
+	root, err := os.OpenRoot(s.m.dir)
+	if err != nil {
+		writeErr(w, 500, err.Error())
 		return
 	}
-	fi, err := os.Stat(abs)
+	defer root.Close()
+	file, err := root.Open(name)
+	if err != nil {
+		writeErr(w, 404, errWsFileNotFound)
+		return
+	}
+	defer file.Close()
+	fi, err := file.Stat()
 	if err != nil {
 		writeErr(w, 404, errWsFileNotFound)
 		return
@@ -132,19 +141,23 @@ func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if fi.Size() > maxWorkspaceRead {
-		writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "too_large": true, "binary": true})
+		writeJSON(w, 200, map[string]any{"path": workspaceRel(name), "size": fi.Size(), "too_large": true, "binary": true})
 		return
 	}
-	data, err := os.ReadFile(abs)
+	data, err := io.ReadAll(io.LimitReader(file, maxWorkspaceRead+1))
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
-		writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "binary": true})
+	if len(data) > maxWorkspaceRead {
+		writeJSON(w, 200, map[string]any{"path": workspaceRel(name), "size": len(data), "too_large": true, "binary": true})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "binary": false, "content": string(data)})
+	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
+		writeJSON(w, 200, map[string]any{"path": workspaceRel(name), "size": fi.Size(), "binary": true})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"path": workspaceRel(name), "size": fi.Size(), "binary": false, "content": string(data)})
 }
 
 // POST /api/workspace/write  {path, content} — create/overwrite a text file.
@@ -157,24 +170,30 @@ func (s *Server) wsWrite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	abs, ok := s.wsResolve(req.Path)
-	if !ok || abs == filepath.Clean(s.m.dir) {
+	name := workspacePath(req.Path)
+	if name == "." {
 		writeErr(w, 400, errWsIllegalPath)
 		return
 	}
-	if fi, err := os.Stat(abs); err == nil && fi.IsDir() {
+	root, err := os.OpenRoot(s.m.dir)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer root.Close()
+	if fi, err := root.Stat(name); err == nil && fi.IsDir() {
 		writeErr(w, 400, errWsTargetIsDir)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := root.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if err := os.WriteFile(abs, []byte(req.Content), 0o644); err != nil {
+	if err := root.WriteFile(name, []byte(req.Content), 0o644); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "path": s.wsRel(abs)})
+	writeJSON(w, 200, map[string]any{"ok": true, "path": workspaceRel(name)})
 }
 
 // POST /api/workspace/mkdir  {path}
@@ -186,35 +205,43 @@ func (s *Server) wsMkdir(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	abs, ok := s.wsResolve(req.Path)
-	if !ok || abs == filepath.Clean(s.m.dir) {
+	name := workspacePath(req.Path)
+	if name == "." {
 		writeErr(w, 400, errWsIllegalPath)
 		return
 	}
-	if err := os.MkdirAll(abs, 0o755); err != nil {
+	root, err := os.OpenRoot(s.m.dir)
+	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "path": s.wsRel(abs)})
+	defer root.Close()
+	if err := root.MkdirAll(name, 0o755); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "path": workspaceRel(name)})
 }
 
 // DELETE /api/workspace/delete?path=<rel> — removes a file or a directory tree
 // (confined to the work dir; the root itself can't be deleted).
 func (s *Server) wsDelete(w http.ResponseWriter, r *http.Request) {
-	abs, ok := s.wsResolve(r.URL.Query().Get("path"))
-	if !ok {
-		writeErr(w, 400, errWsIllegalPath)
-		return
-	}
-	if abs == filepath.Clean(s.m.dir) {
+	name := workspacePath(r.URL.Query().Get("path"))
+	if name == "." {
 		writeErr(w, 400, errWsCannotDeleteRoot)
 		return
 	}
-	if _, err := os.Stat(abs); err != nil {
+	root, err := os.OpenRoot(s.m.dir)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer root.Close()
+	if _, err := root.Lstat(name); err != nil {
 		writeErr(w, 404, errWsPathNotFound)
 		return
 	}
-	if err := os.RemoveAll(abs); err != nil {
+	if err := root.RemoveAll(name); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -223,30 +250,45 @@ func (s *Server) wsDelete(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/workspace/download?path=<rel> — stream a file as an attachment.
 func (s *Server) wsDownload(w http.ResponseWriter, r *http.Request) {
-	abs, ok := s.wsResolve(r.URL.Query().Get("path"))
-	if !ok {
-		writeErr(w, 400, errWsIllegalPath)
+	name := workspacePath(r.URL.Query().Get("path"))
+	root, err := os.OpenRoot(s.m.dir)
+	if err != nil {
+		writeErr(w, 500, err.Error())
 		return
 	}
-	fi, err := os.Stat(abs)
+	defer root.Close()
+	file, err := root.Open(name)
+	if err != nil {
+		writeErr(w, 404, errWsFileNotFound)
+		return
+	}
+	defer file.Close()
+	fi, err := file.Stat()
 	if err != nil || fi.IsDir() {
 		writeErr(w, 404, errWsFileNotFound)
 		return
 	}
-	name := filepath.Base(abs)
+	name = filepath.Base(name)
 	// RFC 5987 filename* keeps non-ASCII names intact; plain filename is the fallback.
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+sanitizeFilename(name)+"\"; filename*=UTF-8''"+url.PathEscape(name))
-	http.ServeFile(w, r, abs)
+	http.ServeContent(w, r, name, fi.ModTime(), file)
 }
 
 // POST /api/workspace/upload?path=<dir> — multipart form field "file" (one or more).
 func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
-	dirAbs, ok := s.wsResolve(r.URL.Query().Get("path"))
-	if !ok {
-		writeErr(w, 400, errWsIllegalPath)
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+	dir := workspacePath(r.URL.Query().Get("path"))
+	root, err := os.OpenRoot(s.m.dir)
+	if err != nil {
+		writeErr(w, 500, err.Error())
 		return
 	}
-	if fi, err := os.Stat(dirAbs); err != nil || !fi.IsDir() {
+	defer root.Close()
+	if fi, err := root.Stat(dir); err != nil || !fi.IsDir() {
 		writeErr(w, 400, errWsUploadDirMissing)
 		return
 	}
@@ -266,11 +308,28 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 		if name == "" || name == "." || name == ".." {
 			continue
 		}
-		destAbs, okd := s.wsResolve(filepath.Join(s.wsRel(dirAbs), name))
-		if !okd {
-			continue
+		src, err := hdr.Open()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
 		}
-		if err := saveUpload(hdr, destAbs); err != nil {
+		// Stage into a temp name inside the root and rename only on success, so a
+		// failed copy cannot destroy the file that is already there.
+		dest := filepath.Join(dir, name)
+		tmp := filepath.Join(dir, ".upload-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+		out, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+		if err != nil {
+			_ = src.Close()
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if err := saveUpload(src, out, hdr.Size); err != nil {
+			_ = root.Remove(tmp)
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if err := root.Rename(tmp, dest); err != nil {
+			_ = root.Remove(tmp)
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -279,18 +338,17 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"uploaded": saved})
 }
 
-func saveUpload(hdr *multipart.FileHeader, dest string) error {
-	src, err := hdr.Open()
-	if err != nil {
-		return err
-	}
+func saveUpload(src io.ReadCloser, out *os.File, size int64) (err error) {
 	defer src.Close()
-	out, err := os.Create(dest)
-	if err != nil {
-		return err
+	defer func() {
+		if closeErr := out.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	written, err := io.Copy(out, src)
+	if err == nil && written != size {
+		return io.ErrUnexpectedEOF
 	}
-	defer out.Close()
-	_, err = io.Copy(out, src)
 	return err
 }
 

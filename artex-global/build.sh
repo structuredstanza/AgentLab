@@ -173,8 +173,8 @@ package_binary() {
   rm -rf "$package_root" "$archive"
   mkdir -p "$package_root"
   cp "$binary" "$package_root/"
-  # The daemon startup script is the official entry point. The one-click update in the UI only works if this script relaunches the app after the process exits;
-  # running the artex binary directly will not restart it after an update. Include only the one set that matches the target system.
+  # The supervisor startup script is the official entry point: relaunches artex after abnormal exit
+  # and forwards process termination signals. Ship only the one matching the target system.
   if [ "$goos" = "windows" ]; then
     cp start.bat "$package_root/"
   else
@@ -226,6 +226,10 @@ build_target() {
   compress_binary "$output" "$goos"
   if command -v file >/dev/null 2>&1; then file "$output"; fi
   if [ "$ARTEX_PACKAGE" = "1" ]; then package_binary "$output" "$goos" "$goarch"; fi
+  if [ "$goos" = "linux" ] && ! [ "$output" -ef "${ARTEX_OUTPUT_DIR}/${goarch}/${binary_name}" ]; then
+    mkdir -p "${ARTEX_OUTPUT_DIR}/${goarch}"
+    cp -f "$output" "${ARTEX_OUTPUT_DIR}/${goarch}/${binary_name}"
+  fi
   ok "Compilation complete: $output"
 }
 

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/sdkbridge"
+	"github.com/Autumn-27/artex/nativeproxy"
 )
 
 var (
@@ -26,15 +26,15 @@ func (s *Server) getUsageCache() *usageCache {
 
 // ProfileUsageEntry matches Contract 3 for a single profile quota status.
 type ProfileUsageEntry struct {
-	ProfileID  string                  `json:"profile_id"`
-	Name       string                  `json:"name"`
-	AuthMethod string                  `json:"auth_method"`
-	Connected  bool                    `json:"connected"`
-	Plan       *string                 `json:"plan"`
-	FetchedAt  *time.Time              `json:"fetched_at"`
-	Stale      bool                    `json:"stale"`
-	Windows    []sdkbridge.UsageWindow `json:"windows"`
-	Error      string                  `json:"error,omitempty"`
+	ProfileID  string                    `json:"profile_id"`
+	Name       string                    `json:"name"`
+	AuthMethod string                    `json:"auth_method"`
+	Connected  bool                      `json:"connected"`
+	Plan       *string                   `json:"plan"`
+	FetchedAt  *time.Time                `json:"fetched_at"`
+	Stale      bool                      `json:"stale"`
+	Windows    []nativeproxy.UsageWindow `json:"windows"`
+	Error      string                    `json:"error,omitempty"`
 }
 
 // UsageListResponse is returned by GET /api/llm/usage.
@@ -44,8 +44,8 @@ type UsageListResponse struct {
 
 func (s *Server) getOrFetchUsage(ctx context.Context, p *db.LLMProfile) ProfileUsageEntry {
 	pidStr := strconv.FormatInt(p.ID, 10)
-	provider := sdkProvider(p.AuthMethod)
-	emptyWindows := []sdkbridge.UsageWindow{}
+	provider := nativeProxyProvider(p.AuthMethod)
+	emptyWindows := []nativeproxy.UsageWindow{}
 
 	// API-key or non-subscription profiles should never call upstream
 	if provider == "" {
@@ -61,7 +61,7 @@ func (s *Server) getOrFetchUsage(ctx context.Context, p *db.LLMProfile) ProfileU
 		}
 	}
 
-	if s.sdk == nil {
+	if s.nativeProxy == nil {
 		return ProfileUsageEntry{
 			ProfileID:  pidStr,
 			Name:       p.Name,
@@ -71,26 +71,56 @@ func (s *Server) getOrFetchUsage(ctx context.Context, p *db.LLMProfile) ProfileU
 			FetchedAt:  nil,
 			Stale:      false,
 			Windows:    emptyWindows,
-			Error:      errSDKUnavailable.Error(),
-		}
-	}
-
-	// Disconnected profiles return connected=false and no upstream call
-	st, err := s.sdkProfileStatus(ctx, p)
-	if err != nil || !st.Connected {
-		return ProfileUsageEntry{
-			ProfileID:  pidStr,
-			Name:       p.Name,
-			AuthMethod: p.AuthMethod,
-			Connected:  false,
-			Plan:       nil,
-			FetchedAt:  nil,
-			Stale:      false,
-			Windows:    emptyWindows,
+			Error:      errNativeProxyUnavailable.Error(),
 		}
 	}
 
 	cache := s.getUsageCache()
+	st, err := s.nativeProxyProfileStatus(ctx, p)
+	if err != nil {
+		cached, _, _, hasLastGood := cache.get(p.ID, time.Now())
+		if hasLastGood {
+			wins := cached.windows
+			if wins == nil {
+				wins = emptyWindows
+			}
+			return ProfileUsageEntry{
+				ProfileID:  pidStr,
+				Name:       p.Name,
+				AuthMethod: p.AuthMethod,
+				Connected:  true,
+				Plan:       cached.plan,
+				FetchedAt:  cached.fetchedAt,
+				Stale:      true,
+				Windows:    wins,
+				Error:      "status_unavailable",
+			}
+		}
+		return ProfileUsageEntry{
+			ProfileID:  pidStr,
+			Name:       p.Name,
+			AuthMethod: p.AuthMethod,
+			Connected:  false,
+			Plan:       nil,
+			FetchedAt:  nil,
+			Stale:      false,
+			Windows:    emptyWindows,
+			Error:      "status_unavailable",
+		}
+	}
+	if !st.Connected {
+		return ProfileUsageEntry{
+			ProfileID:  pidStr,
+			Name:       p.Name,
+			AuthMethod: p.AuthMethod,
+			Connected:  false,
+			Plan:       nil,
+			FetchedAt:  nil,
+			Stale:      false,
+			Windows:    emptyWindows,
+		}
+	}
+
 	now := time.Now()
 	cached, hitFresh, inBackoff, hasLastGood := cache.get(p.ID, now)
 
@@ -142,10 +172,10 @@ func (s *Server) getOrFetchUsage(ctx context.Context, p *db.LLMProfile) ProfileU
 		}
 	}
 
-	// Fetch upstream via bridge
-	bridgeUsage, err := s.sdk.Usage(ctx, pidStr, provider)
+	// Fetch upstream via native proxy
+	proxyUsage, err := s.nativeProxy.Usage(ctx, pidStr, provider)
 	if err != nil {
-		var be *sdkbridge.Error
+		var be *nativeproxy.Error
 		errCode := "upstream_error"
 		if errors.As(err, &be) {
 			if be.Status == http.StatusTooManyRequests || be.Code == "rate_limited" {
@@ -198,14 +228,14 @@ func (s *Server) getOrFetchUsage(ctx context.Context, p *db.LLMProfile) ProfileU
 		}
 	}
 
-	fetchedAt := bridgeUsage.FetchedAt
+	fetchedAt := proxyUsage.FetchedAt
 	if fetchedAt == nil {
 		t := time.Now()
 		fetchedAt = &t
 	}
-	cache.set(p.ID, bridgeUsage.Plan, fetchedAt, bridgeUsage.Windows, now)
+	cache.set(p.ID, proxyUsage.Plan, fetchedAt, proxyUsage.Windows, now)
 
-	wins := bridgeUsage.Windows
+	wins := proxyUsage.Windows
 	if wins == nil {
 		wins = emptyWindows
 	}
@@ -215,7 +245,7 @@ func (s *Server) getOrFetchUsage(ctx context.Context, p *db.LLMProfile) ProfileU
 		Name:       p.Name,
 		AuthMethod: p.AuthMethod,
 		Connected:  true,
-		Plan:       bridgeUsage.Plan,
+		Plan:       proxyUsage.Plan,
 		FetchedAt:  fetchedAt,
 		Stale:      false,
 		Windows:    wins,
@@ -241,7 +271,7 @@ func (s *Server) getProfileUsage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "LLM profile not found")
 		return
 	}
-	if sdkProvider(p.AuthMethod) == "" {
+	if nativeProxyProvider(p.AuthMethod) == "" {
 		writeErr(w, 400, "subscription usage is only available for OAuth profiles")
 		return
 	}
@@ -263,7 +293,7 @@ func (s *Server) getUsage(w http.ResponseWriter, r *http.Request) {
 
 	var results []ProfileUsageEntry
 	for _, p := range profiles {
-		if sdkProvider(p.AuthMethod) == "" {
+		if nativeProxyProvider(p.AuthMethod) == "" {
 			continue // api-key profiles omitted
 		}
 		entry := s.getOrFetchUsage(r.Context(), p)

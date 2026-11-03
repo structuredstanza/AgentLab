@@ -21,14 +21,8 @@ type mcpClient interface {
 	Close() error
 }
 
-// The four transport-configuration validation errors returned by connectMCP are user-facing —
-// pgRefreshMCP (server_mgmt.go) passes the discoverAndCacheMCP failure
-// directly into the response body via writeErr(502, errMgmtToolDiscoverFail+err.Error()).
-// Other call sites (agent assembly in assembly.go, the startup auto-discovery in discoverEmptyMCPsOnStartup,
-// the sync in sync_scopesentry.go, and discovery right after pgSaveMCP adds a server) only write to log.Printf
-// or discard the error, so it is not input to the agent's reasoning. That is why it is localized into Korean. The transport-mode enum
-// (stdio/http/sse) and URL are wire identifiers, so the original is kept; UI mcpPage(transport type, command,
-// remote URL).
+// These transport configuration errors are shown by MCP discovery endpoints.
+// Keep protocol names and URLs unchanged.
 const (
 	errMCPStdioNoCommand      = "The stdio transport has no command"
 	errMCPHTTPNoURL           = "The http transport has no URL"
@@ -49,7 +43,7 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 			return nil, errors.New(errMCPHTTPNoURL)
 		}
 		// env map doubles as HTTP headers (e.g. Authorization).
-		return mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure)
+		return mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure, m.TimeoutSeconds)
 	case "sse":
 		if m.URL == "" {
 			return nil, errors.New(errMCPSSENoURL)
@@ -65,13 +59,16 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error {
 	cl, err := connectMCP(ctx, m)
 	if err != nil {
+		_ = s.m.pg.UpdateMCPHealth(m.ID, false, err.Error())
 		return err
 	}
 	defer cl.Close()
 	ts, err := cl.Tools(ctx)
 	if err != nil {
+		_ = s.m.pg.UpdateMCPHealth(m.ID, false, err.Error())
 		return err
 	}
+	_ = s.m.pg.UpdateMCPHealth(m.ID, true, "")
 	tools := make([]db.MCPTool, 0, len(ts))
 	for _, t := range ts {
 		tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description()})
@@ -93,11 +90,15 @@ func (s *Server) discoverEmptyMCPsOnStartup() {
 		log.Printf("[mcp] auto-discovery at startup: failed to read the list: %v", err)
 		return
 	}
+	s.discoverEmptyMCPs(servers, 90*time.Second)
+}
+
+func (s *Server) discoverEmptyMCPs(servers []*db.MCPServer, timeout time.Duration) {
 	for _, m := range servers {
 		if !m.Enabled || len(m.Tools) > 0 {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(s.ctx, 90*time.Second)
+		ctx, cancel := context.WithTimeout(s.ctx, timeout)
 		if err := s.discoverAndCacheMCP(ctx, m); err != nil {
 			log.Printf("[mcp] auto-discovery of %s at startup failed: %v", m.Name, err)
 		}

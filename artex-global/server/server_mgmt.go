@@ -25,7 +25,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/sdkbridge"
+	"github.com/Autumn-27/artex/nativeproxy"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
 )
@@ -145,7 +145,24 @@ func pathInt(r *http.Request, name string) (int64, bool) {
 	return n, err == nil
 }
 
-func decode(r *http.Request, v any) error { return json.NewDecoder(r.Body).Decode(v) }
+// maxJSONBodyBytes bounds every JSON request body decoded through decode().
+// The /api/auth/* routes are decoded here too, so this is the floor that keeps
+// an unauthenticated caller from streaming gigabytes into memory.
+const maxJSONBodyBytes = 8 << 20
+
+func decode(r *http.Request, v any) error {
+	return decodeMax(r, v, maxJSONBodyBytes)
+}
+
+// decodeMax is decode with an explicit ceiling for routes whose payload has a
+// larger documented limit. Nesting MaxBytesReader would apply the inner cap, so
+// the limit is a parameter rather than a second wrap by the caller.
+func decodeMax(r *http.Request, v any, limit int64) error {
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(nil, r.Body, limit)
+	}
+	return json.NewDecoder(r.Body).Decode(v)
+}
 
 // ---------- tasks (delete) ----------
 
@@ -435,7 +452,7 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 		TriggerMergeMode   *string `json:"trigger_merge_mode"`
 		TriggerMaxParallel *int    `json:"trigger_max_parallel"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -518,10 +535,13 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 	s.invalidateTaskAgents()
 	// rebuild the live agents so the new max_turns/run_seconds/binding apply without a restart.
 	s.cfgMu.Lock()
-	cfg, on := s.llmCfg, s.llmOn
+	on := s.llmOn
 	s.cfgMu.Unlock()
 	if on {
-		_ = s.applyLLM(cfg)
+		if err := s.reapplyActiveProfile(); err != nil {
+			writeErr(w, 503, "Agent settings saved, but the selected LLM runtime is unavailable")
+			return
+		}
 	}
 	resp := map[string]any{"ok": true}
 	if req.MaxTurns != nil {
@@ -1693,7 +1713,10 @@ func (s *Server) fsWriteFile(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content string `json:"content"`
 	}
-	if err := decode(r, &body); err != nil {
+	// The editor saves whole files through this route and a skill file may be
+	// up to maxSkillFileBytes, so the shared JSON ceiling is raised here to the
+	// documented per-file limit rather than rejecting a legitimate save.
+	if err := decodeMax(r, &body, maxSkillFileBytes); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -1858,8 +1881,8 @@ func (s *Server) pgListProfiles(w http.ResponseWriter, r *http.Request) {
 	for _, p := range ps {
 		dto := llmProfileDTO(p)
 		if p.AuthMethod != "api_key" {
-			if st, err := s.sdkProfileStatus(r.Context(), p); err != nil {
-				dto.OAuthError = "SDK login status unavailable"
+			if st, err := s.nativeProxyProfileStatus(r.Context(), p); err != nil {
+				dto.OAuthError = "Native proxy login status unavailable"
 			} else if st.Connected {
 				dto.HasGrant = true
 				dto.GrantEmail = st.Email
@@ -1872,6 +1895,8 @@ func (s *Server) pgListProfiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
+	s.profileMu.Lock()
+	defer s.profileMu.Unlock()
 	pg := s.pg(w)
 	if pg == nil {
 		return
@@ -1895,7 +1920,7 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	if p.AuthMethod == "" {
 		p.AuthMethod = "api_key"
 	}
-	// Subscription profiles run non-streaming: the bridge streams internally and
+	// Subscription profiles run non-streaming: the native proxy streams internally and
 	// Complete returns the full opaque provider state needed for replay.
 	p.Streaming = (body.Streaming == nil || *body.Streaming) && p.AuthMethod == "api_key"
 	switch p.AuthMethod {
@@ -1924,9 +1949,9 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.AuthMethod != "api_key" {
-		// The bridge owns endpoint, proxy, and session headers for subscription profiles; reject them rather than store or drop them silently.
+		// The native proxy owns endpoint, proxy, and session headers for subscription profiles; reject them rather than store or drop them silently.
 		if p.APIKey != "" || p.BaseURL != "" || p.Proxy != "" || p.SessionHeaderKey != "" {
-			writeErr(w, 400, "SDK login profiles cannot set api_key, base_url, proxy, or session_header_key")
+			writeErr(w, 400, "Native subscription profiles cannot set api_key, base_url, proxy, or session_header_key")
 			return
 		}
 		p.APIKeyHint = ""
@@ -1941,41 +1966,51 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	if p.Format != "openai" || p.MaxTokensField != llm.MaxTokensFieldCompletion {
 		p.MaxTokensField = ""
 	}
-	if err := validateRefusalFallback(r.Context(), &p, s.sdk); err != nil {
+	if err := validateRefusalFallback(r.Context(), &p, s.nativeProxy); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	var previousAuthMethod string
-	if p.ID > 0 {
-		if old, err := pg.ProfileByID(p.ID); err != nil {
-			writeErr(w, 500, "could not load LLM profile")
-			return
-		} else if old != nil {
-			previousAuthMethod = old.AuthMethod
+	cleanupAttempted, disconnected := false, false
+	var cleanupErr error
+	id, err := pg.SaveProfileWithCleanup(r.Context(), &p, func(ctx context.Context, oldAuth string) error {
+		if oldAuth == "" || oldAuth == "api_key" || oldAuth == p.AuthMethod {
+			return nil
 		}
-	}
-	// Only an SDK-backed profile owns a bridge grant. Leaving SDK auth or changing
-	// its binding drops the grant first; the row keeps its old binding if that fails.
-	if previousAuthMethod != "" && previousAuthMethod != "api_key" && previousAuthMethod != p.AuthMethod {
-		if err := s.disconnectSDKProfile(r.Context(), p.ID); err != nil {
-			writeErr(w, 503, "could not disconnect the SDK login; profile unchanged: "+err.Error())
-			return
-		}
-	}
-	id, err := pg.SaveProfile(&p)
+		cleanupAttempted = true
+		cleanupErr = s.disconnectNativeProxyProfile(ctx, p.ID)
+		disconnected = cleanupErr == nil
+		return cleanupErr
+	})
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		if cleanupAttempted {
+			s.invalidateProfileAgents()
+			_ = s.reapplyActiveProfileLocked()
+		}
+		switch {
+		case cleanupErr != nil:
+			writeErr(w, 503, "Could not finish subscription cleanup; the profile row was not changed")
+		case disconnected:
+			writeErr(w, 500, "Subscription disconnected, but the profile update failed; refresh settings before retrying")
+		case errors.Is(err, db.ErrLLMProfileNotFound):
+			writeErr(w, 404, err.Error())
+		default:
+			writeErr(w, 500, "Could not save the LLM profile")
+		}
 		return
 	}
 	// Editing a profile rebuilds any task pinned to it on its next round. Reapply
 	// the active profile too: the global fallback and explicit task chains must
 	// repopulate the same provider-cache entry and therefore share one limiter.
 	s.invalidateProfileAgents()
-	s.reapplyActiveProfile()
+	delete(s.oauthApplied, p.ID)
+	if err := s.reapplyActiveProfileLocked(); err != nil {
+		writeErr(w, 503, "Profile saved, but the selected LLM runtime is unavailable")
+		return
+	}
 	writeJSON(w, 200, map[string]any{"id": id})
 }
 
-func validateRefusalFallback(ctx context.Context, p *db.LLMProfile, sdk *sdkbridge.Client) error {
+func validateRefusalFallback(ctx context.Context, p *db.LLMProfile, nativeProxy *nativeproxy.Client) error {
 	if len(p.RefusalFallback) > 8 {
 		return errors.New("refusal fallback chain cannot exceed 8 models")
 	}
@@ -1983,21 +2018,38 @@ func validateRefusalFallback(ctx context.Context, p *db.LLMProfile, sdk *sdkbrid
 		p.RefusalFallback[i].Model = strings.TrimSpace(p.RefusalFallback[i].Model)
 		p.RefusalFallback[i].ReasoningEffort = strings.TrimSpace(p.RefusalFallback[i].ReasoningEffort)
 	}
-	seenFallbackModels := make(map[string]bool, len(p.RefusalFallback))
+	type choiceKey struct {
+		model  string
+		effort string
+	}
+	primaryKey := choiceKey{
+		model:  p.Model,
+		effort: p.ReasoningEffort,
+	}
+	seenChoices := make(map[choiceKey]bool, len(p.RefusalFallback)+1)
+	seenChoices[primaryKey] = true
 	for _, entry := range p.RefusalFallback {
 		if entry.Model == "" {
 			return errors.New("refusal fallback model cannot be empty")
 		}
-		if entry.Model == p.Model {
-			return fmt.Errorf("refusal fallback model %q cannot repeat the primary model", entry.Model)
+		effectiveEffort := entry.ReasoningEffort
+		if effectiveEffort == "" {
+			effectiveEffort = p.ReasoningEffort
 		}
-		if seenFallbackModels[entry.Model] {
-			return fmt.Errorf("refusal fallback duplicate model %q", entry.Model)
+		key := choiceKey{
+			model:  entry.Model,
+			effort: effectiveEffort,
 		}
-		seenFallbackModels[entry.Model] = true
+		if key == primaryKey {
+			return fmt.Errorf("refusal fallback choice (%s, %s) cannot repeat the primary model choice", entry.Model, effectiveEffort)
+		}
+		if seenChoices[key] {
+			return fmt.Errorf("refusal fallback duplicate choice (%s, %s)", entry.Model, effectiveEffort)
+		}
+		seenChoices[key] = true
 	}
-	if p.AuthMethod != "api_key" && sdk != nil && len(p.RefusalFallback) > 0 {
-		models, err := sdk.Models(ctx, strconv.FormatInt(p.ID, 10), sdkProvider(p.AuthMethod))
+	if p.AuthMethod != "api_key" && nativeProxy != nil && len(p.RefusalFallback) > 0 {
+		models, err := nativeProxy.Models(ctx, nativeProxyProvider(p.AuthMethod))
 		if err != nil {
 			return fmt.Errorf("OAuth model discovery failed: %w", err)
 		}
@@ -2041,6 +2093,8 @@ func (s *Server) pgGetLLMRetryPolicy(w http.ResponseWriter, r *http.Request) {
 // provider safety window) is a build or call parameter of the provider, so after changing it the provider cached in memory must be
 // Rebuild; the circuit-breaker parameters are pushed directly to the process-level Registry.
 func (s *Server) pgSaveLLMRetryPolicy(w http.ResponseWriter, r *http.Request) {
+	s.profileMu.Lock()
+	defer s.profileMu.Unlock()
 	pg := s.pg(w)
 	if pg == nil {
 		return
@@ -2056,28 +2110,42 @@ func (s *Server) pgSaveLLMRetryPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	s.applyRetryPolicy()
 	s.invalidateProfileAgents()
-	s.reapplyActiveProfile()
+	if err := s.reapplyActiveProfileLocked(); err != nil {
+		writeErr(w, 503, "Retry policy saved, but the selected LLM runtime is unavailable")
+		return
+	}
 	writeJSON(w, 200, pg.LLMRetryPolicy())
 }
 
 func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
+	s.profileMu.Lock()
+	defer s.profileMu.Unlock()
 	pg := s.pg(w)
 	if pg == nil {
 		return
 	}
 	id, _ := pathInt(r, "id")
-	// An SDK grant is keyed to the profile id: drop it before the row goes, and keep the profile if that fails.
-	if old, err := pg.ProfileByID(id); err != nil {
-		writeErr(w, 500, "could not load LLM profile")
-		return
-	} else if old != nil && old.AuthMethod != "api_key" {
-		if err := s.disconnectSDKProfile(r.Context(), id); err != nil {
-			writeErr(w, 503, "could not disconnect the SDK login; profile not deleted: "+err.Error())
-			return
+	cleanupAttempted, disconnected := false, false
+	var cleanupErr error
+	err := pg.DeleteProfileContext(r.Context(), id, func(ctx context.Context, auth string) error {
+		if auth == "" || auth == "api_key" {
+			return nil
 		}
-	}
-	if err := pg.DeleteProfileContext(r.Context(), id); err != nil {
+		cleanupAttempted = true
+		cleanupErr = s.disconnectNativeProxyProfile(ctx, id)
+		disconnected = cleanupErr == nil
+		return cleanupErr
+	})
+	if err != nil {
+		if cleanupAttempted {
+			s.invalidateProfileAgents()
+			_ = s.reapplyActiveProfileLocked()
+		}
 		switch {
+		case cleanupErr != nil:
+			writeErr(w, 503, "Could not finish subscription cleanup; the profile was not deleted")
+		case disconnected:
+			writeErr(w, 500, "Subscription disconnected, but profile deletion failed; refresh settings before retrying")
 		case errors.Is(err, db.ErrActiveLLMProfileDelete):
 			writeErr(w, 409, errMgmtLLMActiveDelete)
 		case errors.Is(err, db.ErrLLMProfileReferencesChanged):
@@ -2096,7 +2164,11 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	s.restoreTasksAfterProfileDelete(pg)
 	// Cache invalidation also removed the active profile's shared provider entry.
 	// Reapply after task-state sync so the wake-up observes the post-delete chain.
-	s.reapplyActiveProfile()
+	delete(s.oauthApplied, id)
+	if err := s.reapplyActiveProfileLocked(); err != nil {
+		writeErr(w, 503, "Profile deleted, but the selected LLM runtime is unavailable")
+		return
+	}
 	writeJSON(w, 200, map[string]any{"deleted": id})
 }
 
@@ -2123,6 +2195,8 @@ func (s *Server) restoreTasksAfterProfileDelete(pg *db.DB) {
 }
 
 func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
+	s.profileMu.Lock()
+	defer s.profileMu.Unlock()
 	pg := s.pg(w)
 	if pg == nil {
 		return
@@ -2134,12 +2208,15 @@ func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := pg.SetActiveProfile(body.ID); err != nil {
-		writeErr(w, 500, err.Error())
+	if err := s.activateProfile(body.ID); err != nil {
+		switch {
+		case errors.Is(err, db.ErrLLMProfileNotFound):
+			writeErr(w, 404, err.Error())
+		default:
+			writeErr(w, 400, err.Error())
+		}
 		return
 	}
-	s.invalidateProfileAgents() // active change may affect pinned-task fallbacks
-	s.reapplyActiveProfile()    // switch the running engine to the newly activated profile
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -2210,6 +2287,11 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	provider := strings.TrimSpace(req.Provider)
 	baseURL := strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	// Same rule as the connection test: a key taken from the saved profile is
+	// only ever sent to the endpoint that profile was saved with.
+	if profile != nil && strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(profile.BaseURL) != "" {
+		baseURL = strings.TrimRight(strings.TrimSpace(profile.BaseURL), "/")
+	}
 	authMethod := "api_key"
 	if profile != nil {
 		authMethod = profile.AuthMethod
@@ -2220,11 +2302,11 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	if authMethod != "api_key" {
 		// The local catalog needs no connected grant, so it lists before human login.
-		if s.sdk == nil || provider != profile.Format {
+		if s.nativeProxy == nil || provider != profile.Format {
 			writeJSON(w, 200, map[string]any{"ok": false, "error": errMgmtNoAPIKey})
 			return
 		}
-		models, err := s.sdk.Models(r.Context(), strconv.FormatInt(profile.ID, 10), sdkProvider(authMethod))
+		models, err := s.nativeProxy.Models(r.Context(), nativeProxyProvider(authMethod))
 		if err != nil {
 			writeJSON(w, 200, map[string]any{"ok": false, "error": "OAuth model discovery failed"})
 			return
@@ -2243,7 +2325,7 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true, "models": items})
 		return
 	}
-	if apiKey == "" {
+	if apiKey == "" && provider != "ollama" {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": errMgmtNoAPIKey})
 		return
 	}
@@ -2279,6 +2361,22 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		}
 		b := strings.TrimRight(strings.TrimSuffix(strings.TrimSuffix(baseURL, "/chat/completions"), "/responses"), "/")
 		candidates = append(candidates, candidate{b + "/models", bearerHdr()})
+	case "ollama":
+		// OpenAI-compatible list at {base}/v1/models. Tolerate base URLs with or
+		// without the /v1 suffix (and a full endpoint URL). No auth needed; when a
+		// key was provided anyway, send it as Bearer (Ollama ignores it).
+		if baseURL == "" {
+			baseURL = agent.DefaultOllamaBaseURL
+		}
+		b := strings.TrimSuffix(baseURL, "/chat/completions")
+		if !strings.HasSuffix(b, "/v1") {
+			b += "/v1"
+		}
+		hdr := http.Header{}
+		if apiKey != "" {
+			hdr.Set("Authorization", "Bearer "+apiKey)
+		}
+		candidates = append(candidates, candidate{b + "/models", hdr})
 	default:
 		if baseURL == "" {
 			baseURL = "https://api.anthropic.com"

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -60,7 +59,7 @@ func (s *Server) addGoal(w http.ResponseWriter, r *http.Request) {
 		Text      string `json:"text"`
 		VulnClass string `json:"vulnclass"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, "invalid JSON")
 		return
 	}
@@ -114,7 +113,7 @@ func (s *Server) editGoal(w http.ResponseWriter, r *http.Request) {
 		Text      string `json:"text"`
 		VulnClass string `json:"vulnclass"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, "invalid JSON")
 		return
 	}

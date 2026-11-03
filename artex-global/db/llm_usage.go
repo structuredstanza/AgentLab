@@ -88,7 +88,7 @@ SELECT COALESCE(NULLIF(model,''),'(unknown)') AS model, COUNT(*) AS calls,
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
        COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
 FROM llm_usage
-WHERE COALESCE(task_id,'') = $1
+WHERE task_id = $1
 GROUP BY model
 ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC, model`, taskID)
 	if err != nil {
@@ -107,16 +107,16 @@ ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC, model`, taskID)
 	return out, rows.Err()
 }
 
-// ProfileUsage aggregates the whole ledger's token spend for one LLM profile
-// (global, all tasks). Powers the dashboard's per-profile token card (new source).
+// ProfileUsage aggregates global token spend by profile.
 type ProfileUsage struct {
-	ProfileName      string `json:"profile_name"`
-	Calls            int    `json:"calls"`
-	Tasks            int    `json:"tasks"`
-	InputTokens      int    `json:"input_tokens"`
-	OutputTokens     int    `json:"output_tokens"`
-	CacheReadTokens  int    `json:"cache_read_tokens"`
-	CacheWriteTokens int    `json:"cache_write_tokens"`
+	ProfileName      string   `json:"profile_name"`
+	Calls            int      `json:"calls"`
+	Tasks            int      `json:"tasks"`
+	InputTokens      int      `json:"input_tokens"`
+	OutputTokens     int      `json:"output_tokens"`
+	CacheReadTokens  int      `json:"cache_read_tokens"`
+	CacheWriteTokens int      `json:"cache_write_tokens"`
+	CostEur          *float64 `json:"cost_eur,omitempty"`
 }
 
 // UsageByProfile returns global token spend grouped by profile name, most-used
@@ -170,6 +170,9 @@ ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC`)
 	out = out[:0]
 	for _, current := range byName {
 		out = append(out, current)
+	}
+	if err := applyCostEur(d, out); err != nil {
+		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool {
 		left := out[i].InputTokens + out[i].OutputTokens
@@ -331,4 +334,42 @@ func ParseExpID(s string) int64 {
 		return 0
 	}
 	return n
+}
+
+// applyCostEur attaches EUR costs to priced profiles; absent prices remain nil.
+func applyCostEur(d *DB, out []ProfileUsage) error {
+	rows, err := d.Query(`SELECT name, COALESCE(price_input_per_m,0), COALESCE(price_output_per_m,0), COALESCE(price_cache_read_per_m,0), COALESCE(price_cache_write_per_m,0) FROM llm_profiles`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type prices struct{ in, output, cacheRead, cacheWrite float64 }
+	byName := make(map[string]prices)
+	for rows.Next() {
+		var name string
+		var p prices
+		if err := rows.Scan(&name, &p.in, &p.output, &p.cacheRead, &p.cacheWrite); err != nil {
+			return err
+		}
+		if _, exists := byName[name]; !exists {
+			byName[name] = p
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range out {
+		p, ok := byName[out[i].ProfileName]
+		if !ok || (p.in == 0 && p.output == 0 && p.cacheRead == 0 && p.cacheWrite == 0) {
+			continue
+		}
+		fresh := out[i].InputTokens - out[i].CacheReadTokens
+		if fresh < 0 {
+			fresh = 0
+		}
+		cost := float64(fresh)/1e6*p.in + float64(out[i].OutputTokens)/1e6*p.output +
+			float64(out[i].CacheReadTokens)/1e6*p.cacheRead + float64(out[i].CacheWriteTokens)/1e6*p.cacheWrite
+		out[i].CostEur = &cost
+	}
+	return nil
 }

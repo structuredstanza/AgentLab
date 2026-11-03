@@ -1,0 +1,1722 @@
+diff --git a/internal/auth/antigravity/auth.go b/internal/auth/antigravity/auth.go
+index e4450ea..6f5eb60 100644
+--- a/internal/auth/antigravity/auth.go
++++ b/internal/auth/antigravity/auth.go
+@@ -14,6 +14,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -61,10 +62,10 @@ func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *Antigravit
+ 		cfg = &config.Config{}
+ 	}
+ 	if httpClient != nil {
+-		return &AntigravityAuth{httpClient: httpClient}
++		return &AntigravityAuth{httpClient: httptransport.ApplyOutboundPolicy(httpClient)}
+ 	}
+ 	return &AntigravityAuth{
+-		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
++		httpClient: httptransport.ApplyOutboundPolicy(util.SetProxy(&cfg.SDKConfig, &http.Client{})),
+ 	}
+ }
+ 
+diff --git a/internal/auth/claude/utls_transport.go b/internal/auth/claude/utls_transport.go
+index 7d69d46..3cf090f 100644
+--- a/internal/auth/claude/utls_transport.go
++++ b/internal/auth/claude/utls_transport.go
+@@ -12,6 +12,7 @@ import (
+ 	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
+ 	log "github.com/sirupsen/logrus"
+ 	"golang.org/x/net/proxy"
+@@ -250,5 +251,5 @@ func (t *utlsRoundTripper) CloseIdleConnections() {
+ }
+ 
+ func NewAnthropicHttpClient(cfg *config.SDKConfig) *http.Client {
+-	return &http.Client{Transport: newUtlsRoundTripper(cfg)}
++	return httptransport.ApplyOutboundPolicy(&http.Client{Transport: newUtlsRoundTripper(cfg)})
+ }
+diff --git a/internal/auth/codex/openai_auth.go b/internal/auth/codex/openai_auth.go
+index bc9ce24..1cc4ae2 100644
+--- a/internal/auth/codex/openai_auth.go
++++ b/internal/auth/codex/openai_auth.go
+@@ -16,6 +16,7 @@ import (
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	log "github.com/sirupsen/logrus"
+ 	"golang.org/x/sync/singleflight"
+ )
+@@ -60,7 +61,7 @@ func NewCodexAuthWithProxyURL(cfg *config.Config, proxyURL string) *CodexAuth {
+ 	}
+ 	sdkCfg.ProxyURL = effectiveProxyURL
+ 	return &CodexAuth{
+-		httpClient:        util.SetProxy(&sdkCfg, &http.Client{}),
++		httpClient:        httptransport.ApplyOutboundPolicy(util.SetProxy(&sdkCfg, &http.Client{})),
+ 		siwcAgentNameHint: agentNameHint,
+ 	}
+ }
+diff --git a/internal/misc/antigravity_version.go b/internal/misc/antigravity_version.go
+index 1e77c2d..74bfbc4 100644
+--- a/internal/misc/antigravity_version.go
++++ b/internal/misc/antigravity_version.go
+@@ -11,6 +11,7 @@ import (
+ 	"sync"
+ 	"time"
+ 
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	log "github.com/sirupsen/logrus"
+ 	"gopkg.in/yaml.v3"
+ )
+@@ -217,7 +218,7 @@ func fetchAntigravityLatestVersion(ctx context.Context) (string, error) {
+ 		ctx = context.Background()
+ 	}
+ 
+-	client := &http.Client{Timeout: antigravityFetchTimeout}
++	client := httptransport.ApplyOutboundPolicy(&http.Client{Timeout: antigravityFetchTimeout})
+ 	return fetchAntigravityHubLatestManifestVersion(ctx, client)
+ }
+ 
+diff --git a/internal/runtime/executor/antigravity_executor.go b/internal/runtime/executor/antigravity_executor.go
+index 5e95a51..84d0034 100644
+--- a/internal/runtime/executor/antigravity_executor.go
++++ b/internal/runtime/executor/antigravity_executor.go
+@@ -451,15 +451,19 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
+ 	}
+ 
+ 	client := helps.NewProxyAwareHTTPClient(httptransport.WithoutDecorator(ctx), cfg, auth, timeout)
++	// Work on the transport selected before the outbound policy wrapped it. The
++	// deferred Decorate re-applies the policy once to the final transport.
++	base := httptransport.UnwrapOutboundPolicy(client.Transport)
+ 	// Direct requests share an HTTP/1.1 pool only within the selected credential.
+-	if client.Transport == nil {
++	if base == nil {
+ 		client.Transport = antigravityHTTP11Transport(auth, antigravityBaseTransport, cfg)
+ 		return client
+ 	}
++	client.Transport = base
+ 
+ 	// Preserve a context-provided transport while forcing HTTP/1.1. The cache key
+ 	// includes credential identity, so sharing the base does not share TLS pools.
+-	transport, ok := client.Transport.(*http.Transport)
++	transport, ok := base.(*http.Transport)
+ 	if !ok {
+ 		// A RoundTripper that is not an *http.Transport owns its own protocol behavior.
+ 		return client
+diff --git a/internal/runtime/executor/antigravity_executor_execute.go b/internal/runtime/executor/antigravity_executor_execute.go
+index e1eba61..5ff6eb6 100644
+--- a/internal/runtime/executor/antigravity_executor_execute.go
++++ b/internal/runtime/executor/antigravity_executor_execute.go
+@@ -70,6 +70,11 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
+ 		originalPayloadSource = opts.OriginalRequest
+ 	}
+ 	originalPayload := originalPayloadSource
++	if from == sdktranslator.FormatGemini {
++		if errStrict := validateStrictGeminiReplay(ctx, baseModel, originalPayload); errStrict != nil {
++			return resp, errStrict
++		}
++	}
+ 	originalPayload, errValidate := validateAntigravityRequestSignatures(ctx, baseModel, from, originalPayload)
+ 	if errValidate != nil {
+ 		return resp, errValidate
+@@ -103,7 +108,10 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
+ 		return out
+ 	})
+ 	translated = e.obfuscateSensitiveWords(translated)
+-	translated = sanitizeAntigravityGeminiRequestSignatures(baseModel, translated)
++	translated, errStrict := sanitizeGeminiReplayForRequest(ctx, baseModel, translated)
++	if errStrict != nil {
++		return resp, errStrict
++	}
+ 	reporter.SetTranslatedReasoningEffort(translated, to.String())
+ 
+ 	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
+@@ -287,6 +295,11 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
+ 		originalPayloadSource = opts.OriginalRequest
+ 	}
+ 	originalPayload := originalPayloadSource
++	if from == sdktranslator.FormatGemini {
++		if errStrict := validateStrictGeminiReplay(ctx, baseModel, originalPayload); errStrict != nil {
++			return resp, errStrict
++		}
++	}
+ 	originalPayload, errValidate := validateAntigravityRequestSignatures(ctx, baseModel, from, originalPayload)
+ 	if errValidate != nil {
+ 		return resp, errValidate
+@@ -320,7 +333,10 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
+ 		return out
+ 	})
+ 	translated = e.obfuscateSensitiveWords(translated)
+-	translated = sanitizeAntigravityGeminiRequestSignatures(baseModel, translated)
++	translated, errStrict := sanitizeGeminiReplayForRequest(ctx, baseModel, translated)
++	if errStrict != nil {
++		return resp, errStrict
++	}
+ 	reporter.SetTranslatedReasoningEffort(translated, to.String())
+ 
+ 	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
+diff --git a/internal/runtime/executor/antigravity_executor_stream.go b/internal/runtime/executor/antigravity_executor_stream.go
+index bba3a96..100d637 100644
+--- a/internal/runtime/executor/antigravity_executor_stream.go
++++ b/internal/runtime/executor/antigravity_executor_stream.go
+@@ -70,6 +70,11 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
+ 		originalPayloadSource = opts.OriginalRequest
+ 	}
+ 	originalPayload := originalPayloadSource
++	if from == sdktranslator.FormatGemini {
++		if errStrict := validateStrictGeminiReplay(ctx, baseModel, originalPayload); errStrict != nil {
++			return nil, errStrict
++		}
++	}
+ 	originalPayload, errValidate := validateAntigravityRequestSignatures(ctx, baseModel, from, originalPayload)
+ 	if errValidate != nil {
+ 		return nil, errValidate
+@@ -103,7 +108,10 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
+ 		return out
+ 	})
+ 	translated = e.obfuscateSensitiveWords(translated)
+-	translated = sanitizeAntigravityGeminiRequestSignatures(baseModel, translated)
++	translated, errStrict := sanitizeGeminiReplayForRequest(ctx, baseModel, translated)
++	if errStrict != nil {
++		return nil, errStrict
++	}
+ 	translated, _ = sjson.DeleteBytes(translated, "request.stream")
+ 	reporter.SetTranslatedReasoningEffort(translated, to.String())
+ 
+diff --git a/internal/runtime/executor/antigravity_executor_tokens.go b/internal/runtime/executor/antigravity_executor_tokens.go
+index 9ed35aa..68f95a7 100644
+--- a/internal/runtime/executor/antigravity_executor_tokens.go
++++ b/internal/runtime/executor/antigravity_executor_tokens.go
+@@ -30,6 +30,11 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
+ 	if len(opts.OriginalRequest) > 0 {
+ 		originalPayloadSource = opts.OriginalRequest
+ 	}
++	if from == sdktranslator.FormatGemini {
++		if errStrict := validateStrictGeminiReplay(ctx, baseModel, originalPayloadSource); errStrict != nil {
++			return cliproxyexecutor.Response{}, errStrict
++		}
++	}
+ 	originalPayloadSource, errValidate := validateAntigravityRequestSignatures(ctx, baseModel, from, originalPayloadSource)
+ 	if errValidate != nil {
+ 		return cliproxyexecutor.Response{}, errValidate
+@@ -65,7 +70,10 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
+ 	}
+ 	payload = e.obfuscateSensitiveWords(payload)
+ 	payload, _ = helps.PrepareAntigravityClaudeStructuredOutput(baseModel, payload)
+-	payload = sanitizeAntigravityGeminiRequestSignatures(baseModel, payload)
++	payload, errStrict := sanitizeGeminiReplayForRequest(ctx, baseModel, payload)
++	if errStrict != nil {
++		return cliproxyexecutor.Response{}, errStrict
++	}
+ 	preparedPayload, _, errReplay := prepareAntigravityGeminiReasoningReplayPayload(ctx, baseModel, req, opts, payload)
+ 	if errReplay != nil {
+ 		return cliproxyexecutor.Response{}, errReplay
+diff --git a/internal/runtime/executor/antigravity_reasoning_replay.go b/internal/runtime/executor/antigravity_reasoning_replay.go
+index ad8d3a6..83d1e5e 100644
+--- a/internal/runtime/executor/antigravity_reasoning_replay.go
++++ b/internal/runtime/executor/antigravity_reasoning_replay.go
+@@ -21,6 +21,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/nativepolicy"
+ 	log "github.com/sirupsen/logrus"
+ 	"github.com/tidwall/gjson"
+ 	"github.com/tidwall/sjson"
+@@ -278,6 +279,13 @@ func prepareAntigravityGeminiReasoningReplayPayload(ctx context.Context, modelNa
+ 	if !antigravityUsesReasoningReplayCache(modelName) {
+ 		return payload, antigravityReasoningReplayScope{}, nil
+ 	}
++	if nativepolicy.StrictReplay(ctx) {
++		// Strict replay forwards the caller's native parts and never consults the ledger; pairing must still hold.
++		if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(payload); errPairing != nil {
++			return payload, antigravityReasoningReplayScope{}, statusErr{code: http.StatusBadRequest, msg: fmt.Sprintf("antigravity executor: invalid Gemini function call history: %v", errPairing)}
++		}
++		return payload, antigravityReasoningReplayScope{}, nil
++	}
+ 	updated, scope, replayApplied, errReplay := applyAntigravityReasoningReplayCache(ctx, modelName, req, opts, payload)
+ 	if errReplay != nil {
+ 		// Replay state is an optimization, not a correctness requirement: a ledger
+diff --git a/internal/runtime/executor/claude_executor.go b/internal/runtime/executor/claude_executor.go
+index c802973..17b8956 100644
+--- a/internal/runtime/executor/claude_executor.go
++++ b/internal/runtime/executor/claude_executor.go
+@@ -18,6 +18,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/nativepolicy"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+ 	log "github.com/sirupsen/logrus"
+ 	"github.com/tidwall/gjson"
+@@ -83,7 +84,8 @@ func sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx context.Context, body
+ 	// sanitization gate below (which non-Claude model names skip entirely).
+ 	sanitized, _ := sigcompat.RestoreCodexCommentaryMarkers(body)
+ 	preserveEmpty := len(preserveEmptyThinkingBlocks) > 0 && preserveEmptyThinkingBlocks[0]
+-	if shouldSanitizeClaudeMessagesForUpstream(baseModel) || preserveEmpty {
++	// Strict replay forwards signed thinking unchanged; validateStrictClaudeReplay gates it instead.
++	if !nativepolicy.StrictReplay(ctx) && (shouldSanitizeClaudeMessagesForUpstream(baseModel) || preserveEmpty) {
+ 		var report sigcompat.SignatureSanitizeReport
+ 		sanitized, report = sigcompat.SanitizeClaudeMessagesForClaudeUpstream(body, baseModel, preserveEmptyThinkingBlocks...)
+ 		logClaudeSignatureSanitizeReport(ctx, baseModel, report)
+diff --git a/internal/runtime/executor/claude_executor_execute.go b/internal/runtime/executor/claude_executor_execute.go
+index 8a9c808..de6c337 100644
+--- a/internal/runtime/executor/claude_executor_execute.go
++++ b/internal/runtime/executor/claude_executor_execute.go
+@@ -218,6 +218,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+ 			return resp, err
+ 		}
+ 	}
++	if err = validateStrictClaudeReplay(ctx, bodyForUpstream); err != nil {
++		return resp, err
++	}
+ 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel, helps.APIKeyModelIsCompat(req))
+ 	if fp.ApplyCLIIdentity {
+ 		bodyForUpstream, err = applyClaudeCLIIdentity(bodyForUpstream, auth, apiKey, url, claudeSessionID, fp.SynthesizeIdentity)
+@@ -243,7 +246,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+ 	if claudeCompactionSummaryFromContext(ctx) {
+ 		bodyForUpstream = finalizeClaudeCompactionSummaryBody(bodyForUpstream)
+ 	}
+-	bodyForUpstream = applyClaudePreservedThinkingBinding(bodyForUpstream)
++	bodyForUpstream = applyClaudePreservedThinkingBinding(ctx, bodyForUpstream)
+ 	// User rules match the fully prepared business body and are applied only once.
+ 	var touchedPayloadPaths map[string]bool
+ 	bodyForUpstream, touchedPayloadPaths = helps.ApplyPayloadConfigWithTrackedPaths(
+diff --git a/internal/runtime/executor/claude_executor_request.go b/internal/runtime/executor/claude_executor_request.go
+index b054122..a1ff5bc 100644
+--- a/internal/runtime/executor/claude_executor_request.go
++++ b/internal/runtime/executor/claude_executor_request.go
+@@ -21,6 +21,7 @@ import (
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/nativepolicy"
+ 	log "github.com/sirupsen/logrus"
+ 	"github.com/tidwall/gjson"
+ 	"github.com/tidwall/sjson"
+@@ -388,7 +389,7 @@ func claudeBodyHasSignedThinkingBlock(body []byte) bool {
+ // caller-supplied prefix_mismatch_behavior stay untouched. This must run before
+ // user payload rules, which stay the final semantic barrier and may override or
+ // filter the injected value.
+-func applyClaudePreservedThinkingBinding(body []byte) []byte {
++func applyClaudePreservedThinkingBinding(ctx context.Context, body []byte) []byte {
+ 	model := gjson.GetBytes(body, "model").String()
+ 	if len(body) == 0 || !isClaudePreservedThinkingModel(model) || claudeToolChoiceForcesToolUse(body) {
+ 		return body
+@@ -405,7 +406,10 @@ func applyClaudePreservedThinkingBinding(body []byte) []byte {
+ 	if !thinking.Exists() {
+ 		body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
+ 	}
+-	body, _ = sjson.SetBytes(body, "thinking.block_binding.prefix_mismatch_behavior", "drop_block")
++	// Strict replay surfaces prefix mismatches instead of silently dropping bound blocks.
++	if !nativepolicy.StrictReplay(ctx) {
++		body, _ = sjson.SetBytes(body, "thinking.block_binding.prefix_mismatch_behavior", "drop_block")
++	}
+ 	return body
+ }
+ 
+diff --git a/internal/runtime/executor/claude_executor_stream.go b/internal/runtime/executor/claude_executor_stream.go
+index c0ec95c..3022e85 100644
+--- a/internal/runtime/executor/claude_executor_stream.go
++++ b/internal/runtime/executor/claude_executor_stream.go
+@@ -213,6 +213,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 			return nil, err
+ 		}
+ 	}
++	if err = validateStrictClaudeReplay(ctx, bodyForUpstream); err != nil {
++		return nil, err
++	}
+ 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel, helps.APIKeyModelIsCompat(req))
+ 	if fp.ApplyCLIIdentity {
+ 		bodyForUpstream, err = applyClaudeCLIIdentity(bodyForUpstream, auth, apiKey, url, claudeSessionID, fp.SynthesizeIdentity)
+@@ -235,7 +238,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 		}
+ 	}
+ 	bodyForUpstream = stripDefaultKimiClaudeCodeAttribution(auth, url, fp.ProfileClaudeCodeCLI, bodyForUpstream)
+-	bodyForUpstream = applyClaudePreservedThinkingBinding(bodyForUpstream)
++	bodyForUpstream = applyClaudePreservedThinkingBinding(ctx, bodyForUpstream)
+ 	// User rules match the fully prepared business body and are applied only once.
+ 	var touchedPayloadPaths map[string]bool
+ 	bodyForUpstream, touchedPayloadPaths = helps.ApplyPayloadConfigWithTrackedPaths(
+diff --git a/internal/runtime/executor/claude_executor_tokens.go b/internal/runtime/executor/claude_executor_tokens.go
+index a485519..42c37e3 100644
+--- a/internal/runtime/executor/claude_executor_tokens.go
++++ b/internal/runtime/executor/claude_executor_tokens.go
+@@ -64,8 +64,11 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
+ 	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
+ 		body = rebuildMidSystemMessagesToTopLevel(body)
+ 	}
++	if errStrict := validateStrictClaudeReplay(ctx, body); errStrict != nil {
++		return cliproxyexecutor.Response{}, errStrict
++	}
+ 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel, helps.APIKeyModelIsCompat(req))
+-	body = applyClaudePreservedThinkingBinding(body)
++	body = applyClaudePreservedThinkingBinding(ctx, body)
+ 	body = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)(body)
+ 	body = stripPromptCacheOptions(body)
+ 	if errValidate := validateClaudeTokenCountRequest(body); errValidate != nil {
+@@ -224,8 +227,11 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
+ 		mcpAliases := resolveClaudeMCPAliasOptions(ctx, opts.Metadata, req.Metadata)
+ 		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, mcpAliases)
+ 	}
++	if errStrict := validateStrictClaudeReplay(ctx, body); errStrict != nil {
++		return cliproxyexecutor.Response{}, errStrict
++	}
+ 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel, helps.APIKeyModelIsCompat(req))
+-	body = applyClaudePreservedThinkingBinding(body)
++	body = applyClaudePreservedThinkingBinding(ctx, body)
+ 	body = stripPromptCacheOptions(body)
+ 	// Two different reasons converge on the same deletions, and they must stay
+ 	// separable.
+diff --git a/internal/runtime/executor/codex_executor_execute.go b/internal/runtime/executor/codex_executor_execute.go
+index cbaf2c9..b384223 100644
+--- a/internal/runtime/executor/codex_executor_execute.go
++++ b/internal/runtime/executor/codex_executor_execute.go
+@@ -87,6 +87,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
+ 	if errReplay != nil {
+ 		return resp, errReplay
+ 	}
++	if errStrict := validateStrictCodexReplay(ctx, body, isCompat); errStrict != nil {
++		return resp, errStrict
++	}
+ 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex executor", body, isCompat, targetModel, baseURL)
+ 
+ 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
+@@ -272,6 +275,9 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
+ 		body = applyCodexSIWCCompactBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
+ 	}
+ 	body = ensureWebSearchToolForHistory(body, opts.Headers)
++	if errStrict := validateStrictCodexReplay(ctx, body, isCompat); errStrict != nil {
++		return resp, errStrict
++	}
+ 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex executor", body, isCompat, resolveResponsesSignatureTargetModel(baseModel, req, opts), baseURL)
+ 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
+ 	body = helps.NormalizeCodexToolSchemas(body)
+diff --git a/internal/runtime/executor/codex_executor_stream.go b/internal/runtime/executor/codex_executor_stream.go
+index 5b70845..b94e498 100644
+--- a/internal/runtime/executor/codex_executor_stream.go
++++ b/internal/runtime/executor/codex_executor_stream.go
+@@ -94,6 +94,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+ 	if errReplay != nil {
+ 		return nil, errReplay
+ 	}
++	if errStrict := validateStrictCodexReplay(ctx, body, isCompat); errStrict != nil {
++		return nil, errStrict
++	}
+ 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex executor", body, isCompat, targetModel, baseURL)
+ 
+ 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
+diff --git a/internal/runtime/executor/codex_websockets_execute.go b/internal/runtime/executor/codex_websockets_execute.go
+index 1637c5d..3fa3e63 100644
+--- a/internal/runtime/executor/codex_websockets_execute.go
++++ b/internal/runtime/executor/codex_websockets_execute.go
+@@ -87,6 +87,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
+ 	if errReplay != nil {
+ 		return resp, errReplay
+ 	}
++	if errStrict := validateStrictCodexReplay(ctx, body, isCompat); errStrict != nil {
++		return resp, errStrict
++	}
+ 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex websockets executor", body, isCompat, targetModel, baseURL)
+ 
+ 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
+diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
+index 91989d7..c142c03 100644
+--- a/internal/runtime/executor/codex_websockets_stream.go
++++ b/internal/runtime/executor/codex_websockets_stream.go
+@@ -892,6 +892,9 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
+ 	if errReplay != nil {
+ 		return nil, errReplay
+ 	}
++	if errStrict := validateStrictCodexReplay(ctx, body, isCompat); errStrict != nil {
++		return nil, errStrict
++	}
+ 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex websockets executor", body, isCompat, targetModel, baseURL)
+ 
+ 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
+diff --git a/internal/runtime/executor/helps/antigravity_connection_trace.go b/internal/runtime/executor/helps/antigravity_connection_trace.go
+index 6714487..0051eff 100644
+--- a/internal/runtime/executor/helps/antigravity_connection_trace.go
++++ b/internal/runtime/executor/helps/antigravity_connection_trace.go
+@@ -6,6 +6,7 @@ import (
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -16,7 +17,7 @@ func WithAntigravityHTTPClientTrace(client *http.Client, auth *cliproxyauth.Auth
+ 		return nil
+ 	}
+ 	clone := *client
+-	base := client.Transport
++	base := httptransport.UnwrapOutboundPolicy(client.Transport)
+ 	if base == nil {
+ 		base = http.DefaultTransport
+ 	}
+@@ -27,7 +28,7 @@ func WithAntigravityHTTPClientTrace(client *http.Client, auth *cliproxyauth.Auth
+ 	clone.Transport = &antigravityConnectionTraceTransport{
+ 		base: base, auth: cliproxyauth.Auth{Index: authIndex}, operation: operation,
+ 	}
+-	return &clone
++	return httptransport.ApplyOutboundPolicy(&clone)
+ }
+ 
+ type antigravityConnectionTraceTransport struct {
+diff --git a/internal/runtime/executor/helps/proxy_helpers.go b/internal/runtime/executor/helps/proxy_helpers.go
+index d98f7d4..c186faa 100644
+--- a/internal/runtime/executor/helps/proxy_helpers.go
++++ b/internal/runtime/executor/helps/proxy_helpers.go
+@@ -31,6 +31,9 @@ import (
+ //   - *http.Client: An HTTP client with configured proxy or transport
+ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) (clientOut *http.Client) {
+ 	defer func() { clientOut = httptransport.Decorate(ctx, clientOut) }()
++	if ctx == nil {
++		ctx = context.Background()
++	}
+ 	httpClient := &http.Client{}
+ 	if timeout > 0 {
+ 		httpClient.Timeout = timeout
+diff --git a/internal/runtime/executor/helps/proxy_helpers_nil_ctx_test.go b/internal/runtime/executor/helps/proxy_helpers_nil_ctx_test.go
+new file mode 100644
+index 0000000..6ea91cd
+--- /dev/null
++++ b/internal/runtime/executor/helps/proxy_helpers_nil_ctx_test.go
+@@ -0,0 +1,92 @@
++package helps
++
++import (
++	"errors"
++	"io"
++	"net/http"
++	"os"
++	"os/exec"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++)
++
++var errHelpsPolicyRejected = errors.New("rejected by outbound policy")
++
++type helpsRejectingPolicy struct {
++	next  http.RoundTripper
++	calls *int
++}
++
++func (p helpsRejectingPolicy) RoundTrip(req *http.Request) (*http.Response, error) {
++	(*p.calls)++
++	if req.Header.Get("X-Blocked") != "" {
++		return nil, errHelpsPolicyRejected
++	}
++	return p.next.RoundTrip(req)
++}
++
++// Nil-context callers must neither panic nor bypass the outbound policy.
++// Run in a fresh process so the install-once policy cannot contaminate other fixtures.
++func TestNewProxyAwareHTTPClientNilContextKeepsPolicy(t *testing.T) {
++	if os.Getenv("CLIPROXY_POLICY_FIXTURE") != "1" {
++		cmd := exec.Command(os.Args[0], "-test.run=^TestNewProxyAwareHTTPClientNilContextKeepsPolicy$")
++		cmd.Env = append(os.Environ(), "CLIPROXY_POLICY_FIXTURE=1")
++		if out, err := cmd.CombinedOutput(); err != nil {
++			t.Fatalf("isolated policy fixture: %v\n%s", err, out)
++		}
++		return
++	}
++	policyCalls := 0
++	if err := httptransport.SetOutboundPolicy(func(next http.RoundTripper) http.RoundTripper {
++		return helpsRejectingPolicy{next: next, calls: &policyCalls}
++	}); err != nil {
++		t.Fatal(err)
++	}
++	client := NewProxyAwareHTTPClient(nil, &config.Config{}, nil, 0)
++	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:1/", nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	req.Header.Set("X-Blocked", "1")
++	if _, err := client.Do(req); !errors.Is(err, errHelpsPolicyRejected) {
++		t.Fatalf("nil-context request bypassed admission: %v", err)
++	}
++
++	dispatched := 0
++	base := &http.Client{Transport: helpsPolicyFixtureTransport{calls: &dispatched}}
++	prepared := httptransport.ApplyOutboundPolicy(base)
++	traced := WithAntigravityHTTPClientTrace(prepared, nil, "project_discovery")
++	client = httptransport.ApplyOutboundPolicy(traced)
++	req, err = http.NewRequest(http.MethodPost, "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	resp, err := client.Do(req)
++	if err != nil {
++		t.Fatal(err)
++	}
++	resp.Body.Close()
++	if policyCalls != 2 || dispatched != 1 {
++		t.Fatalf("traced request: admission calls=%d, native dispatches=%d", policyCalls, dispatched)
++	}
++	req.Header.Set("X-Blocked", "1")
++	if _, err := client.Do(req); !errors.Is(err, errHelpsPolicyRejected) {
++		t.Fatalf("traced request bypassed admission: %v", err)
++	}
++	if policyCalls != 3 || dispatched != 1 {
++		t.Fatalf("rejected trace: admission calls=%d, native dispatches=%d", policyCalls, dispatched)
++	}
++}
++
++type helpsPolicyFixtureTransport struct{ calls *int }
++
++func (t helpsPolicyFixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	(*t.calls)++
++	return &http.Response{
++		StatusCode: http.StatusOK, Header: make(http.Header),
++		Body: io.NopCloser(strings.NewReader("{}")), Request: req,
++	}, nil
++}
+diff --git a/internal/runtime/executor/native_replay_strict.go b/internal/runtime/executor/native_replay_strict.go
+new file mode 100644
+index 0000000..eab1e79
+--- /dev/null
++++ b/internal/runtime/executor/native_replay_strict.go
+@@ -0,0 +1,99 @@
++package executor
++
++import (
++	"context"
++	"fmt"
++	"strings"
++
++	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/nativepolicy"
++	"github.com/tidwall/gjson"
++)
++
++// validateStrictClaudeReplay fails locally when strict native replay would
++// forward a thinking block that cannot be replayed unchanged. Without the strict
++// flag it is a no-op, so the existing sanitizer path keeps its behavior.
++func validateStrictClaudeReplay(ctx context.Context, body []byte) error {
++	if !nativepolicy.StrictReplay(ctx) {
++		return nil
++	}
++	var err error
++	gjson.GetBytes(body, "messages").ForEach(func(msgIdx, msg gjson.Result) bool {
++		msg.Get("content").ForEach(func(blockIdx, block gjson.Result) bool {
++			switch strings.TrimSpace(block.Get("type").String()) {
++			case "thinking":
++				signature := block.Get("signature").String()
++				if !sigcompat.IsValidClaudeThinkingSignature(signature) && !sigcompat.IsValidClaudeCAISSignature(signature) {
++					err = fmt.Errorf("strict native replay: messages.%d.content.%d thinking signature is not replayable", msgIdx.Int(), blockIdx.Int())
++				}
++			case "redacted_thinking":
++				if strings.TrimSpace(block.Get("data").String()) == "" {
++					err = fmt.Errorf("strict native replay: messages.%d.content.%d redacted_thinking data is empty", msgIdx.Int(), blockIdx.Int())
++				}
++			}
++			return err == nil
++		})
++		return err == nil
++	})
++	return err
++}
++
++// validateStrictCodexReplay fails locally when a reasoning item cannot be
++// forwarded to the GPT Responses upstream with its native encrypted_content
++// intact. Compat requests and non-strict requests are a no-op.
++func validateStrictCodexReplay(ctx context.Context, body []byte, isCompat bool) error {
++	if isCompat || !nativepolicy.StrictReplay(ctx) {
++		return nil
++	}
++	var err error
++	gjson.GetBytes(body, "input").ForEach(func(idx, item gjson.Result) bool {
++		if strings.TrimSpace(item.Get("type").String()) != "reasoning" {
++			return true
++		}
++		encrypted := item.Get("encrypted_content")
++		if encrypted.Type != gjson.String || !sigcompat.IsValidGPTReasoningSignature(encrypted.String()) {
++			err = fmt.Errorf("strict native replay: input.%d reasoning encrypted_content is not replayable", idx.Int())
++		}
++		return err == nil
++	})
++	return err
++}
++
++// validateStrictGeminiReplay rejects invalid native thought signatures before
++// source translation or ordinary signature-cache handling can remove them.
++func validateStrictGeminiReplay(ctx context.Context, modelName string, rawJSON []byte) error {
++	if !nativepolicy.StrictReplay(ctx) || !antigravityUsesReasoningReplayCache(modelName) {
++		return nil
++	}
++	contentsPath := "request.contents"
++	contents := gjson.GetBytes(rawJSON, contentsPath)
++	if !contents.IsArray() {
++		contentsPath = "contents"
++		contents = gjson.GetBytes(rawJSON, contentsPath)
++	}
++	var err error
++	contents.ForEach(func(contentIdx, content gjson.Result) bool {
++		content.Get("parts").ForEach(func(partIdx, part gjson.Result) bool {
++			signature := part.Get("thoughtSignature")
++			if signature.Exists() && (signature.Type != gjson.String || !sigcompat.IsValidGeminiThoughtSignature(signature.String())) {
++				err = fmt.Errorf("strict native replay: %s.%d.parts.%d thoughtSignature is not replayable", contentsPath, contentIdx.Int(), partIdx.Int())
++			}
++			return err == nil
++		})
++		return err == nil
++	})
++	return err
++}
++
++// sanitizeGeminiReplayForRequest returns the Gemini request unchanged under
++// strict replay after rejecting any thoughtSignature that is not replayable.
++// Otherwise it applies the existing non-strict sanitizer.
++func sanitizeGeminiReplayForRequest(ctx context.Context, modelName string, rawJSON []byte) ([]byte, error) {
++	if !nativepolicy.StrictReplay(ctx) {
++		return sanitizeAntigravityGeminiRequestSignatures(modelName, rawJSON), nil
++	}
++	if err := validateStrictGeminiReplay(ctx, modelName, rawJSON); err != nil {
++		return nil, err
++	}
++	return rawJSON, nil
++}
+diff --git a/internal/runtime/executor/native_replay_strict_test.go b/internal/runtime/executor/native_replay_strict_test.go
+new file mode 100644
+index 0000000..bedb8f1
+--- /dev/null
++++ b/internal/runtime/executor/native_replay_strict_test.go
+@@ -0,0 +1,277 @@
++package executor
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/nativepolicy"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++	"github.com/tidwall/gjson"
++)
++
++// strictClaudeReplayModel must be a preserved-thinking model so the non-strict
++// control exercises the drop_block injection path.
++const strictClaudeReplayModel = "claude-opus-5-5"
++
++// strictGeminiThoughtSignatureForTest is the captured Gemini 3.1 Flash Lite
++// envelope from internal/signature/gemini_validation_test.go.
++const strictGeminiThoughtSignatureForTest = "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"
++
++// strictReplayCapture counts synthetic upstream dispatches and keeps the last body.
++type strictReplayCapture struct {
++	calls int
++	body  []byte
++}
++
++func (c *strictReplayCapture) transport(contentType, responseBody string) http.RoundTripper {
++	return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
++		c.calls++
++		body, errRead := io.ReadAll(req.Body)
++		if errRead != nil {
++			return nil, errRead
++		}
++		c.body = body
++		return &http.Response{
++			StatusCode: http.StatusOK,
++			Header:     http.Header{"Content-Type": []string{contentType}},
++			Body:       io.NopCloser(strings.NewReader(responseBody)),
++			Request:    req,
++		}, nil
++	})
++}
++
++func strictReplayTestContext(strict bool, transport http.RoundTripper) context.Context {
++	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", transport)
++	if strict {
++		return nativepolicy.WithStrictReplay(ctx)
++	}
++	return ctx
++}
++
++const strictClaudeMessageResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
++
++func strictClaudePayload(thinkingSignature, redactedData string) []byte {
++	return []byte(`{
++		"model": "` + strictClaudeReplayModel + `",
++		"thinking": {"type": "adaptive"},
++		"messages": [
++			{"role":"user","content":[{"type":"text","text":"hi"}]},
++			{"role":"assistant","content":[
++				{"type":"thinking","thinking":"earlier reasoning","signature":"` + thinkingSignature + `"},
++				{"type":"redacted_thinking","data":"` + redactedData + `"},
++				{"type":"text","text":"Answer"}
++			]},
++			{"role":"user","content":[{"type":"text","text":"continue"}]}
++		]
++	}`)
++}
++
++func TestStrictReplayClaudePreservesSignedAndRedactedBlocks(t *testing.T) {
++	capture := &strictReplayCapture{}
++	ctx := strictReplayTestContext(true, capture.transport("application/json", strictClaudeMessageResponse))
++	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-strict-replay", "cloak_mode": "always"}}
++	request := cliproxyexecutor.Request{Model: strictClaudeReplayModel, Payload: strictClaudePayload(preservedThinkingTestSignature, "redacted-opaque-data")}
++	options := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude}
++
++	if _, err := NewClaudeExecutor(&config.Config{}).Execute(ctx, auth, request, options); err != nil {
++		t.Fatalf("Execute() error = %v", err)
++	}
++	if capture.calls != 1 {
++		t.Fatalf("upstream calls = %d, want 1", capture.calls)
++	}
++	if got := gjson.GetBytes(capture.body, "messages.1.content.0.signature").String(); got != preservedThinkingTestSignature {
++		t.Fatalf("thinking signature was not preserved byte-for-byte")
++	}
++	if got := gjson.GetBytes(capture.body, "messages.1.content.0.thinking").String(); got != "earlier reasoning" {
++		t.Fatalf("thinking text = %q, want preserved", got)
++	}
++	if got := gjson.GetBytes(capture.body, "messages.1.content.1.data").String(); got != "redacted-opaque-data" {
++		t.Fatalf("redacted_thinking data = %q, want preserved", got)
++	}
++	if gjson.GetBytes(capture.body, "thinking.block_binding.prefix_mismatch_behavior").Exists() {
++		t.Fatalf("strict replay injected drop_block; body=%s", string(capture.body))
++	}
++}
++
++func TestStrictReplayClaudeNonStrictControlInjectsDropBlock(t *testing.T) {
++	capture := &strictReplayCapture{}
++	ctx := strictReplayTestContext(false, capture.transport("application/json", strictClaudeMessageResponse))
++	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-strict-replay", "cloak_mode": "always"}}
++	request := cliproxyexecutor.Request{Model: strictClaudeReplayModel, Payload: strictClaudePayload(preservedThinkingTestSignature, "redacted-opaque-data")}
++	options := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude}
++
++	if _, err := NewClaudeExecutor(&config.Config{}).Execute(ctx, auth, request, options); err != nil {
++		t.Fatalf("Execute() error = %v", err)
++	}
++	if got := gjson.GetBytes(capture.body, "thinking.block_binding.prefix_mismatch_behavior").String(); got != "drop_block" {
++		t.Fatalf("non-strict prefix_mismatch_behavior = %q, want drop_block; body=%s", got, string(capture.body))
++	}
++}
++
++func TestStrictReplayClaudeRejectsInvalidReplayBeforeDispatch(t *testing.T) {
++	tests := []struct {
++		name    string
++		payload []byte
++	}{
++		{name: "unsigned thinking", payload: strictClaudePayload("", "redacted-opaque-data")},
++		{name: "empty redacted data", payload: strictClaudePayload(preservedThinkingTestSignature, "")},
++	}
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			capture := &strictReplayCapture{}
++			ctx := strictReplayTestContext(true, capture.transport("application/json", strictClaudeMessageResponse))
++			auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-strict-replay", "cloak_mode": "always"}}
++			request := cliproxyexecutor.Request{Model: strictClaudeReplayModel, Payload: test.payload}
++			options := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude}
++
++			if _, err := NewClaudeExecutor(&config.Config{}).Execute(ctx, auth, request, options); err == nil {
++				t.Fatal("Execute() error = nil, want strict replay rejection")
++			}
++			if capture.calls != 0 {
++				t.Fatalf("upstream calls = %d, want 0 before dispatch", capture.calls)
++			}
++		})
++	}
++}
++
++const strictCodexCompletedResponse = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"background\":false,\"error\":null}}\n\n"
++
++// strictCodexCapture starts a loopback server, matching the existing Codex
++// signature tests. The Codex executor does not read the synthetic roundtripper.
++func strictCodexCapture(t *testing.T) (*strictReplayCapture, string) {
++	t.Helper()
++	capture := &strictReplayCapture{}
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		body, errRead := io.ReadAll(r.Body)
++		if errRead != nil {
++			t.Errorf("read body: %v", errRead)
++			return
++		}
++		capture.calls++
++		capture.body = body
++		w.Header().Set("Content-Type", "text/event-stream")
++		_, _ = w.Write([]byte(strictCodexCompletedResponse))
++	}))
++	t.Cleanup(server.Close)
++	return capture, server.URL
++}
++
++func TestStrictReplayCodexPreservesValidReasoningAndTransportFields(t *testing.T) {
++	validEncryptedContent := validCodexReasoningEncryptedContentForTest()
++	capture, serverURL := strictCodexCapture(t)
++
++	_, err := NewCodexExecutor(&config.Config{}).Execute(nativepolicy.WithStrictReplay(context.Background()), newCodexSignatureTestAuth(serverURL), cliproxyexecutor.Request{
++		Model: "gpt-5.4",
++		Payload: []byte(`{"model":"gpt-5.4","input":[` +
++			`{"id":"rs_good","type":"reasoning","encrypted_content":"` + validEncryptedContent + `","summary":[]},` +
++			`{"role":"user","content":"hello"}` +
++			`]}`),
++	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")})
++	if err != nil {
++		t.Fatalf("Execute() error = %v", err)
++	}
++	if capture.calls != 1 {
++		t.Fatalf("upstream calls = %d, want 1", capture.calls)
++	}
++	if got := gjson.GetBytes(capture.body, "input.0.encrypted_content").String(); got != validEncryptedContent {
++		t.Fatalf("reasoning encrypted_content = %q, want preserved", got)
++	}
++	if !gjson.GetBytes(capture.body, "stream").Bool() {
++		t.Fatalf("stream = false, want forced true; body=%s", string(capture.body))
++	}
++	if gjson.GetBytes(capture.body, "store").Bool() {
++		t.Fatalf("store = true, want false; body=%s", string(capture.body))
++	}
++	if got := gjson.GetBytes(capture.body, "include.0").String(); got != "reasoning.encrypted_content" {
++		t.Fatalf("include[0] = %q, want reasoning.encrypted_content; body=%s", got, string(capture.body))
++	}
++}
++
++func TestStrictReplayCodexRejectsForeignReasoningBeforeDispatch(t *testing.T) {
++	capture, serverURL := strictCodexCapture(t)
++
++	_, err := NewCodexExecutor(&config.Config{}).Execute(nativepolicy.WithStrictReplay(context.Background()), newCodexSignatureTestAuth(serverURL), cliproxyexecutor.Request{
++		Model: "gpt-5.4",
++		Payload: []byte(`{"model":"gpt-5.4","input":[` +
++			`{"id":"rs_bad","type":"reasoning","encrypted_content":"not-a-gpt-reasoning-signature","summary":[]}` +
++			`]}`),
++	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")})
++	if err == nil {
++		t.Fatal("Execute() error = nil, want strict replay rejection")
++	}
++	if capture.calls != 0 {
++		t.Fatalf("upstream calls = %d, want 0 before dispatch", capture.calls)
++	}
++}
++
++const strictGeminiStreamResponse = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}}\n\n"
++
++func strictGeminiAuth() *cliproxyauth.Auth {
++	return &cliproxyauth.Auth{Metadata: map[string]any{
++		"access_token": "token",
++		"expired":      time.Now().Add(2 * time.Hour).Format(time.RFC3339),
++		"project_id":   "project-1",
++	}}
++}
++
++func TestStrictReplayGeminiPreservesOrderedSignedParts(t *testing.T) {
++	sig := strictGeminiThoughtSignatureForTest
++	capture := &strictReplayCapture{}
++	ctx := strictReplayTestContext(true, capture.transport("text/event-stream", strictGeminiStreamResponse))
++
++	result, err := NewAntigravityExecutor(&config.Config{}).ExecuteStream(ctx, strictGeminiAuth(), cliproxyexecutor.Request{
++		Model: "gemini-3-pro-preview",
++		Payload: []byte(`{"contents":[` +
++			`{"role":"user","parts":[{"text":"hi"}]},` +
++			`{"role":"model","parts":[` +
++			`{"text":"reasoning","thought":true,"thoughtSignature":"` + sig + `"},` +
++			`{"functionCall":{"name":"lookup","args":{"q":"x"}},"thoughtSignature":"` + sig + `"},` +
++			`{"thoughtSignature":"` + sig + `"}` +
++			`]},` +
++			`{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"ok":true}}}]}` +
++			`]}`),
++	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini, ResponseFormat: sdktranslator.FormatGemini})
++	if err != nil {
++		t.Fatalf("ExecuteStream() error = %v", err)
++	}
++	for chunk := range result.Chunks {
++		if chunk.Err != nil {
++			t.Fatalf("stream chunk error = %v", chunk.Err)
++		}
++	}
++	if capture.calls != 1 {
++		t.Fatalf("upstream calls = %d, want 1", capture.calls)
++	}
++	if got := strings.Count(string(capture.body), sig); got < 3 {
++		t.Fatalf("signature occurrences = %d, want all 3 signed parts preserved; body=%s", got, string(capture.body))
++	}
++	if !strings.Contains(string(capture.body), `"functionResponse"`) {
++		t.Fatalf("functionResponse missing from upstream body; body=%s", string(capture.body))
++	}
++}
++
++func TestStrictReplayGeminiRejectsInvalidSignatureBeforeDispatch(t *testing.T) {
++	capture := &strictReplayCapture{}
++	ctx := strictReplayTestContext(true, capture.transport("text/event-stream", strictGeminiStreamResponse))
++
++	_, err := NewAntigravityExecutor(&config.Config{}).ExecuteStream(ctx, strictGeminiAuth(), cliproxyexecutor.Request{
++		Model: "gemini-3-pro-preview",
++		Payload: []byte(`{"contents":[{"role":"model","parts":[` +
++			`{"text":"reasoning","thought":true,"thoughtSignature":"not-a-gemini-signature"}` +
++			`]}]}`),
++	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini, ResponseFormat: sdktranslator.FormatGemini})
++	if err == nil {
++		t.Fatal("ExecuteStream() error = nil, want strict replay rejection")
++	}
++	if capture.calls != 0 {
++		t.Fatalf("upstream calls = %d, want 0 before dispatch", capture.calls)
++	}
++}
+diff --git a/internal/runtime/executor/openai_responses_signature.go b/internal/runtime/executor/openai_responses_signature.go
+index 59469dd..acb3dd8 100644
+--- a/internal/runtime/executor/openai_responses_signature.go
++++ b/internal/runtime/executor/openai_responses_signature.go
+@@ -11,6 +11,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/nativepolicy"
+ 	"github.com/tidwall/gjson"
+ 	"github.com/tidwall/sjson"
+ )
+@@ -187,6 +188,10 @@ func sanitizeOpenAIResponsesReasoningEncryptedContentWithOptions(ctx context.Con
+ 	if !inputResult.Exists() || !inputResult.IsArray() {
+ 		return body
+ 	}
++	// Strict Codex replay forwards native reasoning items unchanged; validateStrictCodexReplay has already rejected unreplayable ones.
++	if nativepolicy.StrictReplay(ctx) && !isCompat && metaPolicy == metaSignatureForeign {
++		return body
++	}
+ 	provider = strings.TrimSpace(provider)
+ 	if provider == "" {
+ 		provider = "openai responses upstream"
+diff --git a/sdk/auth/antigravity.go b/sdk/auth/antigravity.go
+index aaafb70..c1a4893 100644
+--- a/sdk/auth/antigravity.go
++++ b/sdk/auth/antigravity.go
+@@ -68,6 +68,9 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
+ 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", port)
+ 	authURL := authSvc.BuildAuthURL(state, redirectURI)
+ 
++	if errAuth := presentAuthorizationURL(opts, authURL); errAuth != nil {
++		return nil, fmt.Errorf("antigravity authorization callback failed: %w", errAuth)
++	}
+ 	if !opts.NoBrowser {
+ 		fmt.Println("Opening browser for antigravity authentication")
+ 		if !browser.IsAvailable() {
+@@ -84,7 +87,7 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
+ 		fmt.Printf("Visit the following URL to continue authentication:\n%s\n", authURL)
+ 	}
+ 
+-	fmt.Println("Waiting for antigravity authentication callback...")
++	reportProgress(opts, "Waiting for antigravity authentication callback...")
+ 
+ 	var cbRes callbackResult
+ 	timeoutTimer := time.NewTimer(5 * time.Minute)
+diff --git a/sdk/auth/claude.go b/sdk/auth/claude.go
+index 346a65b..9a88a23 100644
+--- a/sdk/auth/claude.go
++++ b/sdk/auth/claude.go
+@@ -84,6 +84,9 @@ func (a *ClaudeAuthenticator) Login(ctx context.Context, cfg *config.Config, opt
+ 	}
+ 	state = returnedState
+ 
++	if errAuth := presentAuthorizationURL(opts, authURL); errAuth != nil {
++		return nil, fmt.Errorf("claude authorization callback failed: %w", errAuth)
++	}
+ 	if !opts.NoBrowser {
+ 		fmt.Println("Opening browser for Claude authentication")
+ 		if !browser.IsAvailable() {
+@@ -100,7 +103,7 @@ func (a *ClaudeAuthenticator) Login(ctx context.Context, cfg *config.Config, opt
+ 		fmt.Printf("Visit the following URL to continue authentication:\n%s\n", authURL)
+ 	}
+ 
+-	fmt.Println("Waiting for Claude authentication callback...")
++	reportProgress(opts, "Waiting for Claude authentication callback...")
+ 
+ 	callbackCh := make(chan *claude.OAuthResult, 1)
+ 	callbackErrCh := make(chan error, 1)
+diff --git a/sdk/auth/codex.go b/sdk/auth/codex.go
+index 2d56fa0..0fc53b0 100644
+--- a/sdk/auth/codex.go
++++ b/sdk/auth/codex.go
+@@ -87,6 +87,9 @@ func (a *CodexAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
+ 		return nil, fmt.Errorf("codex authorization url generation failed: %w", err)
+ 	}
+ 
++	if errAuth := presentAuthorizationURL(opts, authURL); errAuth != nil {
++		return nil, fmt.Errorf("codex authorization callback failed: %w", errAuth)
++	}
+ 	if !opts.NoBrowser {
+ 		fmt.Println("Opening browser for Codex authentication")
+ 		if !browser.IsAvailable() {
+@@ -103,7 +106,7 @@ func (a *CodexAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
+ 		fmt.Printf("Visit the following URL to continue authentication:\n%s\n", authURL)
+ 	}
+ 
+-	fmt.Println("Waiting for Codex authentication callback...")
++	reportProgress(opts, "Waiting for Codex authentication callback...")
+ 
+ 	callbackCh := make(chan *codex.OAuthResult, 1)
+ 	callbackErrCh := make(chan error, 1)
+diff --git a/sdk/auth/codex_device.go b/sdk/auth/codex_device.go
+index cc2febb..458c065 100644
+--- a/sdk/auth/codex_device.go
++++ b/sdk/auth/codex_device.go
+@@ -18,6 +18,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -66,7 +67,7 @@ func (a *CodexAuthenticator) loginWithDeviceFlow(ctx context.Context, cfg *confi
+ 		ctx = context.Background()
+ 	}
+ 
+-	httpClient := util.SetProxy(&cfg.SDKConfig, &http.Client{})
++	httpClient := httptransport.ApplyOutboundPolicy(util.SetProxy(&cfg.SDKConfig, &http.Client{}))
+ 
+ 	userCodeResp, err := requestCodexDeviceUserCode(ctx, httpClient)
+ 	if err != nil {
+diff --git a/sdk/auth/interfaces.go b/sdk/auth/interfaces.go
+index 4388de8..7404f6c 100644
+--- a/sdk/auth/interfaces.go
++++ b/sdk/auth/interfaces.go
+@@ -3,6 +3,7 @@ package auth
+ import (
+ 	"context"
+ 	"errors"
++	"fmt"
+ 	"time"
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+@@ -19,6 +20,28 @@ type LoginOptions struct {
+ 	CallbackPort int
+ 	Metadata     map[string]string
+ 	Prompt       func(prompt string) (string, error)
++	// AuthorizationURL, when set, runs before the authorization URL is shown or
++	// opened. A returned error aborts the login.
++	AuthorizationURL func(authURL string) error
++	// Progress, when set, receives status messages in place of stdout.
++	Progress func(message string)
++}
++
++// presentAuthorizationURL runs the caller's AuthorizationURL hook before the URL is exposed.
++func presentAuthorizationURL(opts *LoginOptions, authURL string) error {
++	if opts == nil || opts.AuthorizationURL == nil {
++		return nil
++	}
++	return opts.AuthorizationURL(authURL)
++}
++
++// reportProgress sends a status message to the Progress hook, or stdout when none is set.
++func reportProgress(opts *LoginOptions, message string) {
++	if opts != nil && opts.Progress != nil {
++		opts.Progress(message)
++		return
++	}
++	fmt.Println(message)
+ }
+ 
+ // Authenticator manages login and optional refresh flows for a provider.
+diff --git a/sdk/auth/login_callback_test.go b/sdk/auth/login_callback_test.go
+new file mode 100644
+index 0000000..3432aef
+--- /dev/null
++++ b/sdk/auth/login_callback_test.go
+@@ -0,0 +1,51 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"net"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++func freeLoopbackPort(t *testing.T) int {
++	t.Helper()
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatalf("net.Listen() error = %v", err)
++	}
++	defer func() { _ = listener.Close() }()
++	return listener.Addr().(*net.TCPAddr).Port
++}
++
++// A failing AuthorizationURL hook must abort the login before the URL is
++// exposed (Progress is never reached) and must surface the hook error.
++func TestClaudeLoginAbortsWhenAuthorizationCallbackFails(t *testing.T) {
++	sentinel := errors.New("host refused to expose the authorization URL")
++	progressCalls := 0
++	exposedURL := ""
++	opts := &LoginOptions{
++		NoBrowser:    true,
++		CallbackPort: freeLoopbackPort(t),
++		AuthorizationURL: func(authURL string) error {
++			exposedURL = authURL
++			return sentinel
++		},
++		Progress: func(string) { progressCalls++ },
++	}
++
++	record, err := NewClaudeAuthenticator().Login(context.Background(), &config.Config{}, opts)
++	if !errors.Is(err, sentinel) {
++		t.Fatalf("Login() error = %v, want wrapped callback error", err)
++	}
++	if record != nil {
++		t.Fatalf("Login() returned a record %+v after callback failure", record)
++	}
++	if progressCalls != 0 {
++		t.Fatalf("Progress called %d time(s); login continued past the failed callback", progressCalls)
++	}
++	if exposedURL == "" {
++		t.Fatal("AuthorizationURL was never offered the authorization URL")
++	}
++}
+diff --git a/sdk/cliproxy/antigravity_models.go b/sdk/cliproxy/antigravity_models.go
+index 6c46f95..6f8f52f 100644
+--- a/sdk/cliproxy/antigravity_models.go
++++ b/sdk/cliproxy/antigravity_models.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
+ 	log "github.com/sirupsen/logrus"
+ 	"golang.org/x/sync/singleflight"
+@@ -470,6 +471,7 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
+ 		client.Transport = transport
+ 		defer transport.CloseIdleConnections()
+ 	}
++	client = httptransport.ApplyOutboundPolicy(client)
+ 	project, _ := auth.Metadata["project_id"].(string)
+ 	body, errMarshal := json.Marshal(map[string]string{"project": project})
+ 	if errMarshal != nil {
+diff --git a/sdk/cliproxy/native_http.go b/sdk/cliproxy/native_http.go
+new file mode 100644
+index 0000000..e8ccc6b
+--- /dev/null
++++ b/sdk/cliproxy/native_http.go
+@@ -0,0 +1,106 @@
++package cliproxy
++
++import (
++	"fmt"
++	"strings"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++)
++
++// NativeModel describes one model from the embedded static catalog of a native provider.
++type NativeModel struct {
++	ID               string
++	Name             string
++	ContextWindow    int
++	SupportedEfforts []string
++}
++
++// RegisterNativeHTTPExecutors installs the HTTP-only native executors for Claude,
++// Codex, and Antigravity on manager. It fails when no outbound policy is installed,
++// so traffic from these executors is never dispatched unpoliced. WebSocket and
++// auto-routing executors are not registered.
++func RegisterNativeHTTPExecutors(manager *coreauth.Manager, cfg *config.Config) error {
++	if manager == nil {
++		return fmt.Errorf("cliproxy: native executor registration requires a manager")
++	}
++	if !httptransport.OutboundPolicyInstalled() {
++		return fmt.Errorf("cliproxy: native executor registration requires an installed outbound policy")
++	}
++	manager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
++	manager.RegisterExecutor(executor.NewCodexExecutor(cfg))
++	manager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
++	return nil
++}
++
++// NativeModels returns the embedded static catalog for a native provider. It does
++// not use the network or refresh capability hints.
++func NativeModels(provider string) ([]NativeModel, error) {
++	infos, err := nativeModelInfos(provider)
++	if err != nil {
++		return nil, err
++	}
++	models := make([]NativeModel, 0, len(infos))
++	for _, info := range infos {
++		if info == nil {
++			continue
++		}
++		name := info.DisplayName
++		if name == "" {
++			name = info.ID
++		}
++		model := NativeModel{ID: info.ID, Name: name, ContextWindow: info.ContextLength}
++		if info.Thinking != nil {
++			model.SupportedEfforts = append([]string(nil), info.Thinking.Levels...)
++		}
++		models = append(models, model)
++	}
++	return models, nil
++}
++
++func nativeModelInfos(provider string) ([]*registry.ModelInfo, error) {
++	switch provider {
++	case "claude", "codex", "antigravity":
++	default:
++		return nil, fmt.Errorf("cliproxy: unsupported native provider")
++	}
++	infos := registry.GetStaticModelDefinitionsByChannel(provider)
++	if provider == "antigravity" {
++		for _, info := range infos {
++			if info != nil && info.ID == "gemini-4-argon-high" {
++				// The previous pinned catalog routes Argon low/medium/high to distinct native SKUs.
++				for _, level := range []string{"low", "medium"} {
++					model := *info
++					model.ID = "gemini-4-argon-" + level
++					model.Name = model.ID
++					model.MetadataModelID = info.ID
++					infos = append(infos, &model)
++				}
++				break
++			}
++		}
++	}
++	return infos, nil
++}
++
++// RegisterNativeAuthModels registers only local native catalog metadata, without probes.
++// Call before manager.Register, or refresh that manager's scheduler entry afterwards.
++func RegisterNativeAuthModels(authID, provider string) error {
++	if strings.TrimSpace(authID) == "" {
++		return fmt.Errorf("cliproxy: native model registration requires an auth ID")
++	}
++	models, err := nativeModelInfos(provider)
++	if err != nil {
++		return err
++	}
++	registry.GetGlobalRegistry().RegisterClient(authID, provider, models)
++	return nil
++}
++
++// UnregisterNativeAuthModels removes a credential's local model registrations.
++func UnregisterNativeAuthModels(authID string) {
++	registry.GetGlobalRegistry().UnregisterClient(authID)
++}
+diff --git a/sdk/cliproxy/native_http_test.go b/sdk/cliproxy/native_http_test.go
+new file mode 100644
+index 0000000..58f265f
+--- /dev/null
++++ b/sdk/cliproxy/native_http_test.go
+@@ -0,0 +1,27 @@
++package cliproxy
++
++import (
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++)
++
++// Native execution cannot be enabled without a process-owned outbound policy.
++func TestRegisterNativeHTTPExecutorsRequiresPolicy(t *testing.T) {
++	if err := RegisterNativeHTTPExecutors(nil, &config.Config{}); err == nil {
++		t.Fatal("RegisterNativeHTTPExecutors(nil manager) succeeded; want error")
++	}
++
++	manager := coreauth.NewManager(nil, nil, nil)
++	if err := RegisterNativeHTTPExecutors(manager, &config.Config{}); err == nil {
++		t.Fatal("RegisterNativeHTTPExecutors() succeeded without an outbound policy; want fail-closed error")
++	}
++
++}
++
++func TestNativeModelsRejectsUnknownProvider(t *testing.T) {
++	if _, err := NativeModels("gemini"); err == nil {
++		t.Fatal("NativeModels(unknown provider) succeeded; want error")
++	}
++}
+diff --git a/sdk/httptransport/decorator.go b/sdk/httptransport/decorator.go
+index 7ef524e..7c73518 100644
+--- a/sdk/httptransport/decorator.go
++++ b/sdk/httptransport/decorator.go
+@@ -1,6 +1,8 @@
+-// Package httptransport exposes an additive, request-scoped observation seam.
+-// A decorator wraps the transport already selected by the executor: it must not
+-// replace provider fingerprints, proxy routing, pools, or HTTP protocol policy.
++// Package httptransport exposes two seams over the transport selected by an
++// executor. A request-scoped decorator observes final HTTP requests. The
++// process-owned outbound policy (SetOutboundPolicy) wraps the final transport of
++// every enabled client. Neither may replace provider fingerprints, proxy routing,
++// pools, or HTTP protocol policy.
+ package httptransport
+ 
+ import (
+@@ -50,26 +52,27 @@ func InheritDecorator(ctx, fallback context.Context) context.Context {
+ 	return ctx
+ }
+ 
+-// Decorate applies a context decorator AFTER transport selection. With no
+-// decorator, the exact original client is returned. Only the client value is
+-// copied; the original selected transport/pool and all client policy survive.
++// Decorate applies a context decorator AFTER transport selection, then the
++// process-owned outbound policy (when installed). The policy wraps the final
++// transport, so every request, including redirects, passes through it. With no
++// decorator and no policy, the exact original client is returned. Only the client
++// value is copied; the selected transport/pool and client policy survive.
+ func Decorate(ctx context.Context, client *http.Client) *http.Client {
+-	if ctx == nil || client == nil {
+-		return client
++	if client == nil {
++		return nil
+ 	}
+-	decorator, _ := ctx.Value(decoratorKey{}).(Decorator)
+-	if decorator == nil {
+-		return client
++	if ctx != nil {
++		if decorator, _ := ctx.Value(decoratorKey{}).(Decorator); decorator != nil {
++			next := client.Transport
++			if next == nil {
++				next = http.DefaultTransport
++			}
++			if wrapped := decorator(next); wrapped != nil {
++				clone := *client
++				clone.Transport = wrapped
++				client = &clone
++			}
++		}
+ 	}
+-	next := client.Transport
+-	if next == nil {
+-		next = http.DefaultTransport
+-	}
+-	wrapped := decorator(next)
+-	if wrapped == nil {
+-		return client
+-	}
+-	clone := *client
+-	clone.Transport = wrapped
+-	return &clone
++	return ApplyOutboundPolicy(client)
+ }
+diff --git a/sdk/httptransport/outbound_policy.go b/sdk/httptransport/outbound_policy.go
+new file mode 100644
+index 0000000..f1f6ea1
+--- /dev/null
++++ b/sdk/httptransport/outbound_policy.go
+@@ -0,0 +1,106 @@
++package httptransport
++
++import (
++	"errors"
++	"net/http"
++	"sync"
++)
++
++// outboundPolicy is process-owned. It is installed once, before any enabled
++// network producer builds a client, and every enabled client wraps its final
++// selected transport with it. Redirects re-enter the policy because the policy
++// wrapper is the client's transport.
++var outboundPolicy struct {
++	mu     sync.RWMutex
++	policy func(http.RoundTripper) http.RoundTripper
++}
++
++// SetOutboundPolicy installs the process-wide outbound policy. It may be
++// installed only once; a second install is an error so an active policy can
++// never be silently replaced.
++func SetOutboundPolicy(policy func(http.RoundTripper) http.RoundTripper) error {
++	if policy == nil {
++		return errors.New("httptransport: outbound policy is nil")
++	}
++	outboundPolicy.mu.Lock()
++	defer outboundPolicy.mu.Unlock()
++	if outboundPolicy.policy != nil {
++		return errors.New("httptransport: outbound policy is already installed")
++	}
++	outboundPolicy.policy = policy
++	return nil
++}
++
++// OutboundPolicyInstalled reports whether SetOutboundPolicy has installed a policy.
++func OutboundPolicyInstalled() bool {
++	outboundPolicy.mu.RLock()
++	defer outboundPolicy.mu.RUnlock()
++	return outboundPolicy.policy != nil
++}
++
++// outboundPolicyTransport marks a client whose final transport is already
++// policy-wrapped. base is the transport selected before wrapping and is nil when
++// the client used the implicit default transport. next is the transport the
++// policy wraps; it receives CloseIdleConnections so pool lifecycle is preserved.
++type outboundPolicyTransport struct {
++	base    http.RoundTripper
++	next    http.RoundTripper
++	wrapped http.RoundTripper
++}
++
++func (t *outboundPolicyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	return t.wrapped.RoundTrip(req)
++}
++
++func (t *outboundPolicyTransport) CloseIdleConnections() {
++	if c, ok := t.next.(interface{ CloseIdleConnections() }); ok {
++		c.CloseIdleConnections()
++	}
++}
++
++// ApplyOutboundPolicy returns a copy of client whose transport is wrapped by the
++// installed policy. With no policy installed it returns client unchanged. An
++// already-wrapped client is returned as is, so the policy runs once per request.
++func ApplyOutboundPolicy(client *http.Client) *http.Client {
++	if client == nil {
++		return nil
++	}
++	outboundPolicy.mu.RLock()
++	policy := outboundPolicy.policy
++	outboundPolicy.mu.RUnlock()
++	if policy == nil {
++		return client
++	}
++	if _, ok := client.Transport.(*outboundPolicyTransport); ok {
++		return client
++	}
++	next := client.Transport
++	if next == nil {
++		next = http.DefaultTransport
++	}
++	wrapped := policy(next)
++	if wrapped == nil {
++		// Fail closed: a policy that yields no transport must not let requests through.
++		wrapped = errTransport{errors.New("httptransport: outbound policy returned a nil transport")}
++	}
++	clone := *client
++	clone.Transport = &outboundPolicyTransport{base: client.Transport, next: next, wrapped: wrapped}
++	return &clone
++}
++
++// UnwrapOutboundPolicy returns the transport a client selected before the
++// outbound policy was applied, or rt itself when rt is not policy-wrapped. It
++// returns nil when the client used the implicit default transport, so callers
++// that replace the transport keep their nil-transport handling.
++func UnwrapOutboundPolicy(rt http.RoundTripper) http.RoundTripper {
++	if t, ok := rt.(*outboundPolicyTransport); ok {
++		return t.base
++	}
++	return rt
++}
++
++type errTransport struct{ err error }
++
++func (t errTransport) RoundTrip(*http.Request) (*http.Response, error) {
++	return nil, t.err
++}
+diff --git a/sdk/httptransport/outbound_policy_test.go b/sdk/httptransport/outbound_policy_test.go
+new file mode 100644
+index 0000000..0befa63
+--- /dev/null
++++ b/sdk/httptransport/outbound_policy_test.go
+@@ -0,0 +1,157 @@
++package httptransport
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"testing"
++)
++
++var errPolicyRejected = errors.New("rejected by outbound policy")
++
++type recordingTransport struct {
++	calls int
++}
++
++func (r *recordingTransport) RoundTrip(*http.Request) (*http.Response, error) {
++	r.calls++
++	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: http.Header{}}, nil
++}
++
++type rejectingPolicyTransport struct {
++	next http.RoundTripper
++}
++
++func (p rejectingPolicyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	if req.Header.Get("X-Blocked") != "" {
++		return nil, errPolicyRejected
++	}
++	return p.next.RoundTrip(req)
++}
++
++func resetOutboundPolicyForTest(t *testing.T) {
++	t.Helper()
++	outboundPolicy.mu.Lock()
++	outboundPolicy.policy = nil
++	outboundPolicy.mu.Unlock()
++	t.Cleanup(func() {
++		outboundPolicy.mu.Lock()
++		outboundPolicy.policy = nil
++		outboundPolicy.mu.Unlock()
++	})
++}
++
++func TestOutboundPolicyRejectsBeforeUnderlyingDispatch(t *testing.T) {
++	resetOutboundPolicyForTest(t)
++	if err := SetOutboundPolicy(func(next http.RoundTripper) http.RoundTripper {
++		return rejectingPolicyTransport{next: next}
++	}); err != nil {
++		t.Fatalf("SetOutboundPolicy() error = %v", err)
++	}
++
++	base := &recordingTransport{}
++	client := ApplyOutboundPolicy(&http.Client{Transport: base})
++	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.invalid/v1/messages", nil)
++	if err != nil {
++		t.Fatalf("NewRequestWithContext() error = %v", err)
++	}
++	req.Header.Set("X-Blocked", "1")
++
++	_, err = client.Do(req)
++	if !errors.Is(err, errPolicyRejected) {
++		t.Fatalf("Do() error = %v, want policy rejection", err)
++	}
++	if base.calls != 0 {
++		t.Fatalf("underlying transport dispatched %d time(s) for a rejected request", base.calls)
++	}
++}
++
++func TestApplyOutboundPolicyRetainsSelectedTransportAndWrapsOnce(t *testing.T) {
++	resetOutboundPolicyForTest(t)
++	wraps := 0
++	if err := SetOutboundPolicy(func(next http.RoundTripper) http.RoundTripper {
++		wraps++
++		return next
++	}); err != nil {
++		t.Fatalf("SetOutboundPolicy() error = %v", err)
++	}
++
++	selected := &http.Transport{MaxIdleConns: 7}
++	client := ApplyOutboundPolicy(&http.Client{Transport: selected})
++	if got := UnwrapOutboundPolicy(client.Transport); got != http.RoundTripper(selected) {
++		t.Fatalf("UnwrapOutboundPolicy() = %T, want the selected *http.Transport", got)
++	}
++
++	again := ApplyOutboundPolicy(client)
++	if again != client {
++		t.Fatal("ApplyOutboundPolicy() re-wrapped an already policy-wrapped client")
++	}
++	if wraps != 1 {
++		t.Fatalf("policy wrapped %d time(s), want exactly 1", wraps)
++	}
++}
++
++func TestApplyOutboundPolicyFailsClosedOnNilPolicyResult(t *testing.T) {
++	resetOutboundPolicyForTest(t)
++	if err := SetOutboundPolicy(func(http.RoundTripper) http.RoundTripper { return nil }); err != nil {
++		t.Fatalf("SetOutboundPolicy() error = %v", err)
++	}
++
++	base := &recordingTransport{}
++	client := ApplyOutboundPolicy(&http.Client{Transport: base})
++	if _, err := client.Get("https://example.invalid/"); err == nil {
++		t.Fatal("Get() succeeded with a nil policy result; want fail-closed error")
++	}
++	if base.calls != 0 {
++		t.Fatalf("underlying transport dispatched %d time(s) despite fail-closed policy", base.calls)
++	}
++}
++
++func TestApplyOutboundPolicyIsNoOpWithoutPolicy(t *testing.T) {
++	resetOutboundPolicyForTest(t)
++	client := &http.Client{Transport: &recordingTransport{}}
++	if got := ApplyOutboundPolicy(client); got != client {
++		t.Fatal("ApplyOutboundPolicy() copied the client with no policy installed")
++	}
++}
++
++func TestDecorateWithNilContextStillAppliesPolicy(t *testing.T) {
++	resetOutboundPolicyForTest(t)
++	if err := SetOutboundPolicy(func(next http.RoundTripper) http.RoundTripper {
++		return rejectingPolicyTransport{next: next}
++	}); err != nil {
++		t.Fatalf("SetOutboundPolicy() error = %v", err)
++	}
++
++	base := &recordingTransport{}
++	client := Decorate(nil, &http.Client{Transport: base})
++	if _, ok := client.Transport.(*outboundPolicyTransport); !ok {
++		t.Fatalf("Decorate(nil, client) transport = %T, want policy-wrapped transport", client.Transport)
++	}
++
++	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.invalid/", nil)
++	if err != nil {
++		t.Fatalf("NewRequestWithContext() error = %v", err)
++	}
++	req.Header.Set("X-Blocked", "1")
++	if _, err := client.Do(req); !errors.Is(err, errPolicyRejected) {
++		t.Fatalf("Do() error = %v, want policy rejection", err)
++	}
++	if base.calls != 0 {
++		t.Fatalf("underlying transport dispatched %d time(s) for a rejected request", base.calls)
++	}
++}
++
++func TestSetOutboundPolicyRejectsNilAndReinstall(t *testing.T) {
++	resetOutboundPolicyForTest(t)
++	if err := SetOutboundPolicy(nil); err == nil {
++		t.Fatal("SetOutboundPolicy(nil) succeeded; want error")
++	}
++	identity := func(next http.RoundTripper) http.RoundTripper { return next }
++	if err := SetOutboundPolicy(identity); err != nil {
++		t.Fatalf("first SetOutboundPolicy() error = %v", err)
++	}
++	if err := SetOutboundPolicy(identity); err == nil {
++		t.Fatal("second SetOutboundPolicy() succeeded; an active policy must not be replaced")
++	}
++}
+diff --git a/sdk/nativepolicy/strict_replay.go b/sdk/nativepolicy/strict_replay.go
+new file mode 100644
+index 0000000..502fef4
+--- /dev/null
++++ b/sdk/nativepolicy/strict_replay.go
+@@ -0,0 +1,29 @@
++// Package nativepolicy carries request-scoped policy for native provider
++// executors.
++//
++// The strict replay flag is an explicit opt-in for replaying provider-native
++// reasoning state (Claude thinking/redacted_thinking signatures, Codex reasoning
++// items, Gemini thought signatures) byte-for-byte. It is only a request-scope
++// switch. It is NOT an authentication, provenance, or privacy assertion: the
++// host MUST verify provider, model, account, and session binding of the replayed
++// state before setting it.
++package nativepolicy
++
++import "context"
++
++type strictReplayKey struct{}
++
++// WithStrictReplay returns a context that enables strict native reasoning replay
++// for requests executed with it.
++func WithStrictReplay(ctx context.Context) context.Context {
++	return context.WithValue(ctx, strictReplayKey{}, true)
++}
++
++// StrictReplay reports whether strict native reasoning replay was enabled on ctx.
++func StrictReplay(ctx context.Context) bool {
++	if ctx == nil {
++		return false
++	}
++	enabled, _ := ctx.Value(strictReplayKey{}).(bool)
++	return enabled
++}

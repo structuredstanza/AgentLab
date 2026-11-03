@@ -33,19 +33,29 @@ export function DeliveryList({ channels }: { channels: NotificationChannel[] }) 
 
   const load = React.useCallback(() => {
     setLoading(true);
+    let alive = true;
     api
       .notifyDeliveries({ channelId: channelID, state, page, pageSize })
       .then((r) => {
+        // A slower response for the previous filter or page must not overwrite
+        // the rows the operator is now looking at.
+        if (!alive) return;
         setRows(r.deliveries);
         setTotal(r.total);
       })
-      .catch((e) => toast.error(t("delivery.loadFailed", { msg: (e as Error).message })))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (!alive) return;
+        toast.error(t("delivery.loadFailed", { msg: (e as Error).message }));
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
     // t is a stable reference, so it doesn't need to go in deps, but it's included to satisfy exhaustive-deps.
   }, [channelID, state, page, t]);
-  React.useEffect(() => {
-    load();
-  }, [load]);
+  React.useEffect(() => load(), [load]);
 
   async function retry(id: number) {
     try {

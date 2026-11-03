@@ -53,7 +53,7 @@ func TestBuildFindingAssetTree(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	tk, err := d.CreateTask("资产树测试", "目标", nil, 0, 0)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestFindingAssetScopeFilter(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	tk, err := d.CreateTask("资产筛选测试", "目标", nil, 0, 0)
 	if err != nil {

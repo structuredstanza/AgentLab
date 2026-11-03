@@ -46,6 +46,8 @@ type TaskDTO struct {
 	CompletedUnix      int64              `json:"completed_unix"`     // completed_at as unix seconds (0 if unfinished)
 	LastActivity       int64              `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
 	Paused             bool               `json:"paused"`
+	PausedAt           string             `json:"paused_at,omitempty"`
+	PausedUnix         int64              `json:"paused_unix,omitempty"`
 	Queued             bool               `json:"queued"`
 	Tokens             TokenTotalDTO      `json:"tokens"` // whole-task token consumption
 	GoalsTotal         int                `json:"goals_total"`
@@ -55,12 +57,14 @@ type TaskDTO struct {
 	LLMProfileID       *int64             `json:"llm_profile_id,omitempty"` // LLM profile used for this task; nil = default
 	LLMProfileIDs      []int64            `json:"llm_profile_ids"`
 	ActiveLLMProfileID *int64             `json:"active_llm_profile_id,omitempty"`
+	LLMRotate          bool               `json:"llm_rotate"`
 	LLMFailoverState   string             `json:"llm_failover_state"`
 	LLMFailoverReason  string             `json:"llm_failover_reason,omitempty"`
 	SourceTaskIDs      []string           `json:"source_task_ids"`
 	ArchiveBlockedBy   string             `json:"archive_blocked_by_task_id,omitempty"`
 	CompanyIDs         []int64            `json:"company_ids"`
 	CoverageEnabled    bool               `json:"coverage_enabled"` // Asset coverage feature toggle (determined at creation time)
+	PlanQuietMode      bool               `json:"plan_quiet_mode"`
 }
 
 // FindingSeverityDTO is the per-severity vulnerability count shown in the task list (critical/high/medium/low).
@@ -125,15 +129,19 @@ func taskDTO(t *Task, status string) TaskDTO {
 		CompletedAt:        completedRFC(lifecycle.CompletedAt),
 		CompletedUnix:      lifecycle.CompletedAt,
 		Paused:             lifecycle.Paused,
+		PausedAt:           completedRFC(lifecycle.PausedAt),
+		PausedUnix:         lifecycle.PausedAt,
 		Queued:             lifecycle.Queued,
 		LLMProfileID:       llmState.ProfileID,
 		LLMProfileIDs:      profileIDs,
 		ActiveLLMProfileID: llmState.ActiveID,
+		LLMRotate:          t.LLMRotate,
 		LLMFailoverState:   llmState.FailoverState,
 		LLMFailoverReason:  llmState.FailoverReason,
 		SourceTaskIDs:      sourceIDs,
 		CompanyIDs:         lifecycle.CompanyIDs,
 		CoverageEnabled:    t.CoverageEnabled,
+		PlanQuietMode:      t.PlanQuietMode,
 	}
 }
 

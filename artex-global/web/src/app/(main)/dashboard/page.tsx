@@ -18,12 +18,12 @@ import { useTranslations } from "next-intl";
 import { Bar, BarChart, CartesianGrid, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
 
 import { StatusBadge } from "@/components/status-badge";
-import { getDateLocale } from "@/i18n/datetime";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
+import { formatAllocationReset, markUsageStale } from "@/lib/subscription-usage";
 import type {
   Activity,
   Agent,
@@ -196,7 +196,7 @@ export default function DashboardPage() {
           setSubscriptionUsage(res.profiles);
         }
       } catch {
-        /* transient errors - keep stale data */
+        if (alive) setSubscriptionUsage((current) => current.map(markUsageStale));
       }
     };
 
@@ -232,8 +232,8 @@ export default function DashboardPage() {
     };
   }, []);
 
-  const connectedSubscriptions = React.useMemo(
-    () => subscriptionUsage.filter((p) => p.connected),
+  const visibleSubscriptions = React.useMemo(
+    () => subscriptionUsage.filter((p) => p.connected || Boolean(p.error)),
     [subscriptionUsage],
   );
 
@@ -400,7 +400,7 @@ export default function DashboardPage() {
     return m;
   }, [llmProfiles]);
 
-  type Bucket = { input: number; output: number; cacheRead: number; cacheWrite: number; taskCount: number };
+  type Bucket = { input: number; output: number; cacheRead: number; cacheWrite: number; taskCount: number; costEur?: number | null };
 
   // Legacy: bucket by profile (from activity's task.tokens + session usage).
   const tokenByProfileOld = React.useMemo<Map<number | null, Bucket>>(() => {
@@ -444,13 +444,14 @@ export default function DashboardPage() {
     for (const p of usageStats?.by_profile ?? []) {
       // No matching existing profile (renamed/deleted/empty name) → falls into the default bucket, still counted under "All".
       const key = profileIdByName.get(p.profile_name) ?? defaultProfileId;
-      const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
+      const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0, costEur: null };
       m.set(key, {
         input: prev.input + p.input_tokens,
         output: prev.output + p.output_tokens,
         cacheRead: prev.cacheRead + p.cache_read_tokens,
         cacheWrite: prev.cacheWrite + p.cache_write_tokens,
         taskCount: prev.taskCount + p.tasks,
+        costEur: p.cost_eur != null ? (prev.costEur ?? 0) + p.cost_eur : prev.costEur,
       });
     }
     return m;
@@ -465,19 +466,23 @@ export default function DashboardPage() {
         cacheRead = 0,
         cacheWrite = 0,
         taskCount = 0;
+      let costEur: number | null = null;
       for (const v of tokenByProfile.values()) {
         input += v.input;
         output += v.output;
         cacheRead += v.cacheRead;
         cacheWrite += v.cacheWrite;
         taskCount += v.taskCount;
+        if (v.costEur != null) {
+          costEur = (costEur ?? 0) + v.costEur;
+        }
       }
-      return { input, output, cacheRead, cacheWrite, taskCount };
+      return { input, output, cacheRead, cacheWrite, taskCount, costEur };
     }
     const v = tokenByProfile.get(tokenTab as number | null);
     return v
-      ? { input: v.input, output: v.output, cacheRead: v.cacheRead, cacheWrite: v.cacheWrite, taskCount: v.taskCount }
-      : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
+      ? { input: v.input, output: v.output, cacheRead: v.cacheRead, cacheWrite: v.cacheWrite, taskCount: v.taskCount, costEur: v.costEur ?? null }
+      : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0, costEur: null };
   }, [tokenTab, tokenByProfile]);
 
   // Legacy daily: buckets the total tasks/sessions by their creation date (approximate, not actual daily consumption).
@@ -653,8 +658,15 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <ZapIcon className="size-3" /> {t("tokenUsage")}
             </div>
-            <div className="text-2xl font-semibold tabular-nums">
-              {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-semibold tabular-nums">
+                {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+              </span>
+              {displayedTokens.costEur != null && displayedTokens.costEur > 0 ? (
+                <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  (€{displayedTokens.costEur.toFixed(2)})
+                </span>
+              ) : null}
             </div>
           </CardHeader>
           <CardContent className="text-[10px] text-muted-foreground">
@@ -759,8 +771,15 @@ export default function DashboardPage() {
             {/* Total */}
             <div>
               <div className="text-[10px] text-muted-foreground">{t("totalInOut")}</div>
-              <div className="mt-0.5 text-3xl font-bold tabular-nums tracking-tight">
-                {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+              <div className="flex items-baseline gap-2">
+                <span className="mt-0.5 text-3xl font-bold tabular-nums tracking-tight">
+                  {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+                </span>
+                {displayedTokens.costEur != null && displayedTokens.costEur > 0 ? (
+                  <span className="text-base font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                    (€{displayedTokens.costEur.toFixed(2)})
+                  </span>
+                ) : null}
               </div>
               <div className="mt-0.5 text-[10px] text-muted-foreground">
                 {t("taskCount", { count: displayedTokens.taskCount })}
@@ -938,11 +957,11 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {connectedSubscriptions.length === 0 ? (
+        {visibleSubscriptions.length === 0 ? (
           <div className="py-4 text-center text-xs text-muted-foreground">{t("noSubscriptions")}</div>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {connectedSubscriptions.map((sub) => (
+            {visibleSubscriptions.map((sub) => (
               <div key={sub.profile_id} className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-semibold truncate">{sub.name}</span>
@@ -966,14 +985,13 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="flex flex-col gap-2 mt-1">
-                  {sub.windows.map((w) => {
+                  {sub.windows.length === 0 ? (
+                    <p className="text-[10px] text-muted-foreground">
+                      {t(sub.error ? "usageUnavailable" : "noQuotaWindows")}
+                    </p>
+                  ) : sub.windows.map((w) => {
                     const remainingPct = Math.round(w.remaining_fraction * 100);
-                    const resetsText = w.resets_at
-                      ? new Date(w.resets_at).toLocaleTimeString(getDateLocale(), {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })
-                      : null;
+                    const resetsText = formatAllocationReset(w.resets_at);
                     return (
                       <div key={w.id} className="grid gap-1">
                         <div className="flex items-center justify-between text-[11px]">

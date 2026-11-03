@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -32,9 +33,16 @@ type Capture struct {
 	attempts []*attempt
 }
 
+// maxCaptureBytes bounds how much of one attempt's body is kept. The body is
+// mirrored in memory and then written to llm_records.raw_response, a text
+// column, so an unbounded gateway error page or a long stream would be retained
+// in full — once per retry — and stored. The head is what diagnoses a failure.
+const maxCaptureBytes = 256 << 10
+
 type attempt struct {
-	status int
-	body   strings.Builder
+	status    int
+	body      strings.Builder
+	truncated bool
 }
 
 // NewCapture returns a context carrying a fresh Capture, plus the Capture itself.
@@ -105,18 +113,29 @@ func (c *Capture) RawResponse() string {
 	case 0:
 		return ""
 	case 1:
-		return c.attempts[0].body.String()
+		// A truncated attempt cannot be an untouched original, so say so rather
+		// than presenting 256 KiB as the whole body.
+		return c.attempts[0].snapshot()
 	}
 	var b strings.Builder
 	for i, a := range c.attempts {
 		fmt.Fprintf(&b, "===== attempt %d/%d — HTTP %d =====\n", i+1, len(c.attempts), a.status)
-		body := a.body.String()
+		body := a.snapshot()
 		b.WriteString(body)
 		if !strings.HasSuffix(body, "\n") {
 			b.WriteByte('\n')
 		}
 	}
 	return b.String()
+}
+
+// snapshot renders the attempt's body, noting a cut when the bound was hit.
+func (a *attempt) snapshot() string {
+	body := a.body.String()
+	if a.truncated {
+		body += "… [truncated: response body exceeded " + strconv.Itoa(maxCaptureBytes) + " bytes]"
+	}
+	return body
 }
 
 // Attempt is one HTTP round trip's status code and response bytes.
@@ -136,7 +155,11 @@ func (c *Capture) Attempts() []Attempt {
 	defer c.mu.Unlock()
 	out := make([]Attempt, 0, len(c.attempts))
 	for _, a := range c.attempts {
-		out = append(out, Attempt{Status: a.status, Body: a.body.String()})
+		body := a.body.String()
+		if a.truncated {
+			body += "… [truncated]"
+		}
+		out = append(out, Attempt{Status: a.status, Body: body})
 	}
 	return out
 }
@@ -153,7 +176,17 @@ func (t *teeBody) Read(p []byte) (int, error) {
 	n, err := t.rc.Read(p)
 	if n > 0 {
 		t.c.mu.Lock()
-		t.a.body.Write(p[:n])
+		switch {
+		case t.a.truncated:
+			// already at the bound; the caller keeps streaming
+		case t.a.body.Len()+n > maxCaptureBytes:
+			if room := maxCaptureBytes - t.a.body.Len(); room > 0 {
+				t.a.body.Write(p[:room])
+			}
+			t.a.truncated = true
+		default:
+			t.a.body.Write(p[:n])
+		}
 		t.c.mu.Unlock()
 	}
 	return n, err

@@ -13,7 +13,7 @@ func TestRefusedChainEntryKeepsRefusedStatus(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	suffix := time.Now().UnixNano()
 	profileIDs := make([]int64, 0, 2)

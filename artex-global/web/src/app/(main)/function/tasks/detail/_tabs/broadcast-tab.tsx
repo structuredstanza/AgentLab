@@ -21,6 +21,7 @@ import {
   TargetIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -32,7 +33,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getDateLocale } from "@/i18n/datetime";
 import { api } from "@/lib/api";
 import { type Tone, toneClasses, toneDot } from "@/lib/status";
-import type { Edge, ExploreKind, FindingAsset, TaskNode } from "@/lib/types";
+import { taskAssetTypeLabel } from "@/lib/task-assets";
+import type { Edge, ExploreKind, FindingAsset, NewAssetType, TaskNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZES = [20, 50, 100];
@@ -195,17 +197,18 @@ function KindChip({ kind }: { kind: string }) {
   );
 }
 
-// Assets anchored to a node: a type label + recognizable text. The data is delivered together with the broadcast page (node id → asset),
-// and is shown directly on expansion without an extra request. Type labels come from i18n (assetType); types not covered fall back to the raw string.
+// Assets anchored to a node: type label + identifiable text. The data ships with the broadcast page (node id → assets),
+// and is shown on expand without extra requests.
 function AssetList({ assets, dense = false }: { assets: FindingAsset[]; dense?: boolean }) {
-  const t = useTranslations("taskDetail.broadcastTab");
   if (assets.length === 0) return null;
   return (
     <div>
-      <div className="mb-1.5 text-xs font-medium text-muted-foreground">{t("assets", { count: assets.length })}</div>
+      <div className="mb-1.5 text-xs font-medium text-muted-foreground">Assets involved · {assets.length}</div>
       <ul className="flex flex-wrap gap-1.5">
         {assets.map((a) => {
-          const typeLabel = t.has(`assetType.${a.type}`) ? t(`assetType.${a.type}`) : a.type;
+          // At runtime a.type may be a kind not covered by the label table; fall back to the raw string. The type cast keeps the fallback from being flagged as redundant.
+          const typeLabel =
+            (taskAssetTypeLabel as (t: NewAssetType) => string | undefined)(a.type as NewAssetType) || a.type;
           return (
             <li
               key={a.id}
@@ -509,8 +512,13 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
           }
           setLoaded(true);
         })
-        .catch(() => {
-          // Polling is best-effort: keep the last successfully fetched broadcast content and retry automatically on the next round.
+        .catch((err: Error) => {
+          // Polling is best-effort: keep the last successfully fetched broadcast
+          // content and retry next round. The first fetch is different — with no
+          // content yet the skeleton would stay up forever, so surface the error.
+          if (!alive) return;
+          toast.error(err.message);
+          setLoaded(true);
         });
     void load();
     if (!live) {

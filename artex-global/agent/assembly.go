@@ -17,6 +17,7 @@ import (
 // from history on a resumed session (design doc C2).
 type DeferredInfo struct {
 	FindingGuidance string            // derived from the final permitted tools, including DB overrides
+	ToolAliases     map[string]string // immutable registered alias -> policy identity
 	Deferred        []string          // all MCP tool names (schema withheld)
 	GlobalNames     []string          // MCP names to list in the system-prompt block
 	Unlock          *actool.UnlockSet // shared call-gate; nil when no MCP tools
@@ -65,7 +66,7 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 	// bash, WebFetch → web_fetch) and defer them, so a model that drifts to the
 	// model-conventional spelling still hits the handler while the model keeps
 	// seeing only the official names. See issue #19.
-	out, def.Deferred = addToolAliases(out, def.Deferred)
+	out, def.Deferred, def.ToolAliases = addToolAliases(out, def.Deferred)
 	for i, t := range out {
 		out[i] = guardPanic(t)
 	}

@@ -106,7 +106,7 @@ func TestParseAutoScopeLine(t *testing.T) {
 
 func TestExplicitCompanyAttributionSurvivesScopeRebuild(t *testing.T) {
 	d, as, cs := testSetup(t)
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	stamp := time.Now().UnixNano()
 	explicitCompany, _, err := cs.UpsertCompany(fmt.Sprintf("Explicit Attribution %d", stamp), "")
@@ -322,12 +322,16 @@ func TestCompanyScopeAttribution(t *testing.T) {
 	cs := d.Companies()
 
 	var startMax int64
+	var cid int64
 	if err := d.QueryRow(`SELECT COALESCE(MAX(id),0) FROM assets`).Scan(&startMax); err != nil {
 		d.Close()
 		t.Fatalf("startMax: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM assets WHERE id > $1`, startMax)
+		if cid != 0 {
+			cleanupCompany(d, cid)
+		}
 		d.Close()
 	})
 
@@ -338,7 +342,7 @@ func TestCompanyScopeAttribution(t *testing.T) {
 	ipOut := "203.0.113.9"
 	outDomain := fmt.Sprintf("other%d.net", uniq)
 
-	cid, _, err := cs.UpsertCompany(fmt.Sprintf("ScopeCo %d", uniq), "")
+	cid, _, err = cs.UpsertCompany(fmt.Sprintf("ScopeCo %d", uniq), "")
 	if err != nil {
 		t.Fatalf("UpsertCompany: %v", err)
 	}

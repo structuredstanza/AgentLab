@@ -60,7 +60,7 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 	// longer hard-coded here — it now lives in the DB intercept rules, evaluated by
 	// applyIntercept below. Other tools record an empty command.
 	var cmd string
-	switch ev.ToolName {
+	switch intercept.CanonicalToolName(ctx, ev.ToolName) {
 	case "Bash", "shell_open":
 		var in struct {
 			Command string `json:"command"`
@@ -74,8 +74,16 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 		_ = json.Unmarshal(ev.Input, &in)
 		cmd = in.Text
 	}
-	g.record(ev.ToolName, "allow", "", cmd)
-	return g.applyIntercept(ctx, ev)
+	// Record once, after the decision: recording "allow" up front and again from
+	// block() made one denied call appear as both allow and block, and the block
+	// row carried no command because block() passes "".
+	res := g.applyIntercept(ctx, ev)
+	action := "allow"
+	if res.Decision == "block" {
+		action = "block"
+	}
+	g.record(ev.ToolName, action, res.Message, cmd)
+	return res
 }
 
 // applyIntercept evaluates user-configured intercept rules against the tool call.
@@ -84,15 +92,16 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	if g.interceptor == nil {
 		return hook.Result{}
 	}
-	if !g.interceptor.IsToolEnabled(ev.ToolName) {
+	canonical := intercept.CanonicalToolName(ctx, ev.ToolName)
+	if !g.interceptor.IsToolEnabled(canonical) {
 		return hook.Result{}
 	}
 	ctx = intercept.WithCall(ctx, ev.ToolName, ev.Input)
-	dec, matched := g.interceptor.Match(ev.ToolName, ev.Input)
+	dec, matched := g.interceptor.Match(canonical, ev.Input)
 	if !matched {
 		// No rule matched. Ask the LLM fallback judge (if enabled); when it is off
 		// or unwired, keep current behavior and allow.
-		d, judged := g.interceptor.Judge(ctx, ev.ToolName, ev.Input)
+		d, judged := g.interceptor.Judge(ctx, canonical, ev.Input)
 		if !judged {
 			return hook.Result{}
 		}
@@ -145,7 +154,7 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 // Audit/history rows keep the raw reason (see Interceptor.Log); only the
 // model-facing tool_result carries this framing.
 func systemBlockMessage(reason string) string {
-	return "【ARTEX platform control · not target defense】This call was blocked by the platform. " +
+	return "【Platform control · not target defense】This call was blocked by the platform. " +
 		"Reason: " + reason + ". This operation is forbidden."
 }
 
@@ -154,8 +163,8 @@ var reBlocked = regexp.MustCompile(`(?i)\b(403|forbidden|waf|blocked|rate.?limit
 // postToolUse is the Observer failure-attribution hook (G5): it classifies tool
 // results into blocked / error / ok so the planner can change strategy instead
 // of giving up at a WAF.
-func (g *Guard) postToolUse(_ context.Context, ev hook.Event) hook.Result {
-	if ev.ToolName != "Bash" {
+func (g *Guard) postToolUse(ctx context.Context, ev hook.Event) hook.Result {
+	if intercept.CanonicalToolName(ctx, ev.ToolName) != "Bash" {
 		return hook.Result{}
 	}
 	class := "ok"
@@ -182,8 +191,8 @@ func (g *Guard) Attributions() map[string]int {
 	return out
 }
 
+// block returns the decision only; preToolUse records it exactly once.
 func (g *Guard) block(tool, reason, cmd string) hook.Result {
-	g.record(tool, "block", reason, cmd)
 	return hook.Result{Decision: "block", Message: reason}
 }
 

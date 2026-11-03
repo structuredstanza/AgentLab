@@ -45,16 +45,12 @@ install_docker(){
   else
     info "Using the existing .env file as is"
   fi
-  info "Pulling images and starting…"
-  docker compose pull || true
-  if ! docker compose up -d; then
-    warn "Could not pull or start the image ghcr.io/jiwoochris/artex-global (check that ARTEX_TAG in .env is a published tag and that the network is reachable)"
-    warn "You can run this script again and choose \"2) Run locally (compile with go)\", or build a single binary from source following the README \"Compile a single binary from source\" section"
-    die "Failed to start Docker Compose (all-Docker install)"
-  fi
+  info "Building the custom fork locally; no stock application image is pulled."
+  ./build.sh
+  docker compose build artex
+  docker compose up -d
   ok "Started → http://localhost:8787"
-  info "On first visit, enter the \"setup token\" on the /setup page to create the admin password"
-  info "Find the setup token: docker compose logs artex | grep -F '[auth]'   (the default published address is 127.0.0.1; change it with ARTEX_BIND in .env)"
+  info "On first visit, enter the setup token from logs at /setup."
   info "View logs: docker compose logs -f artex"
 }
 

@@ -32,9 +32,8 @@ PYTHON_IMAGE="${PYTHON_IMAGE:-python:3.12-slim}"
 
 NUM_FLOWS=35
 ENRICH_UA="artex-enrich/1.0"
-# norma SDK WebFetch tool, hardcoded in github.com/Autumn-27/norma/tool/webfetch.go
-# (literal "norma/0.4", verified in the go.sum-pinned v0.4.3 module source). Fewer flows
-# than NUM_FLOWS because sid 1000003 is a single-hit presence rule with no rate component.
+# Owned Norma SDK WebFetch tool, third_party/norma/tool/webfetch.go (BaaRai/Norma v0.4.4).
+# Fewer flows than NUM_FLOWS because sid 1000003 is a single-hit presence rule with no rate component.
 NORMA_UA="norma/0.4"
 NORMA_FLOWS=8
 BENIGN_UA="Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"

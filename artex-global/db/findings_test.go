@@ -17,7 +17,7 @@ func TestDeleteFinding(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	tk, err := d.CreateTask("删除漏洞测试", "目标", nil, 0, 0)
 	if err != nil {
@@ -66,7 +66,7 @@ func TestFindingsPageAndStats(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	const vc = "__test_vc_pagination__"
 	// clean any leftovers from a prior aborted run, and clean up on exit
@@ -221,7 +221,7 @@ func TestListFindingsPageUsesStableIDTieBreaker(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	vc := fmt.Sprintf("__test_finding_stable_page_%d__", time.Now().UnixNano())
 	defer d.Exec(`DELETE FROM findings WHERE vulnclass=$1`, vc)
@@ -269,7 +269,7 @@ func TestFindingGroupsAndUnassignedPaging(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	vc := fmt.Sprintf("__test_finding_groups_%d__", time.Now().UnixNano())
 	cleanupFindings := func() { _, _ = d.Exec(`DELETE FROM findings WHERE vulnclass=$1`, vc) }
@@ -413,7 +413,7 @@ func TestAddFindingFollowUpIntent(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	task, err := d.CreateTask("finding follow-up", "goal", nil, 0, 0)
 	if err != nil {

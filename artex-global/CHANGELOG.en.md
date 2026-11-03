@@ -8,16 +8,55 @@ The upstream ARTEX project's per-version release history (0.3.x and earlier) and
 
 ## [Unreleased]
 
+### Codebase review
+
+- Remove the write-only Gemini accumulator `terminal` field and its assignment; completion still depends on candidate finish reasons and function calls. Preserve the separate Claude and Codex terminal checks.
+- Enforce tool approval against canonical names in both planner and worker paths, including aliases, cancellation, and explicit rejection.
+- Prepare profile runtimes before committing activation or replacement, serialize cache publication, and report profile-deletion failures without disconnecting rejected deletions.
+- Persist session-scoped native selection and readable-history handoff grants before dispatch. Verify source receipts locally against the credential epoch; preserve only the destination's signed suffix, and do not count rejected history as a provider failure.
+- Keep per-turn native Complete mode through SDK wrappers, profile changes, pools, and compaction. Run judges and side questions independently of the main native transcript; reject unsafe or incomplete judge answers.
+- Own the Norma SDK source locally, based on BaaRai/Norma v0.4.4, with its license and modification notices. Exercise the nested SDK module explicitly in CI. Translate imported shell-tool messages, notifications, archive labels, and comments to English with syntax-aware utility checks.
+- Preserve exact JSON numbers through signed replay, readable handoffs, tool execution, and export. Advertise Codex tool definitions so native agents can discover and execute their tools.
+- Bound SSE setup cancellation without canceling a successfully established MCP connection. Drain disconnect operations once, even when concurrent callers cancel.
+- Constrain workspace access to its opened root, including symlink races. Create attachments atomically, retain the original destination on read failure, and remove multipart scratch files.
+- Commit initial task credentials with task creation, preserving password bytes exactly. Complete supervisor cleanup despite full capture storage or broken diagnostics; retain browser-capture headers.
+- Round-trip legacy evidence archives without changing binary bodies or treating literal blob markers as references. Reject missing, incomplete, ambiguous, or corrupt evidence before import commits.
+- Recover final native wire schemas and effective thinking metadata; keep provider summaries and opaque reasoning digests distinct. Export valid native tool-loop history without leaking replay envelopes, and reject malformed or duplicate historical envelopes.
+- Preserve empty-candidate Antigravity safety refusals as refusals rather than truncated streams, including refusal-chain handling.
+
+### Subscription allocation correctness
+
+- Keep explicit exhausted quota at zero remaining for Codex, Claude and Antigravity; omit missing or unmeasured windows instead of treating them as full allocation.
+- Remove Antigravity's model-availability fallback from quota measurement; only measured quota-summary buckets are displayed.
+- Preserve last-good allocation as visibly stale when native status, dashboard polling or settings refresh fails. Keep unavailable subscriptions visible without fabricated percentages.
+- Show subscription resets as remaining days/hours (for example, `4d2hr`) on both the dashboard and profile settings, instead of displaying only a clock time.
+
+### Upstream feature integration
+
+- Integrate BaaRai/ARTEX at `7f8c7cb`, retaining AgentLab's owned OAuth, refusal status and provider fallbacks, subscription allocation, English-only interface, and private trace capture.
+- Add task credentials with explicit password reveal/copy, outcome and capability-gap APIs, evidence-backed RSI candidate extraction and off/shadow/inject modes. No automatic lesson adoption or harness self-modification.
+- Add goal validation, repeated-direction warnings, consecutive-failure escalation, opt-in per-intent profile rotation, planner quiet mode, and pause-aware task deadlines.
+- Add keyless Ollama profiles, token pricing and EUR cost accounting, MCP connection health and per-server timeouts, and authenticated browser traffic ingestion with an optional extension.
+- Import recon tooling and gated skills, benchmark and submission-review utilities, finding-evidence standards, and prompt-injection hardening; use the Norma 0.4.4 fork.
+- Remove application self-update endpoints, components, and restart machinery. Local builds retain customizations; binary staging recognizes identical absolute and relative output paths.
+- Preserve generated reasoning, provider summaries and opaque replay state separately. Redact task-vault passwords from accepted training samples while retaining raw private archives unchanged.
+
 ### OAuth-authenticated LLM profiles
 
-- Port Claude Code, Codex and Antigravity subscription OAuth into owned login, PKCE/callback, refresh and account/project-onboarding implementations, retaining upstream MIT attribution. Do not call OMP OAuth or AuthStorage at runtime; retain the pinned SDK for model discovery and inference. A private host helper owns per-profile SQLite grants, preserves rotated refresh tokens despite caller cancellation, and rejects unknown store schemas untouched. The VM receives only an authenticated bridge capability. Keep unified human sign-in, callback, cancellation and disconnect controls without credential-JSON imports or provider CLI subprocesses.
-- Preserve native SDK event streams and terminal replay state, including thinking signatures and encrypted reasoning. SDK profiles display completed-turn output rather than discarding native state through a lossy streaming conversion. Keep API-key transports unchanged.
-- Discover model-specific reasoning efforts before login, reject unsupported explicit settings, and prevent stale model responses from changing another profile's options. Failed/canceled re-login preserves existing grants; disconnect drains active requests before deleting credentials. Native OAuth client identities remain visible; this integration does not guarantee application anonymity.
-- Serialize OAuth grant expiry as RFC 3339 timestamps across the host bridge so completed logins and saved connections decode correctly in ARTEX instead of reporting an unavailable login status.
+- Run Claude Code, Codex and Antigravity subscription OAuth through the owned native executor; the app uses the authenticated nativeproxy API configured by `ARTEX_NATIVE_PROXY_URL` and `ARTEX_NATIVE_PROXY_TOKEN_FILE`. Keep login, PKCE/callback, refresh, account/project onboarding, cancellation, and disconnect on the native host; never call OMP OAuth or AuthStorage at runtime.
+- Remove the retired owned Bun/OMP SDK bridge, its deployment unit, and bridge-only dependencies after native cutover. New connections use fresh human OAuth on the native host; no legacy grants are imported. Earlier bridge deployment records and captures remain historical evidence, while live native OAuth/refresh checks remain pending human validation.
+- Use real per-provider native input codecs and preserve terminal response/state, signatures, encrypted reasoning, and the host-issued replay receipt in the v2 `provider_state` envelope. Store that envelope in `response_body.provider_state`; preserve API-key and Ollama transports unchanged.
+- Include configured reasoning effort in native state and training metadata. Treat same-model thinking downgrades as distinct fallback choices, retain the branch across turns, and keep handoff provenance local rather than adding it to provider requests. Allow repeated model IDs at different effective efforts in profile settings; label inherited effort explicitly and reject duplicate effective choices, including the primary.
+- Discover model-specific reasoning efforts from the local native catalog before login, reject unsupported explicit settings, and prevent stale model responses from changing another profile's options. Failed or canceled re-login preserves existing grants; disconnect drains active requests before deleting credentials.
+- Request native Codex reasoning summaries with `reasoning.summary: "auto"` and Gemini thoughts with `includeThoughts: true` whenever thinking is enabled; preserve explicit disabled behavior and capture only provider-returned reasoning.
+- Serialize OAuth grant expiry as RFC 3339 timestamps across the native host API so completed logins and saved connections decode correctly in ARTEX instead of reporting an unavailable login status.
+- Refresh expired native grants directly before inference, independently of allocation polling. Preserve upstream quota and authorization failures as bounded HTTP 429/401/403 errors without exposing private provider error details.
+- Keep local worker-chat deduplication markers out of provider inputs, and redact Go JSON-escaped task-vault secrets from accepted training samples while leaving original private captures intact.
+- Normalize surrounding whitespace consistently when the native host and app read private bearer capability files; reject empty/whitespace-only files and retain private-file permission checks.
 - Move the refusal fallback chain into each provider profile: an ordered, editable list of fallback models (with optional reasoning effort) tried on the same account, validated against the provider catalog, before the task's profile chain advances. The global refusal switch remains the master control.
-- Show remaining 5-hour and 7-day subscription allocation with reset times in each subscription profile and on the main dashboard, read from the provider usage endpoints through the host bridge with caching, 429 backoff and stale-on-error display.
+- Show remaining 5-hour and 7-day subscription allocation with reset times in each subscription profile and on the main dashboard, read through native host usage endpoints with caching, 429 backoff, and stale-on-error display.
 - Capture native Gemini thought summaries and opaque replay signatures from JSON/SSE, preserve signed multi-turn tool history, and export the actual native tool schemas. Summaries, open-weight reasoning traces, and opaque state remain distinct dataset types. Signatures are not recoverable chain-of-thought.
-- Record provider refusals as `refused`, distinct from quota exhaustion and transport errors. Optional refusal fallback follows the task's customizable ordered profile chain and retries only the current model request before any answer or tool call is committed. Already delivered output and executed tools are never replayed.
+- Record provider refusals as `refused`, distinct from quota exhaustion and transport errors. Optional refusal fallback follows the task's customizable ordered profile chain and retries only the current model request before any answer or tool call is committed. When transitioning between models on a native chain, prior-model multi-turn history retains visible user and assistant text while historical tool interactions are converted into readable transcript text in the outbound request without opaque provider state or thinking signatures; uninspectable attachment blocks fail closed. Subsequent turns remain on the branch model and replay its new valid native state while separate sessions start on the primary model, and local trace request bodies capture explicit handoff metadata (`from_models`, `to_model`, `readable_history`, `prefix_count`). Already delivered output and executed tools are never replayed.
 
 ### English-only application
 
@@ -30,6 +69,25 @@ The upstream ARTEX project's per-version release history (0.3.x and earlier) and
 ### Fixed
 
 - Distinguish task report loading failures from empty reports and offer a retry button. Late responses from a previous task cannot replace the current task report.
+- Standardize benchmark runner (`scripts/benchmark/run_bench.py`) authentication on valid session `ARTEX_TOKEN` or `/api/auth/login` session tokens via `ARTEX_PASSWORD`, removing obsolete raw `ARTEX_JWT_KEY` minting to match password-hash-derived JWT signing.
+- Strengthen trace exporter test coverage in `deployment/test_export_traces.py` to exercise task credential scrubbing across open-weight reasoning, provider summaries, tool arguments, tool results, and text, ensuring corrupt snapshots fail closed and raw snapshots remain byte-for-byte unchanged.
+
+#### Data loss and correctness (audit)
+
+- **Behaviour change.** Archive compaction refuses to delete a host whose exchange count grew after the archive snapshot, and records the refusal as a task-archive warning. Captures taken while a package is compressing are no longer deleted from the hot store, so an archived task may retain traffic until a later cleanup.
+- **Behaviour change.** A provider key taken from a saved LLM profile is now only ever sent to that profile's stored `base_url`. Testing a different endpoint requires supplying that endpoint's own key.
+- **Behaviour change.** `traffic.json` in an archive package is written as a stream instead of being assembled in memory and marshalled. The structure and meaning are unchanged; field order differs and memory use drops from roughly six times the captured bytes to one exchange.
+- **Behaviour change.** The tool-approval gate now denies when its rule set cannot be read — it keeps enforcing the last set that loaded, and refuses rather than allowing if none ever loaded. Previously a database outage silently let every call through.
+- Credential re-saves with a blank password keep the stored one instead of overwriting the agent-generated secret with an empty string.
+- Workspace uploads stage to a temporary name and rename on success, so a copy that fails partway no longer truncates the file already on disk.
+- Failed captures (blocked, aborted, DNS failure) are recorded with status 0 and the transport error instead of being dropped by the browser extension, and are no longer rewritten to HTTP 200 by ingest.
+- Exchange ids no longer wrap within one second, so a burst no longer overwrites already-stored captures.
+- A task-delete staging journal records the task id, so a process exit between the PostgreSQL and SQLite commits is resolved on restart rather than leaving traffic orphaned.
+- Skill-editor file reads are guarded against out-of-order responses, so a slow read can no longer save one file's contents into another.
+- JSON request bodies are bounded at 8 MiB, with the skill-file route raised to its documented per-file limit; an unauthenticated oversized body no longer amplifies into gigabytes of heap.
+- Exporter redaction covers scheme auth headers, `Cookie`/`Set-Cookie`, camelCase credential keys and URL-encoded task passwords; unparseable records are rejected rather than aborting the run, and `train.jsonl` is replaced atomically so a failed export leaves the previous dataset intact.
+- Provider error bodies are bounded and scrubbed of credential shapes before reaching `llm_health.last_error` and `llm_records.error`, both of which are displayed in the UI.
+- The worker conclusion read by the planner and `get_worker_output` reads newest-first, so a long tool-heavy run no longer reports that its worker produced no output.
 
 ## [0.3.15-global.1] · 2026-10-14 · ARTEX-global transition release
 

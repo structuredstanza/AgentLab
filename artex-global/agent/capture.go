@@ -14,6 +14,24 @@ import (
 	"github.com/Autumn-27/norma/llm"
 )
 
+func newSession(ctx context.Context, opts agentcore.Options) (context.Context, *agentcore.Session) {
+	provider, defaultMode, before := opts.Provider, opts.NonStreaming, opts.Deps.BeforeModel
+	opts.Deps.BeforeModel = func(ctx context.Context, req llm.CompletionRequest) (context.Context, bool, error) {
+		mode := defaultMode
+		if before != nil {
+			var err error
+			ctx, mode, err = before(ctx, req)
+			if err != nil {
+				return ctx, mode, err
+			}
+		}
+		callCtx, preparedMode, err := llm.PrepareModelCall(ctx, provider, req, mode)
+		return callCtx, preparedMode || (before != nil && mode), err
+	}
+	ctx = attachSideCapture(ctx, &opts)
+	return ctx, agentcore.NewSession(opts)
+}
+
 // captureRun drives one agent turn-to-completion over Session.Prompt and emits a
 // coalesced ActivityRecord per execution step (tool_use / tool_result / text /
 // thinking / result). It is shared by every LLM agent in the system (worker,
@@ -26,7 +44,7 @@ import (
 // contiguous run is coalesced into a single record so the trace shows whole
 // messages, not dozens of fragments.
 func captureRun(ctx context.Context, opts agentcore.Options, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
-	s := agentcore.NewSession(opts)
+	ctx, s := newSession(ctx, opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)
 	return captureRunSession(ctx, s, input, emit)
 }

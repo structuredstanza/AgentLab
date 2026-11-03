@@ -362,7 +362,7 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS llm_profiles (
     id               BIGSERIAL PRIMARY KEY,
     name             TEXT NOT NULL UNIQUE,
-    format           TEXT NOT NULL CHECK (format IN ('openai','anthropic','openai-responses','antigravity')),
+    format           TEXT NOT NULL CHECK (format IN ('openai','anthropic','openai-responses','antigravity','ollama')),
     auth_method      TEXT NOT NULL DEFAULT 'api_key' CHECK (auth_method IN ('api_key','claude_code','codex','antigravity')),
     base_url         TEXT,
     proxy            TEXT,
@@ -434,7 +434,7 @@ ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS streaming    BOOLEAN NOT NULL 
 -- Executed on every startup, idempotent: first drop the old CHECK, then create the new CHECK that includes all three values.
 ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_format_check;
 ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_format_check
-    CHECK (format IN ('openai','anthropic','openai-responses','antigravity'));
+    CHECK (format IN ('openai','anthropic','openai-responses','antigravity','ollama'));
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS auth_method TEXT NOT NULL DEFAULT 'api_key';
 ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_auth_method_check;
 ALTER TABLE llm_profiles ADD CONSTRAINT llm_profiles_auth_method_check
@@ -446,6 +446,10 @@ ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS max_tokens       INTEGER NOT N
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS max_tokens_field TEXT    NOT NULL DEFAULT '';
 -- Same as format: drop first, then create, to ensure idempotence on every startup.
 ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_max_tokens_field_check;
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS price_input_per_m NUMERIC(12,6);
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS price_output_per_m NUMERIC(12,6);
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS price_cache_read_per_m NUMERIC(12,6);
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS price_cache_write_per_m NUMERIC(12,6);
 ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_max_tokens_field_check
     CHECK (max_tokens_field IN ('','max_completion_tokens'));
 ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_max_tokens_check;
@@ -543,6 +547,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     parent_ref     TEXT,
     timeout_seconds INTEGER NOT NULL DEFAULT 0,
     plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300,
+    plan_quiet_mode BOOLEAN NOT NULL DEFAULT true,
+    llm_rotate     BOOLEAN NOT NULL DEFAULT false,
     coverage_enabled BOOLEAN NOT NULL DEFAULT true,
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
@@ -560,6 +566,9 @@ CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 -- Planner heartbeat trigger interval (seconds); backfill for legacy DBs. Default 300s (5min). See docs/planner-trigger-impl-plan.md
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_quiet_mode BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_rotate BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
 -- Suspended state for concurrency limit; backfill for legacy DBs. true = queued due to concurrency cap, automatically started when a slot becomes available.
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT false;
 -- Asset coverage feature switch; backfill for legacy DBs. true (default) = compute/display test coverage, automatically accumulate test scope,
@@ -873,6 +882,10 @@ ALTER TABLE mcp_servers ADD CONSTRAINT mcp_servers_transport_check
     CHECK (transport IN ('stdio','http','sse'));
 -- Backfill missing columns in an older database (schema.sql is Exec'd on every startup).
 ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS insecure BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS timeout_seconds INT NOT NULL DEFAULT 120;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_connect_at TIMESTAMPTZ;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_connect_ok BOOLEAN;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS last_connect_err TEXT;
 DROP TRIGGER IF EXISTS trg_mcp_upd ON mcp_servers;
 CREATE TRIGGER trg_mcp_upd BEFORE UPDATE ON mcp_servers
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -1302,6 +1315,22 @@ CREATE TABLE IF NOT EXISTS task_intercept_rules (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_task_intercept_task ON task_intercept_rules(task_id);
+-- Per-task test accounts (#3): user-declared (e.g. a program-provided alias
+-- account) or agent-registered and recorded so they are not forgotten. Passwords
+-- are local-only, same trust domain as captured traffic evidence; the UI masks
+-- them by default.
+CREATE TABLE IF NOT EXISTS task_credentials (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    domain     TEXT NOT NULL,
+    username   TEXT NOT NULL,
+    password   TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT 'user' CHECK (source IN ('user','agent')),
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (task_id, domain, username)
+);
 -- Upgrading an old database (table created earlier in this session, without an action column): add the column (with IF NOT EXISTS).
 ALTER TABLE task_intercept_rules ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'block';
 DROP TRIGGER IF EXISTS trg_task_intercept_rules_upd ON task_intercept_rules;
@@ -1407,3 +1436,56 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_batch
     ON notification_deliveries(batch_id) WHERE batch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel
     ON notification_deliveries(channel_id, id DESC);
+
+-- Cost ledger (#70): optional per-profile pricing, EUR per 1M tokens. NULL/0 = unset;
+-- usage aggregations compute cost only when at least one price is set.
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS price_input_per_m NUMERIC(12,6);
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS price_output_per_m NUMERIC(12,6);
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS price_cache_read_per_m NUMERIC(12,6);
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS price_cache_write_per_m NUMERIC(12,6);
+
+-- =====================================================================
+-- RSI lesson library (shadow mode)
+-- Deterministic, evidence-gated lessons extracted from closed tasks. A
+-- lesson exists only when it has a cue, an action, and at least one
+-- evidence row; support is the number of distinct evidence sources, so
+-- re-running extraction is idempotent. Pattern from harness2 (Google
+-- Research, Apache-2.0, arXiv 2610.14224): no lesson without evidence.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS rsi_lessons (
+    id          BIGSERIAL PRIMARY KEY,
+    dedupe_key  TEXT NOT NULL UNIQUE,
+    -- positive = a confirmed outcome worth reusing; negative = do not repeat;
+    -- caution = recheck before reporting (version or retest sensitive).
+    kind        TEXT NOT NULL CHECK (kind IN ('positive','negative','caution')),
+    cue         TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    category_id BIGINT REFERENCES task_categories(id) ON DELETE SET NULL,
+    company_id  BIGINT REFERENCES companies(id) ON DELETE SET NULL,
+    status      TEXT NOT NULL DEFAULT 'candidate'
+                CHECK (status IN ('candidate','adopted','retired')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_rsi_lessons_scope ON rsi_lessons(company_id, category_id, status);
+CREATE INDEX IF NOT EXISTS idx_rsi_lessons_kind  ON rsi_lessons(kind, updated_at DESC);
+
+-- One row per (lesson, source). The primary key makes extraction idempotent:
+-- a second run for the same task adds nothing and cannot inflate support.
+CREATE TABLE IF NOT EXISTS rsi_lesson_evidence (
+    lesson_id   BIGINT NOT NULL REFERENCES rsi_lessons(id) ON DELETE CASCADE,
+    source_kind TEXT NOT NULL,
+    source_id   BIGINT NOT NULL,
+    detail      TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (lesson_id, source_kind, source_id)
+);
+
+-- What was shown to which task, and in which mode (shadow = logged but not
+-- injected; inject = appended to the planner/worker system prompt).
+CREATE TABLE IF NOT EXISTS rsi_lesson_usage (
+    lesson_id BIGINT NOT NULL REFERENCES rsi_lessons(id) ON DELETE CASCADE,
+    task_id   BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    mode      TEXT NOT NULL CHECK (mode IN ('shadow','inject')),
+    shown_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (lesson_id, task_id, mode)
+);

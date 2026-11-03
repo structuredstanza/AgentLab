@@ -10,7 +10,7 @@ func TestTaskQueuePreservesBootstrapAndFIFOPosition(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	task, err := d.CreateTask("queue metadata", "keep first-run mode", nil, 0, 0)
 	if err != nil {

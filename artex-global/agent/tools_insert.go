@@ -649,6 +649,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// asset management (handlers guard nil store internally).
 		// add_company_scope is not given to workers: defining the enterprise asset scope is the responsibility of planning/orchestration/Auto, while workers only perform exploration.
 		t.insertAssets(), t.listAssets(),
+		t.saveTaskCredential(), t.listTaskCredentials(),
 		// Look back across work: a worker can also reuse observations from other work, to avoid duplicated effort.
 		// search_all_worker_traces: no need to know the intent_id in advance; search globally by keyword for matching steps;
 		// get_worker_trace: after locking onto a given work, list its steps, search within it in place, or fetch full content.

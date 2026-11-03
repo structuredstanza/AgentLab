@@ -67,6 +67,7 @@ func (s *Server) orchestrationTools() []actool.CoreTool {
 		s.toolListTasks(),
 		s.toolListLLMProfiles(),
 		s.toolSpawnTask(),
+		s.toolAskOperator(),
 		s.toolPauseTask(),
 		s.toolGetTaskGraph(),
 		s.toolListTaskFindings(),
@@ -482,6 +483,9 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 		bindings := autoAgents
 		if t.Name() == "bind_finding_traffic" {
 			bindings = json.RawMessage(`["reporter"]`)
+		}
+		if t.Name() == "ask_operator" {
+			bindings = json.RawMessage(`["worker","pentest"]`)
 		}
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, bindings)
 	}

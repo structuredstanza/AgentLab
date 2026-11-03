@@ -9,13 +9,14 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/transcript"
+	"github.com/google/uuid"
 )
 
 // judgeWorkerLane is the usage-ledger "worker" label for intercept fallback-judge
@@ -28,9 +29,7 @@ func (s *Server) chatGuard() *guard.Guard {
 	return guard.NewWithInterceptor(s.m.interceptor)
 }
 
-// User-facing judge model error message (Korean). This error
-// intercept.Judge wraps it with msgModelApprovalFailed and exposes it as Decision.Message,
-// so it is also kept in Korean to stay consistent with the wrapper (intercept package) language.
+// Judge errors are surfaced by the interceptor as user-facing decisions.
 const (
 	errNoJudgeModel          = "No usable judge model is configured"
 	errJudgeModelUnavailable = "Judgment model profile #%d is not available"
@@ -75,13 +74,12 @@ func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, inp
 	if err != nil {
 		return "", err
 	}
-	return streamCollectText(ctx, prov, prompt, string(user))
+	return judgeCompletion(ctx, prov, prompt, string(user))
 }
 
-// streamCollectText runs a single non-streaming-style completion (thinking off,
-// low temperature, bounded output) and returns the concatenated text. The
-// budget includes the explanation and complete closing JSON delimiters.
-func streamCollectText(ctx context.Context, prov llm.Provider, system, user string) (string, error) {
+// judgeCompletion uses an independent, atomic call; partial or tool-bearing
+// answers must never authorize the intercepted operation.
+func judgeCompletion(ctx context.Context, prov llm.Provider, system, user string) (string, error) {
 	temp := 0.0
 	req := llm.CompletionRequest{
 		System:      []string{system},
@@ -90,16 +88,23 @@ func streamCollectText(ctx context.Context, prov llm.Provider, system, user stri
 		Temperature: &temp,
 		Thinking:    "disabled",
 	}
-	var sb strings.Builder
-	for ev, err := range prov.Stream(ctx, req) {
-		if err != nil {
-			return "", err
-		}
-		if ev.Type == llm.SETextDelta {
-			sb.WriteString(ev.Text)
+	ctx = transcript.WithSessionID(ctx, "judge-"+uuid.NewString())
+	msg, stop, _, err := prov.Complete(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if msg.Role != llm.RoleAssistant || (stop != "end_turn" && stop != "stop") {
+		return "", errors.New("The judge did not return a complete verdict")
+	}
+	for _, block := range msg.Content {
+		if block.Type == llm.BlockToolUse || block.Type == llm.BlockToolResult {
+			return "", errors.New("The judge returned a tool call instead of a verdict")
 		}
 	}
-	return sb.String(), nil
+	return msg.Text(), nil
 }
 
 // --- intercept rule CRUD ---

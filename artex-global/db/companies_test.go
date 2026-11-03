@@ -19,7 +19,7 @@ func TestCompanyUpsertAndGet(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	id, created, err := cs.UpsertCompany("Test Corp", "https://example.com/logo.png")
@@ -66,7 +66,7 @@ func TestCreateCompanyWithScopeRejectsNormalizedDuplicate(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	stamp := time.Now().UnixNano()
@@ -105,7 +105,7 @@ func TestCreateCompanyWithScopeRollsBackOnScopeWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	name := fmt.Sprintf("Atomic Create %d", time.Now().UnixNano())
@@ -130,7 +130,7 @@ func TestCompanyScope(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	id, _, err := cs.UpsertCompany("ScopeTestCorp", "")
@@ -168,7 +168,7 @@ func TestCompanyScopeInvalid(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	id, _, err := cs.UpsertCompany("InvalidScopeCorp", "")
@@ -197,7 +197,7 @@ func TestResolveCompany(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	id, _, err := cs.UpsertCompany("ResolveCorp", "")
@@ -238,7 +238,7 @@ func TestUpdateScope(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	id, _, err := cs.UpsertCompany("UpdateScopeCorp", "")
@@ -283,7 +283,7 @@ func TestUpdateScopeRollsBackOnInsertFailure(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	name := fmt.Sprintf("Atomic Scope Update %d", time.Now().UnixNano())
@@ -318,7 +318,7 @@ func TestDeleteCompany(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	id, _, err := cs.UpsertCompany("DeleteMeCorp", "")
@@ -346,7 +346,7 @@ func TestDeleteCompanyWithAssetsDeletesBoth(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	stamp := time.Now().UnixNano()
@@ -393,7 +393,7 @@ func TestRecomputeAttribution(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 	as := d.Assets()
 
@@ -435,7 +435,7 @@ func TestListCompanies(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	cs := d.Companies()
 
 	id, _, err := cs.UpsertCompany("ListTestCorp", "")

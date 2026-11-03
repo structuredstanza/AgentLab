@@ -23,7 +23,6 @@ import { api } from "@/lib/api";
 import { type ChatSendMode, setChatSendMode, useChatSendMode, useChatSendModeOptions } from "@/lib/chat-send-mode";
 import type { Settings } from "@/lib/types";
 
-import { UpdateCard } from "./_components/update-card";
 
 export default function SystemSettingsPage() {
   const t = useTranslations("settingsPage");
@@ -281,7 +280,6 @@ export default function SystemSettingsPage() {
           multi-column automatically balances filling by content height. Card spacing uses mb rather than gap, because under multi-column layout
           column-gap only controls column spacing, so row spacing must be provided by the child elements themselves. */}
       <div className="columns-1 gap-4 md:gap-6 lg:columns-2">
-        <UpdateCard />
 
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>

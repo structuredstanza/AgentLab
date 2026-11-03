@@ -46,7 +46,7 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 		"auto": {ts.addFinding(), ts.insertAssets(), ts.addCompanyScope(), ts.listAssets(), ts.listCompanies()},
 		// Default bindings for pentest (the standalone penetration-testing agent): query assets / insert assets / report vulnerabilities / query vulnerabilities / query enterprises.
 		// New databases are seeded here; legacy databases are migrated by seedPentestDefaultBindings.
-		"pentest": {ts.listAssets(), ts.insertAssets(), ts.addFinding(), ts.listFindings(), ts.listCompanies()},
+		"pentest": {ts.listAssets(), ts.insertAssets(), ts.addFinding(), ts.listFindings(), ts.listCompanies(), ts.saveTaskCredential(), ts.listTaskCredentials()},
 	}
 }
 
@@ -264,7 +264,7 @@ func camelToSnake(s string) string {
 // its name is appended to deferred (so the schema is withheld and the model keeps
 // seeing only the official CamelCase names — no duplicate exposure, no token
 // waste). Names already taken by a real tool are skipped, so nothing is shadowed.
-func addToolAliases(tools []actool.CoreTool, deferred []string) ([]actool.CoreTool, []string) {
+func addToolAliases(tools []actool.CoreTool, deferred []string) ([]actool.CoreTool, []string, map[string]string) {
 	taken := map[string]bool{}
 	for _, t := range tools {
 		taken[t.Name()] = true
@@ -274,6 +274,7 @@ func addToolAliases(tools []actool.CoreTool, deferred []string) ([]actool.CoreTo
 	}
 	out := tools
 	extra := deferred
+	aliases := make(map[string]string)
 	for _, t := range tools {
 		for _, alias := range toolAliasNames(t.Name()) {
 			if taken[alias] {
@@ -282,7 +283,8 @@ func addToolAliases(tools []actool.CoreTool, deferred []string) ([]actool.CoreTo
 			taken[alias] = true
 			out = append(out, &aliasTool{CoreTool: t, name: alias})
 			extra = append(extra, alias)
+			aliases[alias] = t.Name()
 		}
 	}
-	return out, extra
+	return out, extra, aliases
 }

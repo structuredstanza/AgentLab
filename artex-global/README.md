@@ -84,12 +84,12 @@ The three screens below show the English UI. The data comes from a local, isolat
 
 > **Prerequisites:** Docker and Docker Compose. The database is **PostgreSQL**, brought up by compose. Exploration requires an **LLM** (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; can also be set in the UI).
 
-> **Image:** the `artex` service in `docker-compose.yml` pulls `ghcr.io/jiwoochris/artex-global`, the global-edition image this repository publishes to GitHub Container Registry on every release tag (`v*`). The default tag is `latest` (the most recent release); set `ARTEX_TAG` in `.env` to pin a specific release. Upstream's original image `autumn27/artex` has been taken down from Docker Hub and is no longer used.
+> **Image:** this fork builds locally (`agentlab/artex:${ARTEX_TAG:-local}`) via `build.sh` and Dockerfile to ensure all customized AgentLab features (owned OAuth/tokens, multi-trace reasoning, refusal chains, task vault redaction) are preserved. It never pulls or overwrites the application with a stock upstream image.
 
 ```bash
-git clone https://github.com/jiwoochris/artex-global.git
-cd artex-global
 cp .env.example .env          # set POSTGRES_PASSWORD; ANTHROPIC_API_KEY is optional
+./build.sh                    # builds web + Go binary into dist/artex-linux-amd64/artex and dist/amd64/artex
+docker compose build artex    # builds the local container image
 docker compose up -d          # brings up the artex image + postgres together
 # → open http://localhost:8787 (on first visit, set the admin password at /setup)
 #   /setup asks for the setup token printed in the startup log: docker compose logs artex | grep -F '[auth]'
@@ -101,7 +101,7 @@ The image bundles common tools (ripgrep, curl, vim, npm, nmap, and more), and wh
 
 Upstream provides several methods: an install script (`./install.sh`), precompiled binaries (Releases), and a single-binary build from source. The essentials are reproduced below.
 
-- **Install script:** running `./install.sh` detects/installs Docker and then lets you choose "① all-in-Docker" or "② local compile and run." "① all-in-Docker" pulls and starts the same image as the quick start above (`ghcr.io/jiwoochris/artex-global`), while "② local compile and run" builds it yourself the same way as the **single-binary build from source** below.
+- **Install script:** running `./install.sh` detects/installs Docker and lets you choose "① all-in-Docker" or "② local compile and run." Both options build the customized fork locally via `./build.sh` or `go build`; neither option pulls a stock prebuilt image.
 - **Single-binary build from source:**
 
   ```bash
@@ -113,7 +113,7 @@ Upstream provides several methods: an install script (`./install.sh`), precompil
 
 > The `npm ci` in step 1) installs the devDependencies the build needs (e.g. `@tailwindcss/postcss`). If your shell has `NODE_ENV=production` set, `npm ci` skips devDependencies and the build fails with `Error: Cannot find module '@tailwindcss/postcss'`; in that case install with `npm ci --include=dev`.
 
-> Launch with `start.sh` (`start.bat` on Windows) rather than running `./artex` directly. That script is a supervisor that restarts the program based on its exit code, and it also handles the UI's "one-click update."
+> Launch with `start.sh` (`start.bat` on Windows) rather than running `./artex` directly. The supervisor restarts the program after abnormal exit and forwards termination signals. Updates are manual: use `./update.sh` to rebuild this customized fork locally; it never pulls or replaces it with a stock image.
 
 ---
 
@@ -168,7 +168,18 @@ SSE holds a long-lived connection and keeps pushing events, so you **must disabl
 
 ## System architecture
 
-ARTEX is an **autonomous penetration system driven by LLM multi-agents.** It uses a single Go backend (with the Next.js frontend embedded) over PostgreSQL, and the agent capabilities are provided by the [`norma`](https://github.com/Autumn-27/norma) (currently unreachable, checked 2026-10) SDK. At its core is a **dual-graph structure** and the two autonomy mechanisms around it: process-level information exchange between workers, and the planner's multi-round shared todolist.
+ARTEX is an **autonomous penetration system driven by LLM multi-agents.** It uses a single Go backend (with the Next.js frontend embedded) over PostgreSQL, and agent capabilities are provided by the owned [Norma SDK source](third_party/norma), based on BaaRai/Norma v0.4.4. At its core is a **dual-graph structure** and the two autonomy mechanisms around it: process-level information exchange between workers, and the planner's multi-round shared todolist.
+
+### Owned SDK and native history
+
+The root `go.mod` selects `./third_party/norma`; normal builds do not fetch the retired SDK implementation. Its Apache-2.0 license and modification notices stay with the source. The nested module has its own tests: run `go test github.com/Autumn-27/norma/...` as well as `go test ./...`.
+
+Native Codex, Claude Code, and Antigravity turns use Complete mode even through profile, fallback, pool, and compaction boundaries. Judges and side questions do not reuse the main transcript's signed provider state.
+
+Native profile changes require checked session ownership and local receipt verification before readable-history projection. Handoff grants bind the immutable prefix to its source and destination; persistence failure stops dispatch. Existing grants allow resume without reusing the source credential. Sessions created before ownership records existed may need a fresh session before switching profiles; opaque envelopes alone never authorize a handoff.
+
+Capture preserves provider-returned reasoning, summaries, and encrypted or signed replay state separately. The exporter validates historical replay-envelope shape, omits those private envelopes from readable training messages, and retains raw originals. An opaque state or receipt is not plaintext chain-of-thought, and the exporter does not cryptographically verify host receipts.
+
 
 ### Overall layers
 
@@ -398,6 +409,6 @@ This project is provided "AS IS" without any warranty, express or implied. The o
 
 ## Upstream project
 
-- Upstream repository: [Autumn-27/ARTEX](https://github.com/Autumn-27/ARTEX) (currently unreachable, checked 2026-10)
+- Upstream repository: [BaaRai/ARTEX](https://github.com/BaaRai/ARTEX)
 - Original online demo: [https://artex-demo.vercel.app/](https://artex-demo.vercel.app/) (currently unreachable, checked 2026-10)
-- Agent SDK: [Autumn-27/norma](https://github.com/Autumn-27/norma) (currently unreachable, checked 2026-10)
+- Agent SDK: owned [Norma source](third_party/norma), based on [BaaRai/Norma v0.4.4](https://github.com/BaaRai/Norma/tree/v0.4.4)

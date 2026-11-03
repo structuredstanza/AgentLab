@@ -125,6 +125,7 @@ import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
 import type {
   AssetInterceptRuleInput,
+  TaskCredentialInput,
   ChatAttachment,
   Company,
   DeleteTaskOptions,
@@ -454,10 +455,15 @@ export default function TasksPage() {
   // re-render the whole page for nothing. Bail out when it matches.
   const lastRef = React.useRef<string>("");
 
+  const loadSeq = React.useRef(0);
   const load = React.useCallback(() => {
+    // A poll started before a mutation can resolve after the mutation's reload
+    // and put the pre-change list back on screen. Only the newest response wins.
+    const seq = ++loadSeq.current;
     api
       .tasks()
       .then((r) => {
+        if (seq !== loadSeq.current) return;
         const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
         const sig = JSON.stringify(next);
         if (sig === lastRef.current) return;
@@ -694,7 +700,16 @@ export default function TasksPage() {
 
   const archiveSelectedTasks = React.useCallback(async () => {
     if (archivableTaskIDs.length === 0) return;
-    const result = await api.archiveTasks(archivableTaskIDs);
+    let result: Awaited<ReturnType<typeof api.archiveTasks>>;
+    try {
+      result = await api.archiveTasks(archivableTaskIDs);
+    } catch (error) {
+      // Without this the rejection escaped the dialog's try/finally, which has no
+      // catch: the dialog stayed open with no message and the next click re-sent
+      // the archive. restoreMany and deleteMany already report their failures.
+      toast.error(t("archive.failed", { message: (error as Error).message }));
+      throw error;
+    }
     const succeeded = result.items.filter((item) => item.ok);
     const failed = result.items.filter((item) => !item.ok);
     if (succeeded.length > 0) toast.success(t("batch.archiveQueued", { count: succeeded.length }));
@@ -1677,8 +1692,14 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
   const [selected, setSelected] = React.useState<Set<number>>(() => new Set());
   const [loading, setLoading] = React.useState(true);
   const pendingRestoreIDs = React.useRef(new Set<number>());
+  // The panel re-fetches every 2s, so two loads can be in flight at once. Only
+  // the newest may write state, and a failing source must not raise a toast on
+  // every tick — one per outage, cleared by the next success.
+  const loadSeq = React.useRef(0);
+  const reportedFailure = React.useRef(false);
 
   const load = React.useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const result = await api.taskArchives({
         page,
@@ -1686,6 +1707,8 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
         q: query.trim(),
         state: stateFilter === "all" ? undefined : stateFilter,
       });
+      if (seq !== loadSeq.current) return;
+      reportedFailure.current = false;
       setArchives(result.items);
       setTotal(result.total);
       setSelected((current) => {
@@ -1706,9 +1729,13 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
         if (restored) onChanged();
       }
     } catch (error) {
-      toast.error(t("archive.loadFailed", { msg: (error as Error).message }));
+      if (seq !== loadSeq.current) return;
+      if (!reportedFailure.current) {
+        reportedFailure.current = true;
+        toast.error(t("archive.loadFailed", { msg: (error as Error).message }));
+      }
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [onChanged, page, pageSize, query, stateFilter, t]);
 
@@ -3163,7 +3190,10 @@ function CreateTaskSheet({
   const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // Planner heartbeat (minutes); default 10, minimum 10 (consistent with the backend)
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // On creation, issue a seed intent so the worker can start running immediately without waiting for the first planner round; off by default, which uses the standard plan-then-execute flow
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // Asset coverage feature; on by default. When off: coverage is not computed or displayed, scope is not accumulated, and scope-type tools are hidden (company association is unaffected)
+  const [planQuietMode, setPlanQuietMode] = React.useState(true);
+  const [llmRotate, setLLMRotate] = React.useState(false);
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // Task-level asset interception rules (apply to this task only; not added to the global table)
+  const [credentials, setCredentials] = React.useState<TaskCredentialInput[]>([]);
   // Method 1 file upload: before creating the task, temporarily stage the file in drafts/<draftId>/uploads/, obtain the absolute path, and append it to the description.
   const [uploading, setUploading] = React.useState(false);
   const [uploadCount, setUploadCount] = React.useState(0);
@@ -3230,9 +3260,12 @@ function CreateTaskSheet({
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
+        planQuietMode,
+        llmRotate,
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
+        credentials: credentials.filter((c) => c.domain.trim() && c.username.trim()).map((c) => ({ ...c, domain: c.domain.trim(), username: c.username.trim(), note: c.note?.trim() ?? "" })),
       });
       toast.success(t("create.createdToast"));
       setName("");
@@ -3247,6 +3280,9 @@ function CreateTaskSheet({
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
       setCoverageEnabled(true);
+      setPlanQuietMode(true);
+      setLLMRotate(false);
+      setCredentials([]);
       setInterceptRules([]);
       setUploadCount(0);
       draftIdRef.current = "";
@@ -3380,6 +3416,21 @@ function CreateTaskSheet({
               <FieldDescription>{t("create.companyHint")}</FieldDescription>
             </Field>
             <Field>
+              <FieldLabel>{t("create.credentialsLabel")}</FieldLabel>
+              <div className="grid gap-2">
+                {credentials.map((credential, index) => (
+                  <div key={index} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+                    <Input aria-label={t("create.credentialDomain")} placeholder={t("create.credentialDomain")} value={credential.domain} onChange={(event) => setCredentials((items) => items.map((item, i) => i === index ? { ...item, domain: event.target.value } : item))} />
+                    <Input aria-label={t("create.credentialUsername")} placeholder={t("create.credentialUsername")} value={credential.username} onChange={(event) => setCredentials((items) => items.map((item, i) => i === index ? { ...item, username: event.target.value } : item))} />
+                    <Input aria-label={t("create.credentialPassword")} placeholder={t("create.credentialPassword")} type="password" autoComplete="new-password" value={credential.password} onChange={(event) => setCredentials((items) => items.map((item, i) => i === index ? { ...item, password: event.target.value } : item))} />
+                    <Button type="button" variant="ghost" size="icon" aria-label={t("create.credentialRemove")} onClick={() => setCredentials((items) => items.filter((_, i) => i !== index))}><Trash2Icon /></Button>
+                    <Input className="sm:col-span-4" aria-label={t("create.credentialNote")} placeholder={t("create.credentialNote")} value={credential.note ?? ""} onChange={(event) => setCredentials((items) => items.map((item, i) => i === index ? { ...item, note: event.target.value } : item))} />
+                  </div>
+                ))}
+                <Button type="button" size="sm" variant="outline" className="w-fit" onClick={() => setCredentials((items) => [...items, { domain: "", username: "", password: "", note: "" }])}><PlusIcon className="size-4" />{t("create.credentialAdd")}</Button>
+              </div>
+            </Field>
+            <Field>
               <FieldLabel htmlFor="task-intercept-rules">{t("create.interceptLabel")}</FieldLabel>
               <AssetInterceptRulesEditor value={interceptRules} onChange={setInterceptRules} />
               <FieldDescription>{t("create.interceptHint")}</FieldDescription>
@@ -3451,6 +3502,28 @@ function CreateTaskSheet({
                     {t("create.coverageLabel")}
                   </label>
                   <p className="text-muted-foreground text-xs">{t("create.coverageHint")}</p>
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="plan-quiet-mode" className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id="plan-quiet-mode"
+                      checked={planQuietMode}
+                      onCheckedChange={(v) => setPlanQuietMode(!!v)}
+                    />
+                    {t("create.quietModeLabel")}
+                  </label>
+                  <p className="text-muted-foreground text-xs">{t("create.quietModeHint")}</p>
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="llm-rotate" className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id="llm-rotate"
+                      checked={llmRotate}
+                      onCheckedChange={(v) => setLLMRotate(!!v)}
+                    />
+                    {t("create.llmRotateLabel")}
+                  </label>
+                  <p className="text-muted-foreground text-xs">{t("create.llmRotateHint")}</p>
                 </div>
               </CollapsibleContent>
             </Collapsible>

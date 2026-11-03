@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -59,6 +60,11 @@ type chatAttachment struct {
 //	scope=staging → <workDir>/drafts/<id>/uploads/   (staged before task creation: the task has no ID yet,
 //	                files are first written here, and the frontend writes the returned abs absolute path into the task description)
 func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 	var sub string
 	taskScoped := false
 	switch r.URL.Query().Get("scope") {
@@ -89,8 +95,14 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		defer s.engine.decInflight(id)
 	}
-	dir := filepath.Join(s.m.dir, sub, id, "uploads")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	root, err := os.OpenRoot(s.m.dir)
+	if err != nil {
+		writeErr(w, 500, errChatUploadMkdir+err.Error())
+		return
+	}
+	defer root.Close()
+	dir := filepath.Join(sub, id, "uploads")
+	if err := root.MkdirAll(dir, 0o755); err != nil {
 		writeErr(w, 500, errChatUploadMkdir+err.Error())
 		return
 	}
@@ -110,39 +122,55 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 			continue
 		}
-		dest := uniqueUploadPath(dir, name)
-		if err := saveUpload(hdr, dest); err != nil {
+		src, err := hdr.Open()
+		if err != nil {
+			writeErr(w, 500, errChatUploadSaveFailed+err.Error())
+			return
+		}
+		file, dest, err := reserveUpload(root, dir, name)
+		if err != nil {
+			_ = src.Close()
+			writeErr(w, 500, errChatUploadSaveFailed+err.Error())
+			return
+		}
+		if err := saveUpload(src, file, hdr.Size); err != nil {
+			if removeErr := root.Remove(dest); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = errors.Join(err, removeErr)
+			}
 			writeErr(w, 500, errChatUploadSaveFailed+err.Error())
 			return
 		}
 		base := filepath.Base(dest)
-		out = append(out, chatAttachment{Name: base, Path: "uploads/" + base, Size: hdr.Size, Abs: dest})
+		out = append(out, chatAttachment{Name: base, Path: "uploads/" + base, Size: hdr.Size, Abs: filepath.Join(s.m.dir, dest)})
 	}
 	writeJSON(w, 200, map[string]any{"attachments": out})
 }
 
-// uniqueUploadPath returns dir/name, or dir/name-1, dir/name-2… when it already exists,
-// so re-uploading the same filename never clobbers a prior attachment.
-func uniqueUploadPath(dir, name string) string {
-	dest := filepath.Join(dir, name)
-	if _, err := os.Stat(dest); os.IsNotExist(err) {
-		return dest
-	}
-	ext := filepath.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
-	for i := 1; ; i++ {
-		cand := filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
-		if _, err := os.Stat(cand); os.IsNotExist(err) {
-			return cand
+// reserveUpload atomically allocates a name without following or replacing an existing entry.
+func reserveUpload(root *os.Root, dir, name string) (*os.File, string, error) {
+	candidate := name
+	var stem, ext string
+	for index := 0; ; index++ {
+		dest := filepath.Join(dir, candidate)
+		file, err := root.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+		if err == nil {
+			return file, dest, nil
 		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, "", err
+		}
+		if index == 0 {
+			ext = filepath.Ext(name)
+			stem = strings.TrimSuffix(name, ext)
+		}
+		candidate = fmt.Sprintf("%s-%d%s", stem, index+1, ext)
 	}
 }
 
 // composeAgentMessage appends an attachment manifest to the user's message so the agent
-// knows which files were uploaded and where to Read them. baseDir is the agent's working
-// dir (its CWD); we emit ABSOLUTE paths (baseDir + relative) so the agent can Read/Bash
-// them unambiguously regardless of how it interprets relative paths.
-func composeAgentMessage(msg string, atts []chatAttachment, baseDir string) string {
+// knows which files were uploaded and where to Read them. Attachment paths are
+// relative to the agent workspace.
+func composeAgentMessage(msg string, atts []chatAttachment) string {
 	if len(atts) == 0 {
 		return msg
 	}
@@ -150,9 +178,9 @@ func composeAgentMessage(msg string, atts []chatAttachment, baseDir string) stri
 	b.WriteString(msg)
 	// The manifest below is model-only: the returned string goes to the agent, while the
 	// transcript renders attachments separately from the JSON built by userActivityWithAttachments.
-	b.WriteString("\n\n【用户上传的附件】(绝对路径，需要时用 Read/Bash 查看)：")
+	b.WriteString("\n\nUploaded attachments (workspace-relative paths; use Read/Bash as needed):")
 	for _, a := range atts {
-		fmt.Fprintf(&b, "\n- %s（%s）", filepath.Join(baseDir, a.Path), humanBytes(a.Size))
+		fmt.Fprintf(&b, "\n- %s (%s)", a.Path, humanBytes(a.Size))
 	}
 	return b.String()
 }

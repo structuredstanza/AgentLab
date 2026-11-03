@@ -7,14 +7,10 @@ rem Usage:
 rem   start.bat                  Run in foreground (stop with Ctrl-C)
 rem   start.bat -addr :9000      Extra arguments are passed through to artex unchanged
 rem
-rem This script does one thing only. It runs artex.exe, and when the process exits, it reads the exit code to decide whether to start it again.
+rem This script runs artex.exe, and when the process exits, it reads the exit code:
 rem
 rem   0      User stopped normally  -> exit loop
-rem   75     Program requested restart -> run again immediately (press "one-click update" or "rollback" on screen)
 rem   other  Abnormal exit          -> run again after backoff (1->2->4... up to 60 seconds)
-rem
-rem Downloading, SHA256 checksum verification, and version replacement are not done here; artex handles all of them itself when it starts
-rem (selfupdate package). The script is kept simple. For details, see the header comment in start.sh.
 
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
@@ -25,7 +21,6 @@ if not exist "%BIN%" (
 	exit /b 1
 )
 
-set "RESTART_CODE=75"
 set "MAX_DELAY=60"
 set /a delay=1
 
@@ -38,12 +33,6 @@ if "!code!"=="0" (
 	exit /b 0
 )
 
-if "!code!"=="%RESTART_CODE%" (
-	rem Update/rollback is ready. Running again lets artex complete the version swap at startup.
-	echo [artex] Restart requested: applying new version...
-	set /a delay=1
-	goto loop
-)
 
 echo [artex] Abnormal exit ^(code=!code!^), restarting after !delay!s 1>&2
 rem timeout fails on a redirected console, so ping is used instead (a delay of N seconds needs N+1 pings).

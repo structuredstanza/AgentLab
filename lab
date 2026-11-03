@@ -20,13 +20,15 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 MSB = ROOT / '.venv/bin/msb'
-NAME = 'artex-agentlab-quota'
+NAME = 'artex-agentlab-astra-reviewed-20261031t010522z'
 URL = 'http://127.0.0.1:8787'
 PRIMARY_URL = 'http://host.microsandbox.internal:8080/v1'
 PRIMARY_NAME = 'AgentLab Bonsai Thinking'
 PRIMARY_KEY = Path('/mnt/Research/Local_Stack/artifacts/api_key.txt')
-SDK_STATE = ROOT / 'sdk-state'
-SDK_TOKEN = ROOT / 'secrets/sdk-bridge-token'
+PROXY_BIN = ROOT / 'dist/provider-proxy'
+PROXY_STATE = ROOT / 'proxy-state'
+PROXY_TOKEN = ROOT / 'secrets/native-proxy-token'
+PROXY_UNIT = ROOT / 'deployment/artex-cliproxy.service'
 os.environ['MSB_HOME'] = str(ROOT / 'microsandbox')
 os.umask(0o077)
 
@@ -58,20 +60,22 @@ def login():
         (ROOT / 'secrets/admin-password').read_text().strip()})['token']
 
 
-def start_sdk_bridge():
-    for path in (SDK_STATE, SDK_STATE / 'home', SDK_STATE / 'network'):
+def start_provider_proxy():
+    if not PROXY_BIN.is_file():
+        raise RuntimeError(f'Native provider proxy is not built: {PROXY_BIN}')
+    for path in (PROXY_STATE, PROXY_STATE / 'home', PROXY_STATE / 'network'):
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         path.chmod(0o700)
     try:
-        fd = os.open(SDK_TOKEN, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(PROXY_TOKEN, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
         pass
     else:
         with os.fdopen(fd, 'w') as stream:
             stream.write(secrets.token_urlsafe(48) + '\n')
-    SDK_TOKEN.chmod(0o600)
-    unit = ROOT / 'deployment/artex-sdk-bridge.service'
-    installed = Path.home() / '.config/systemd/user/artex-sdk-bridge.service'
+    PROXY_TOKEN.chmod(0o600)
+    unit = PROXY_UNIT
+    installed = Path.home() / '.config/systemd/user/artex-cliproxy.service'
     installed.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if installed.exists() or installed.is_symlink():
         if installed.resolve() != unit.resolve():
@@ -89,13 +93,13 @@ def start_sdk_bridge():
         except (OSError, ValueError):
             pass
         if time.monotonic() >= deadline:
-            raise RuntimeError('SDK bridge did not become healthy; inspect artex-sdk-bridge.service')
+            raise RuntimeError('native provider proxy did not become healthy; inspect artex-cliproxy.service')
         time.sleep(0.2)
 
 
 def start():
-    start_sdk_bridge()
-    for name in ('artex-agentlab', 'artex-agentlab-reasoning', 'artex-agentlab-capture', 'artex-agentlab-english', 'artex-agentlab-sdk', 'artex-agentlab-allocation', 'artex-agentlab-quota'):
+    start_provider_proxy()
+    for name in ('artex-agentlab', 'artex-agentlab-reasoning', 'artex-agentlab-capture', 'artex-agentlab-english', 'artex-agentlab-sdk', 'artex-agentlab-allocation', 'artex-agentlab-quota', 'artex-agentlab-integrated', 'artex-agentlab-native', 'artex-agentlab-native-allocation', 'artex-agentlab-native-codex-capture', 'artex-agentlab-astra-reviewed-20261031t010522z'):
         if name == NAME:
             continue
         previous = subprocess.run([str(MSB), 'inspect', name, '--format', 'json'],
@@ -287,6 +291,44 @@ def extract_capture_archive(stream, destination):
         archive.extractall(destination, filter=regular_files_only)
 
 
+def export_provider_proxy_traffic(raw):
+    capture_dir = PROXY_STATE / 'captures'
+    source = capture_dir / 'native-sse.ndjson'
+    if PROXY_STATE.is_symlink() or capture_dir.is_symlink() or source.is_symlink():
+        raise RuntimeError('Refusing symlinked native provider capture')
+    if not source.exists():
+        return None
+    if not source.is_file():
+        raise RuntimeError('Native provider capture is not a regular file')
+
+    target_dir = raw / 'provider-proxy-traffic'
+    target_dir.mkdir(mode=0o700)
+    target_dir.chmod(0o700)
+    target = target_dir / 'native-sse.ndjson'
+    created = False
+    try:
+        with source.open('rb') as source_stream, target.open('xb') as target_stream:
+            created = True
+            shutil.copyfileobj(source_stream, target_stream)
+        target.chmod(0o600)
+        with target.open('rb') as stream:
+            checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+    except BaseException:
+        if created:
+            target.unlink(missing_ok=True)
+        raise
+    return {
+        'source': 'proxy-state/captures/native-sse.ndjson',
+        'artifact': 'raw/provider-proxy-traffic/native-sse.ndjson',
+        'format': 'NDJSON privacy.Record; Body is base64-encoded',
+        'correlation_fields': ['Direction', 'Provider', 'Model', 'Profile', 'SessionID'],
+        'scope': 'Native provider inference HTTP request/response bodies before core response translation or aggregation; not a PCAP or full wire capture',
+        'privacy': 'Raw provider HTTP bodies and path/content metadata may be sensitive; SessionID is client-supplied opaque data; keep private',
+        'sha256': checksum,
+    }
+
+
+
 def export():
     export_id = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     output = ROOT / 'exports' / export_id
@@ -355,19 +397,22 @@ def export():
     with (raw / 'sandbox.json').open('w') as stream:
         msb('inspect', NAME, '--format', 'json', stdout=stream)
     shutil.copyfile(ROOT / 'deployment/provenance.json', raw / 'provenance.json')
-    sdk_network = SDK_STATE / 'network'
-    if sdk_network.exists():
-        target = raw / 'sdk-network'
+    proxy_network = PROXY_STATE / 'network'
+    if proxy_network.exists():
+        target = raw / 'provider-proxy-network'
         target.mkdir(mode=0o700)
-        for path in sorted(sdk_network.glob('sdk.*')):
+        for path in sorted(proxy_network.glob('proxy.*')):
             if path.is_file() and not path.is_symlink():
                 shutil.copyfile(path, target / path.name)
-        manifest['sdk_network'] = {
-            'source': 'host SDK process strace',
-            'scope': 'SDK process/file/network syscalls, including provider connections',
-            'limit': 'decoded arguments limited to 256 bytes; TLS payloads remain encrypted',
-            'consistency': 'online file copy; SDK OAuth databases are never exported',
+        manifest['provider_proxy_network'] = {
+            'source': 'host provider-proxy process strace',
+            'scope': 'host proxy process/file/network syscalls, including upstream provider connections',
+            'limit': 'decoded arguments limited to 256 bytes; TLS payloads remain encrypted; plaintext socket buffers can contain the guest capability token and OAuth callback material',
+            'consistency': 'online file copy; credential stores and token files are never exported; raw strace is secret-bearing and private',
         }
+    provider_proxy_traffic = export_provider_proxy_traffic(raw)
+    if provider_proxy_traffic is not None:
+        manifest['provider_proxy_traffic'] = provider_proxy_traffic
     shutil.copyfile(ROOT / 'deployment/sandbox.yaml', raw / 'sandbox.yaml')
     sys.path.insert(0, str(ROOT / 'deployment'))
     import export_traces

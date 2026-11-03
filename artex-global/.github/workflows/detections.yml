@@ -27,8 +27,6 @@ on:
     paths:
       - "detections/**"
       - "enrich/enrich.go"
-      - "selfupdate/github.go"
-      - "selfupdate/stage.go"
       - "guard/guard.go"
       - "db/db.go"
       - "db/schema.sql"
@@ -41,8 +39,6 @@ on:
     paths:
       - "detections/**"
       - "enrich/enrich.go"
-      - "selfupdate/github.go"
-      - "selfupdate/stage.go"
       - "guard/guard.go"
       - "db/db.go"
       - "db/schema.sql"

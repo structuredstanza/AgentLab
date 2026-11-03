@@ -28,6 +28,7 @@ type FormState = {
   url: string;
   env: string;
   insecure: boolean;
+  timeoutSeconds: string;
 };
 const emptyForm: FormState = {
   name: "",
@@ -37,6 +38,7 @@ const emptyForm: FormState = {
   url: "",
   env: "",
   insecure: false,
+  timeoutSeconds: "",
 };
 
 export default function MCPPage() {
@@ -52,6 +54,9 @@ export default function MCPPage() {
   const [saving, setSaving] = React.useState(false);
   const [tools, setTools] = React.useState<MCPTool[]>([]);
   const [toolsLoading, setToolsLoading] = React.useState(false);
+  // Only the newest loadTools request may write state: clicking server A then
+  // server B could otherwise show A's tools under B's name.
+  const toolsRequest = React.useRef(0);
   const [refreshing, setRefreshing] = React.useState(false);
 
   const load = React.useCallback(() => {
@@ -123,6 +128,7 @@ export default function MCPPage() {
       url: s.url ?? "",
       env: envToText(s.env),
       insecure: s.insecure ?? false,
+      timeoutSeconds: s.timeout_seconds ? String(s.timeout_seconds) : "",
     });
     setTab("config");
     setOpen(true);
@@ -130,13 +136,17 @@ export default function MCPPage() {
   }
 
   async function loadTools(id: number) {
+    const seq = ++toolsRequest.current;
     setToolsLoading(true);
     try {
-      setTools(await api.mcpTools(id));
+      const next = await api.mcpTools(id);
+      if (seq !== toolsRequest.current) return;
+      setTools(next);
     } catch {
+      if (seq !== toolsRequest.current) return;
       setTools([]);
     } finally {
-      setToolsLoading(false);
+      if (seq === toolsRequest.current) setToolsLoading(false);
     }
   }
 
@@ -164,6 +174,9 @@ export default function MCPPage() {
               args: [] as string[],
               env: parseEnv(form.env), // In remote mode, env is the request header.
               insecure: form.insecure,
+              ...(Number.isFinite(Number(form.timeoutSeconds)) && Number(form.timeoutSeconds) > 0
+                ? { timeout_seconds: Number(form.timeoutSeconds) }
+                : {}),
             }
           : {
               transport: "stdio" as const,
@@ -309,6 +322,15 @@ export default function MCPPage() {
               <Checkbox checked={form.insecure} onCheckedChange={(v) => setF({ insecure: v === true })} />
               {t("insecureLabel")}
             </label>
+            <Label htmlFor="m-timeout">{t("timeoutLabel")}</Label>
+            <Input
+              id="m-timeout"
+              type="number"
+              min={5}
+              placeholder="120"
+              value={form.timeoutSeconds}
+              onChange={(e) => setF({ timeoutSeconds: e.target.value })}
+            />
           </div>
         )}
         <div className="grid gap-2">
@@ -384,6 +406,19 @@ export default function MCPPage() {
                 <Badge variant="outline" className="shrink-0 uppercase">
                   {s.transport}
                 </Badge>
+                {s.last_connect_ok === false ? (
+                  <Badge variant="destructive" className="max-w-55 truncate font-normal" title={s.last_connect_err ?? t("connectFailed")}>
+                    {t("statusDown", { err: s.last_connect_err ? s.last_connect_err.slice(0, 60) : t("connectFailed") })}
+                  </Badge>
+                ) : s.last_connect_ok === true ? (
+                  <Badge variant="secondary" className="font-normal">
+                    {t("statusOk", { time: s.last_connect_at ? new Date(s.last_connect_at).toLocaleTimeString() : "" })}
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="text-muted-foreground font-normal">
+                    {t("statusNotConnected")}
+                  </Badge>
+                )}
                 {/* biome-ignore lint/a11y/noStaticElementInteractions: This is a container that only blocks click propagation to the parent card. The div itself is not an interactive element, and the inner Switch and delete button are each reachable by keyboard. */}
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: As above, this is solely for blocking click propagation, so it does not need a separate keyboard handler. */}
                 <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>

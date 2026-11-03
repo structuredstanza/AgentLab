@@ -267,6 +267,38 @@ func (s *ExplorationStore) ActivityListWithSources(nodeID, sinceID int64, limit 
 	return []Activity{}, sinceID, nil
 }
 
+// ActivityPageWithSources is the newest-first, source-aware reader used by
+// get_worker_output. Reading the oldest page instead dropped a long run's
+// terminal 'result' once the intent passed the row limit.
+func (s *ExplorationStore) ActivityPageWithSources(nodeID int64, limit int) ([]Activity, bool, error) {
+	node, err := s.GetNode(nodeID)
+	if err != nil {
+		return nil, false, err
+	}
+	if node != nil {
+		return s.ActivityPageByNode(nodeID, limit)
+	}
+	sources, err := s.DirectSourceStores()
+	if err != nil {
+		return nil, false, err
+	}
+	for _, source := range sources {
+		node, err = source.Store.GetNode(nodeID)
+		if err != nil {
+			return nil, false, err
+		}
+		if node == nil || node.Kind != KindIntent {
+			continue
+		}
+		acts, more, err := source.Store.ActivityPageByNode(nodeID, limit)
+		if err != nil {
+			return nil, false, err
+		}
+		return markInheritedActivities(acts, source.Task.TaskID), more, nil
+	}
+	return []Activity{}, false, nil
+}
+
 // ActivityDetailWithSources keeps the legacy local-task lookup (including local
 // thinking rows), while inherited details are restricted to terminal worker
 // intents. Source planner/main rows have no node id and must never become part of

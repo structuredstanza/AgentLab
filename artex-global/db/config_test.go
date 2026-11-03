@@ -17,7 +17,7 @@ func TestPoolProfilesOrder(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	mk := func(name string, priority int, exclude bool, key string) int64 {
 		id, err := d.SaveProfile(&LLMProfile{
@@ -59,7 +59,7 @@ func TestDeleteProfileContextHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var d DB
-	if err := d.DeleteProfileContext(ctx, 1); !errors.Is(err, context.Canceled) {
+	if err := d.DeleteProfileContext(ctx, 1, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("DeleteProfileContext error=%v, want context cancellation", err)
 	}
 }
@@ -69,7 +69,7 @@ func TestConfigStores(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	// LLM profile: save, active, key never serialized
 	pid, err := d.SaveProfile(&LLMProfile{Name: "t-default", Format: "openai", Model: "gpt-x", APIKey: "secret123"})

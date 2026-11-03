@@ -13,7 +13,7 @@ func TestLLMRecordsMigrateAddsRawColumnsToOldTable(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	if err := d.EnsureLLMRecordsTable(); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}

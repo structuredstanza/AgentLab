@@ -104,7 +104,8 @@ import type {
   TrafficEvidenceRole,
   TrafficHost,
   TrafficResp,
-  UpdateCheck,
+  TaskCredential,
+  TaskCredentialInput,
   UsageStats,
   WorkspaceFile,
   WorkspaceListing,
@@ -210,8 +211,13 @@ export function sseUrl(path: string): string {
       ? `${window.location.protocol}//${window.location.hostname}:8787`
       : "");
   const token = getToken();
+  // Same-origin streams already authenticate with the artex_token cookie, and
+  // EventSource cannot set headers. A JWT in the query string there only writes
+  // a 7-day credential into proxy access logs and browser history, so it is sent
+  // only when the stream is genuinely cross-origin.
+  if (!token || !base) return `${base}${path}`;
   const sep = path.includes("?") ? "&" : "?";
-  return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
+  return `${base}${path}${sep}token=${encodeURIComponent(token)}`;
 }
 
 const get = <T>(p: string) => http<T>(p);
@@ -302,8 +308,11 @@ export const api = {
     timeoutSeconds?: number;
     seedFirstIntent?: boolean;
     planHeartbeatSeconds?: number;
+    planQuietMode?: boolean;
+    llmRotate?: boolean;
     coverageEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
+    credentials?: TaskCredentialInput[];
   }) =>
     post<Task>("/tasks", {
       name: input.name ?? "",
@@ -316,11 +325,18 @@ export const api = {
       timeout_seconds: input.timeoutSeconds ?? 0,
       seed_first_intent: input.seedFirstIntent ?? false,
       plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = the backend normalizes it to the default 600 (10min)
+      plan_quiet_mode: input.planQuietMode ?? true,
+      llm_rotate: input.llmRotate ?? false,
       coverage_enabled: input.coverageEnabled ?? true, // Enabled by default; false = disable the asset coverage feature
       intercept_rules: input.interceptRules ?? [], // Task-level asset interception rules
+      credentials: input.credentials ?? [],
     }),
+  taskCredentials: (id: string) => get<TaskCredential[]>(`/tasks/${id}/credentials`).then((r) => arr(r)),
+  addTaskCredential: (id: string, input: TaskCredentialInput) =>
+    post<TaskCredential>(`/tasks/${id}/credentials`, input),
+  deleteTaskCredential: (id: string, cid: number) => del(`/tasks/${id}/credentials/${cid}`),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
-  updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),
+  updateTask: (id: string, input: { name?: string; pinned?: boolean; plan_quiet_mode?: boolean }) => patch<Task>(`/tasks/${id}`, input),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
@@ -1362,14 +1378,4 @@ export const api = {
   tokensByModel: (task: string) =>
     get<{ models: ModelTokenStat[] }>(`/llm/records/by-model?task=${encodeURIComponent(task)}`),
 
-  // ---- One-click update ----
-  // Check results are authoritative on the backend: the download is performed by the backend, and it is common for the browser to reach GitHub while the server cannot.
-  // (The server is on an internal network, and the proxy is only configured in the browser), in which case clicking Update will always fail.
-  // The backend caches the results of its GitHub queries for 30 minutes (unauthenticated GitHub API allows 60 requests/hour/IP,
-  // and the top bar queries once on every full page load, so without caching the quota would be used up quickly). force=true forces a fresh fetch from the origin,
-  // reserved for when the user explicitly clicks "Check for updates".
-  checkUpdate: (force = false) => get<UpdateCheck>(`/update/check${force ? "?force=1" : ""}`),
-  // Returns 202 immediately; the actual download runs in the background, and progress is streamed via /api/update/stream.
-  applyUpdate: () => post<{ ok: boolean; target: string }>(`/update/apply`),
-  rollbackUpdate: () => post<{ ok: boolean }>(`/update/rollback`),
 };

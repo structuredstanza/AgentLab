@@ -28,6 +28,7 @@ import type {
   TaskAssetMutation,
   TaskAssetScopeMutation,
   TaskCategory,
+  TaskCredential,
   TaskLLMResolution,
   TaskScopeRow,
   LLMProfile,
@@ -53,9 +54,13 @@ const mockLLMProfiles = structuredClone(D.llmProfiles);
 const mockTaskTemplates = structuredClone(D.taskTemplates);
 const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
+const mockTaskCredentials = new Map<string, TaskCredential[]>(
+  Object.entries(structuredClone(D.taskCredentials))
+);
+let nextMockCredentialID = 100;
 const mockRetests: FindingRetest[] = [];
 const mockRetestMessages: Record<number, Activity[]> = {};
-// Mock SDK login: exercises the UI transitions only. It never contacts a provider and never issues a real grant.
+// Mock native proxy login: exercises UI transitions only. It never contacts a provider and never issues a real grant.
 const mockOAuthSessions = new Map<string, { profileID: string; polls: number; answered: boolean }>();
 let mockOAuthSeq = 0;
 function pollMockOAuth(sessionID: string) {
@@ -1273,6 +1278,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       llm_failover_state: profileIDs.length ? "ready" : "default",
       source_task_ids: sourceTaskIDs,
       company_ids: companyIDs,
+      plan_quiet_mode: typeof b.plan_quiet_mode === "boolean" ? b.plan_quiet_mode : true,
+      llm_rotate: typeof b.llm_rotate === "boolean" ? b.llm_rotate : false,
     };
     const numericTaskID = nextMockTaskAssetID++;
     mockTaskAssetIDs.set(id, numericTaskID);
@@ -1288,6 +1295,22 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       });
     }
     for (const item of mockTasks) item.active = false;
+    if (Array.isArray(b.credentials)) {
+      const initialCreds: TaskCredential[] = (b.credentials as Record<string, unknown>[])
+        .filter((c) => c && typeof c.domain === "string" && typeof c.username === "string")
+        .map((c) => ({
+          id: nextMockCredentialID++,
+          task_id: numericTaskID,
+          domain: String(c.domain ?? "").trim(),
+          username: String(c.username ?? "").trim(),
+          password: String(c.password ?? ""),
+          note: String(c.note ?? "").trim(),
+          source: "user" as const,
+          created_at: now.toISOString(),
+          updated_at: now.toISOString(),
+        }));
+      mockTaskCredentials.set(id, initialCreds);
+    }
     mockTasks.unshift(created);
     mockActiveTask = id;
     return created;
@@ -1441,6 +1464,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     if (index >= 0) mockTasks.splice(index, 1);
     mockTaskAssetIDs.delete(id);
     deleteMockTaskAssetSources(id);
+    mockTaskCredentials.delete(id);
     if (numericTaskID !== undefined) {
       for (const asset of mockAssets) asset.task_ids = asset.task_ids.filter((taskID) => taskID !== numericTaskID);
     }
@@ -1618,6 +1642,39 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     return { ok: true };
   }
 
+  // ── Task credentials (add, delete, query) ──
+  if (seg[0] === "tasks" && seg[2] === "credentials" && seg.length === 3 && m === "GET") {
+    return mockTaskCredentials.get(seg[1]) ?? [];
+  }
+  if (seg[0] === "tasks" && seg[2] === "credentials" && seg.length === 3 && m === "POST") {
+    const taskId = seg[1];
+    const current = mockTaskCredentials.get(taskId) ?? [];
+    const now = new Date().toISOString();
+    const cred: TaskCredential = {
+      id: nextMockCredentialID++,
+      task_id: (mockTaskAssetID(taskId) ?? Number(taskId)) || 1,
+      domain: String(b.domain ?? "").trim(),
+      username: String(b.username ?? "").trim(),
+      password: String(b.password ?? ""),
+      note: String(b.note ?? "").trim(),
+      source: "user",
+      created_at: now,
+      updated_at: now,
+    };
+    mockTaskCredentials.set(taskId, [...current, cred]);
+    return cred;
+  }
+  if (seg[0] === "tasks" && seg[2] === "credentials" && seg.length === 4 && m === "DELETE") {
+    const taskId = seg[1];
+    const cid = Number(seg[3]);
+    const current = mockTaskCredentials.get(taskId) ?? [];
+    mockTaskCredentials.set(
+      taskId,
+      current.filter((item) => item.id !== cid),
+    );
+    return { ok: true };
+  }
+
   // ── Global llm_usage aggregation (new dashboard view, demo) ──
   if (path === "/tokens/usage")
     return {
@@ -1630,6 +1687,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
           output_tokens: 110000,
           cache_read_tokens: 1120000,
           cache_write_tokens: 140000,
+          cost_eur: 4.82,
         },
       ],
       daily: [

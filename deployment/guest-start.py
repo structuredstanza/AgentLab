@@ -50,6 +50,7 @@ ADMIN_SECRET = "/run/secrets/agentlab-admin"
 IMAGE_BIN = "/opt/artex/artex"
 SKILLS_DIR = "/opt/artex/skills"
 BROWSERS_DIR = "/opt/ms-playwright"
+# Guest-local capture proxy; not the host native provider proxy, which also listens on 8788.
 ARTEX_ARGS = ["-addr", ":8787", "-proxy", "127.0.0.1:8788", "-data", ARTEX_DATA]
 STRACE_ARGS = ["-ff", "-ttt", "-T", "-yy", "-s256", "-e", "trace=process,file,network"]
 SEGMENT_MB = 128   # tcpdump -C counts millions of bytes
@@ -66,7 +67,7 @@ CAPTURE_LIMITS = {
     "privileges": "-Z root (no privilege drop; output directory is root-only)",
     "not_captured": "HTTPS/TLS payloads are ciphertext; no key material is captured",
     "tamper": "guest root can modify or delete captures and this manifest",
-    "sdk_transport": "Provider sockets run in the host SDK service; guest PCAP captures the bridge and task traffic. Host SDK network syscalls are exported separately.",
+    "native_transport": "Provider sockets run in the host native provider proxy; guest PCAP captures the host API and task traffic. Host provider-proxy network syscalls are exported separately.",
 }
 START_TIMEOUT = 20
 APP_STOP_TIMEOUT = 30
@@ -222,9 +223,16 @@ class Session:
         self.save()
 
     def error(self, msg):
-        log(f"ERROR {msg}")
         self.m["errors"].append({"at": now_iso(), "message": msg})
-        self.save()
+        self.m["state"] = "failed"
+        if not self.m.get("exit_code"):
+            self.m["exit_code"] = 1
+        # Diagnostics must never prevent process cleanup or hide its failure.
+        for label, action in (("log", lambda: log(f"ERROR {msg}")), ("manifest", self.save)):
+            try:
+                action()
+            except Exception as error:
+                self.m["errors"].append({"at": now_iso(), "message": f"{label} failed: {error}"})
 
     def sample_resources(self):
         with open("/proc/stat") as stream:
@@ -270,7 +278,7 @@ def pg_write_hba():
     chown_postgres(path)
 
 
-def pg_start(bindir):
+def pg_start(sess, bindir):
     ctl = f"{bindir}/pg_ctl"
     st = subprocess.run(as_postgres([ctl, "-D", PGDATA, "status"]), capture_output=True).returncode
     if st == 0:
@@ -281,6 +289,7 @@ def pg_start(bindir):
     if os.path.exists(pid_file):
         os.remove(pid_file)  # stale: pg_ctl status reported no live server
     log("starting PostgreSQL on 127.0.0.1:5432 and " + PG_SOCKDIR)
+    sess.m["postgres"].update(status="starting", bindir=bindir)
     run(as_postgres([ctl, "-D", PGDATA, "-l", PG_LOG, "-o", PG_OPTS, "-w", "-t", str(PG_TIMEOUT), "start"]),
         "pg_ctl start")
     with open(pid_file) as f:
@@ -343,8 +352,8 @@ def app_env(dsn, admin_pw):
         "ARTEX_PG_DSN": dsn,
         "ARTEX_SKILL_DIR": SKILLS_DIR,
         "PLAYWRIGHT_BROWSERS_PATH": BROWSERS_DIR,
-        "ARTEX_SDK_BRIDGE_URL": "http://host.microsandbox.internal:8788",
-        "ARTEX_SDK_BRIDGE_TOKEN_FILE": "/run/secrets/agentlab-sdk-bridge",
+        "ARTEX_NATIVE_PROXY_URL": "http://host.microsandbox.internal:8788",
+        "ARTEX_NATIVE_PROXY_TOKEN_FILE": "/run/secrets/agentlab-native-proxy",
     }
     if admin_pw is not None:
         env["ARTEX_ADMIN_PASSWORD"] = admin_pw
@@ -397,23 +406,30 @@ def start_tcpdump(sess):
            "-W", str(MAX_SEGMENTS), "-w", pcap]
     with open(err_path, "wb") as errf:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=errf, stderr=errf, start_new_session=True)
-    sess.m["capture"].update(status="starting", pid=p.pid, process=proc_info(p.pid), argv=cmd,
-                             dir=sess.pcap, stderr_log=err_path, started_at=now_iso())
-    sess.save()
-    deadline = time.monotonic() + START_TIMEOUT
-    while True:
-        if p.poll() is not None:
-            raise Fatal(f"tcpdump exited during start (rc={p.returncode}); see {err_path}")
-        with open(err_path, "rb") as f:
-            if b"listening on" in f.read():
-                break
-        if time.monotonic() > deadline:
-            p.kill()
-            p.wait()
-            raise Fatal(f"tcpdump did not report 'listening on' within {START_TIMEOUT}s; see {err_path}")
-        time.sleep(0.2)
-    sess.m["capture"]["status"] = "running"
-    sess.save()
+    try:
+        sess.m["capture"].update(status="starting", pid=p.pid, process=proc_info(p.pid), argv=cmd,
+                                 dir=sess.pcap, stderr_log=err_path, started_at=now_iso())
+        sess.save()
+        deadline = time.monotonic() + START_TIMEOUT
+        while True:
+            if p.poll() is not None:
+                raise Fatal(f"tcpdump exited during start (rc={p.returncode}); see {err_path}")
+            with open(err_path, "rb") as f:
+                if b"listening on" in f.read():
+                    break
+            if time.monotonic() > deadline:
+                p.kill()
+                p.wait()
+                raise Fatal(f"tcpdump did not report 'listening on' within {START_TIMEOUT}s; see {err_path}")
+            time.sleep(0.2)
+        sess.m["capture"]["status"] = "running"
+        sess.save()
+    except BaseException:
+        try:
+            stop_tcpdump(sess, p)
+        except Exception as error:
+            sess.error(f"tcpdump startup cleanup failed: {error}")
+        raise
     return p
 
 
@@ -429,14 +445,12 @@ def stop_tcpdump(sess, p):
             sess.error(f"tcpdump ignored SIGINT for {TCPDUMP_STOP_TIMEOUT}s; killed, last segment may be incomplete")
     cap["exit_code"] = p.returncode
     cap["stopped_at"] = now_iso()
+    cap["status"] = "stopped" if p.returncode == 0 else "failed"
     with open(cap["stderr_log"], "rb") as f:
         cap["stats"] = parse_stats(f.read().decode(errors="replace"))
     cap["segments"] = list_segments(sess.pcap)
     cap["wrap_suspected"] = len(cap["segments"]) >= MAX_SEGMENTS
-    if p.returncode == 0:
-        cap["status"] = "stopped"
-    else:
-        cap["status"] = "failed"
+    if p.returncode != 0:
         sess.error(f"tcpdump exit code {p.returncode}")
 
 
@@ -452,11 +466,18 @@ def start_app(sess, binary, env):
     with open(out_path, "ab") as out, open(err_path, "ab") as err:
         p = subprocess.Popen(cmd, cwd=RUNTIME, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=err, start_new_session=True)
-    sess.m["artex"].update(status="running", started_at=now_iso(), strace_pid=p.pid,
-                           strace_process=proc_info(p.pid), argv=cmd, binary=binary,
-                           sha256=sess.m["artex"].get("sha256"), stdout_log=out_path, stderr_log=err_path,
-                           env_keys=sorted(env), skills_dir=SKILLS_DIR, data_dir=ARTEX_DATA)
-    sess.save()
+    try:
+        sess.m["artex"].update(status="running", started_at=now_iso(), strace_pid=p.pid,
+                               strace_process=proc_info(p.pid), argv=cmd, binary=binary,
+                               sha256=sess.m["artex"].get("sha256"), stdout_log=out_path, stderr_log=err_path,
+                               env_keys=sorted(env), skills_dir=SKILLS_DIR, data_dir=ARTEX_DATA)
+        sess.save()
+    except BaseException:
+        try:
+            stop_app(sess, p)
+        except Exception as error:
+            sess.error(f"ARTEX startup cleanup failed: {error}")
+        raise
     return p
 
 
@@ -488,18 +509,31 @@ def stop_app(sess, p):
 # ---------- lifecycle ----------
 
 def shutdown(sess, app, tcpd, bindir):
-    sess.set_state("stopping")
-    if app is not None:
-        stop_app(sess, app)
-    if tcpd is not None:
-        stop_tcpdump(sess, tcpd)
+    try:
+        sess.set_state("stopping")
+    except Exception as error:
+        sess.error(f"could not persist stopping state: {error}")
+    for name, process, stop in (("artex", app, stop_app), ("capture", tcpd, stop_tcpdump)):
+        if process is not None:
+            try:
+                stop(sess, process)
+            except Exception as error:
+                sess.m[name]["status"] = "failed"
+                sess.error(f"{name} cleanup failed: {error}")
     if bindir is not None:
-        rc, out = pg_stop(bindir)
-        sess.m["postgres"].update(status="stopped" if rc == 0 else "failed",
-                                  stop={"rc": rc, "output": out, "at": now_iso()})
-        if rc != 0:
-            sess.error(f"pg_ctl stop -m fast failed rc={rc}: {out}")
-    sess.save()
+        try:
+            rc, out = pg_stop(bindir)
+            sess.m["postgres"].update(status="stopped" if rc == 0 else "failed",
+                                      stop={"rc": rc, "output": out, "at": now_iso()})
+            if rc != 0:
+                sess.error(f"pg_ctl stop -m fast failed rc={rc}: {out}")
+        except Exception as error:
+            sess.m["postgres"]["status"] = "failed"
+            sess.error(f"PostgreSQL cleanup failed: {error}")
+    try:
+        sess.save()
+    except Exception as error:
+        sess.error(f"could not persist cleanup state: {error}")
 
 
 def main():
@@ -508,20 +542,18 @@ def main():
     signal.signal(signal.SIGINT, on_signal)
     prepare_dirs()
     sess = Session()
-    log(f"session {sess.id} -> {sess.dir}")
-    write_file(SUPERVISOR_PID, f"{os.getpid()}\n")
-    write_file(CURRENT_CAPTURE, json.dumps({"path": str(sess.dir), "pid": os.getpid()}) + "\n")
     bindir = None
-    pg_running = None
     tcpd = None
     app = None
     rc = 0
     try:
+        log(f"session {sess.id} -> {sess.dir}")
+        write_file(SUPERVISOR_PID, f"{os.getpid()}\n")
+        write_file(CURRENT_CAPTURE, json.dumps({"path": str(sess.dir), "pid": os.getpid()}) + "\n")
         bindir = pg_bindir()
         pg_init(bindir)
         pg_write_hba()
-        pg_pid = pg_start(bindir)
-        pg_running = bindir
+        pg_pid = pg_start(sess, bindir)
         sess.m["postgres"].update(status="running", pid=pg_pid, process=proc_info(pg_pid), bindir=bindir,
                                   listen="127.0.0.1:%d" % PG_PORT, socket=PG_SOCKDIR, log=PG_LOG,
                                   auth={"local": "trust", "host": "scram-sha-256"})
@@ -545,25 +577,40 @@ def main():
         if STOP["signal"] is not None:
             log(f"received {STOP['signal']}; stopping")
     except Exception as e:  # noqa: BLE001 - every failure must land in the manifest
+        rc = 1
         msg = str(e) if isinstance(e, Fatal) else "unexpected: " + traceback.format_exc()
         sess.error(msg)
-        rc = 1
         if sess.m["capture"]["status"] == "starting":
             sess.m["capture"]["status"] = "failed"
     finally:
-        shutdown(sess, app, tcpd, pg_running)
+        owned_pg = bindir if sess.m["postgres"]["status"] in ("starting", "running") else None
+        shutdown(sess, app, tcpd, owned_pg)
         try:
-            os.unlink(SUPERVISOR_PID)
+            with open(SUPERVISOR_PID) as stream:
+                owned_pid = stream.read().strip() == str(os.getpid())
+            if owned_pid:
+                os.unlink(SUPERVISOR_PID)
         except FileNotFoundError:
             pass
+        except Exception as error:
+            sess.error(f"could not remove owned supervisor PID: {error}")
     if app is not None and rc == 0 and app.returncode is not None:
         rc = exit_code(app.returncode)
     if rc == 0 and sess.m["errors"]:
         rc = 1
     sess.m["exit_code"] = rc
     sess.m["ended_at"] = now_iso()
-    sess.set_state("failed" if rc else "stopped")
-    log(f"session {sess.id} finished rc={rc}")
+    try:
+        sess.set_state("failed" if rc else "stopped")
+    except Exception as error:
+        sess.error(f"could not persist final state: {error}")
+    try:
+        log(f"session {sess.id} finished rc={sess.m['exit_code']}")
+    except Exception as error:
+        sess.error(f"could not log final state: {error}")
+    if rc == 0 and sess.m["errors"]:
+        rc = 1
+    sess.m["exit_code"] = rc
     return rc
 
 

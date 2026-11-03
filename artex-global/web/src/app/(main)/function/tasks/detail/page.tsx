@@ -50,6 +50,7 @@ import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
+import { CredentialsTab } from "./_tabs/credentials-tab";
 
 const TAB_VALUES = [
   "sessions",
@@ -58,6 +59,7 @@ const TAB_VALUES = [
   "broadcast",
   "findings",
   "retests",
+  "credentials",
   "assets",
   "coverage",
   "intercept",
@@ -418,7 +420,7 @@ function TaskDetailInner() {
       {/* Tab content */}
       <div className="flex-1 p-4 lg:p-6">
         <TabsContent value="sessions" className="mt-0">
-          <SessionsTab taskId={id} />
+          <SessionsTab taskId={id} taskPaused={task?.status === "paused" || Boolean(task?.paused)} />
         </TabsContent>
         <TabsContent value="overview" className="mt-0">
           <OverviewTab taskId={id} />
@@ -437,6 +439,9 @@ function TaskDetailInner() {
         </TabsContent>
         <TabsContent value="assets" className="mt-0">
           <AssetsTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="credentials" className="mt-0">
+          <CredentialsTab taskId={id} />
         </TabsContent>
         <TabsContent value="coverage" className="mt-0">
           <CoverageGraphTab taskId={id} coverageEnabled={task?.coverage_enabled !== false} />

@@ -59,6 +59,25 @@ func ConvIDFromContext(ctx context.Context) int64 {
 	return v
 }
 
+type toolAliasesKey struct{}
+
+// WithToolAliases binds the immutable identities of aliases registered for this run.
+func WithToolAliases(ctx context.Context, aliases map[string]string) context.Context {
+	if len(aliases) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, toolAliasesKey{}, aliases)
+}
+
+// CanonicalToolName resolves registered aliases without changing trace identities.
+func CanonicalToolName(ctx context.Context, requested string) string {
+	aliases, _ := ctx.Value(toolAliasesKey{}).(map[string]string)
+	if canonical, ok := aliases[requested]; ok {
+		return canonical
+	}
+	return requested
+}
+
 // taskCtxKey is a separate unexported key type for task context values.
 type taskCtxKey int
 
@@ -142,6 +161,8 @@ type Interceptor struct {
 	db           *db.DB
 	mu           sync.RWMutex
 	cached       []compiledRule  // sorted by priority DESC; nil means not loaded yet
+	loaded       bool            // distinguishes "no rules" from "never loaded"
+	lastGood     []compiledRule  // survives Invalidate, so a failed reload cannot disarm the gate
 	enabledTools map[string]bool // nil means not loaded yet
 	pending      *pendingManager
 	reviewer     Reviewer // nil = LLM fallback judge not wired
@@ -174,6 +195,7 @@ func New(d *db.DB) *Interceptor {
 func (i *Interceptor) Invalidate() {
 	i.mu.Lock()
 	i.cached = nil
+	i.loaded = false
 	i.enabledTools = nil
 	i.mu.Unlock()
 }
@@ -199,6 +221,8 @@ func (i *Interceptor) loadLocked() error {
 		out = append(out, cr)
 	}
 	i.cached = out
+	i.lastGood = out
+	i.loaded = true
 
 	// Load enabled-tools set from settings, falling back to hard-coded defaults.
 	val, ok, _ := i.db.GetSetting("intercept_enabled_tools")
@@ -225,7 +249,7 @@ func (i *Interceptor) loadLocked() error {
 
 func (i *Interceptor) rules() ([]compiledRule, error) {
 	i.mu.RLock()
-	if i.cached != nil {
+	if i.loaded {
 		out := i.cached
 		i.mu.RUnlock()
 		return out, nil
@@ -234,10 +258,18 @@ func (i *Interceptor) rules() ([]compiledRule, error) {
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.cached != nil {
+	if i.loaded {
 		return i.cached, nil
 	}
 	if err := i.loadLocked(); err != nil {
+		// The rule source is unreachable. Falling back to nil here would report
+		// "no decision" and the guard reads that as allow, so a database blip
+		// would silently disarm every deny rule. Keep enforcing the last set that
+		// loaded successfully instead; the error is still reported when there is
+		// nothing to fall back to.
+		if i.lastGood != nil {
+			return i.lastGood, nil
+		}
 		return nil, err
 	}
 	return i.cached, nil
@@ -510,7 +542,13 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 // (Decision{}, false) if no rule matches.
 func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	rules, err := i.rules()
-	if err != nil || len(rules) == 0 {
+	if err != nil {
+		return Decision{
+			Action:  "deny",
+			Message: "the approval gate cannot read its rules (" + err.Error() + "); refusing to run tools unchecked",
+		}, true
+	}
+	if len(rules) == 0 {
 		return Decision{}, false
 	}
 	for _, r := range rules {

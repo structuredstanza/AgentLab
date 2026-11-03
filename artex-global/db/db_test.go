@@ -69,7 +69,7 @@ func TestOpenSeed(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	wantAgents := len(builtinAgents)
 	var agents int

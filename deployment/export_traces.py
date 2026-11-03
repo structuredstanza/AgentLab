@@ -23,9 +23,9 @@ snapshot because they carry unredacted prompts and provider bodies. Raw bodies
 are not copied out. They remain in the snapshot.
 
 A sample is the prompt conversation followed by the recorded assistant turn as
-the final message. Tool calls come from raw_response, because response_body
-keeps only text, thinking, stop reason, and usage. A row is accepted only when
-the text, thinking, and stop reason recovered from raw_response equal
+the final message. Native provider_state in response_body carries the terminal
+native state; raw_response supplies the terminal event and its usage. A row is
+accepted only when recovered visible text, thinking, and stop reason equal
 response_body exactly. Otherwise the row is rejected, not guessed.
 
 Tool schemas come from the wire body in raw_request, normalized to the OpenAI
@@ -45,8 +45,9 @@ metadata.reasoning_opaque. Nothing is synthesized.
 
 SDK records (raw_request is the bridge body with provider and context): the terminal line of raw_response decides the outcome. done, error, bridge_error, or EOF without a terminal line is the outcome. Only the terminal message is projected, so stream deltas are not read. error and bridge_error reject. A refusal (stop reason refusal or stopDetails type refusal) rejects as refused and stays in reasoning.jsonl. Native thinking with summary true is summary. Signatures are digests only.
 
-Redaction runs on train.jsonl only, by heuristic pattern matching. It is not a
-PII or secrets guarantee.
+Native records (provider_state present in response_body): raw_response is host NDJSON. The v2 envelope binds provider/model/profile/session/response/state/receipt; the terminal state and receipt must match, the profile id must be canonical, and the four DB-backed done.usage counters must agree with response_body.usage and llm_records counters. Optional reasoning_tokens is preserved as source usage metadata without inventing a DB counter. Missing done, error stops, unknown stops, refusals, and length truncation are archived as rejects. Receipts and opaque native state are never copied to readable output.
+
+Redaction runs on train.jsonl only using heuristic patterns and the task account passwords supplied by the caller. It is not a PII guarantee.
 
 Caveats: guest root can modify or delete guest-side capture files, so exports
 are not tamper-evident. HTTPS traffic in packet captures is encrypted. This
@@ -63,6 +64,7 @@ import hashlib
 import json
 import os
 import re
+import urllib.parse
 import sys
 from typing import Any
 
@@ -82,7 +84,7 @@ NOTICE = (
     "- Each train.jsonl sample is one recorded LLM call.\n"
     "- Guest root can modify or delete guest-side capture files. Treat exports as untrusted unless the host copy is verified.\n"
     "- HTTPS traffic in packet captures is encrypted. This export reads application-level records, not packets.\n"
-    "- train.jsonl redaction is heuristic pattern matching. It is not a PII or secrets guarantee.\n"
+    "- train.jsonl redaction uses heuristic patterns and caller-supplied task credential passwords. It is not a PII guarantee.\n"
     "- No reasoning is synthesized. Reasoning appears only when the provider returned it as text.\n"
     "- reasoning.jsonl in the source snapshot is UNREDACTED. It holds reasoning text for every row and digests of opaque payloads.\n"
     "- metadata.reasoning_kind: raw only when provenance.json maps the profile to open-weight-local. unclassified for generic reasoning fields on other profiles. summary for Responses summaries and Anthropic thinking with display summarized. anthropic_thinking for other Anthropic thinking. Raw is never inferred from a field or model name.\n"
@@ -91,8 +93,9 @@ NOTICE = (
     "- Per message or delta, the first non-empty of reasoning_content, reasoning, reasoning_text is the reasoning target, as norma reads it. Other non-empty fields are archived in reasoning.jsonl as kind unselected: unredacted text, never in train.jsonl.\n"
     "- reasoning_kind covers only the recorded target turn. Earlier assistant turns keep reasoning text with no kind.\n"
     "- reasoning_budget_exhausted is null unless the provider reported timings.reasoning_budget_exhausted.\n"
-    "- Gemini thoughts (thought:true parts) are provider summaries (reasoning_kind summary), never raw. thoughtSignature values are opaque: byte count and SHA-256 only. Gemini functionCall ids that are empty or repeated become name-N, numbered after the tool calls already in request_body, as the Go provider assigns them.\n"
+    "- Gemini thoughts (thought:true parts) are provider summaries (reasoning_kind summary), never raw. thoughtSignature values are opaque: byte count and SHA-256 only. Native missing functionCall ids reproduce Go's ag_<first-6-SHA-bytes>_<candidate-index>_<part-index> from raw terminal state bytes without mutating signed state; historical SDK calls retain their SDK-specific id behavior.\n"
     "- SDK records: the terminal done or error line in raw_response decides the outcome. error, bridge_error, and EOF without a terminal line reject. Only the terminal message is read, so stream deltas are not scanned for reasoning. Native thinking with summary true is summary. Other Anthropic thinking is anthropic_thinking. Other provider thinking is unclassified. Refusals reject as refused and are archived.\n"
+    "- Native records: validate the v2 envelope and terminal state/receipt, bind model/session/response ID, require a canonical positive-decimal profile ID, and reconcile the four DB-backed done.usage counters with response_body.usage and llm_records. Optional reasoning_tokens is retained as source metadata only; it is not compared to a nonexistent DB counter. Unknown Codex output items remain only in private raw state. Refusals and truncation reject and are archived.\n"
 )
 
 
@@ -412,7 +415,7 @@ class _GeminiCalls:
         return cid
 
 
-def _gemini_part_events(part: dict[str, Any], calls: _GeminiCalls) -> list[tuple]:
+def _gemini_part_events(part: dict[str, Any], calls: _GeminiCalls, native_id: str | None = None, raw_args: bytes | None = None) -> list[tuple]:
     evs: list[tuple] = [("unsupported", f"gemini.{k}", len(json.dumps(part[k]).encode("utf-8"))) for k in sorted(set(part) - _GEMINI_PART_KEYS)]
     sig = _as_text(part.get("thoughtSignature"))
     call = part.get("functionCall")
@@ -420,8 +423,14 @@ def _gemini_part_events(part: dict[str, Any], calls: _GeminiCalls) -> list[tuple
     if call is not None:
         if not isinstance(call, dict):
             raise Reject("unsupported_response_block", "functionCall")
-        evs.append(("tool_start", calls.new_id(call), str(call.get("name") or "")))
-        evs.append(("tool_json", json.dumps(call.get("args"), ensure_ascii=False)))
+        if native_id is None:
+            call_id = calls.new_id(call)
+        else:
+            call_id = str(call.get("id") or native_id)
+            calls.seen.add(call_id)
+            calls.any = True
+        evs.append(("tool_start", call_id, str(call.get("name") or "")))
+        evs.append(("tool_json", raw_args.decode("utf-8") if raw_args is not None else json.dumps(call.get("args"), ensure_ascii=False)))
         label = "gemini.functionCall"
     elif part.get("thought") is True:
         if text:
@@ -849,9 +858,390 @@ def _parse_sdk(raw: str, provider: str) -> dict[str, Any]:
     return turn.finish()
 
 
+_NATIVE_PROVIDERS = {"claude", "codex", "antigravity"}
+_NATIVE_STOP = {"end": "end_turn", "tool": "tool_use", "refusal": "refusal", "length": "max_tokens"}
+_ABSENT_PROVIDER_STATE = object()
+
+
+
+
+def _native_envelope(value: Any) -> dict[str, Any]:
+    """provider_state v2 envelope. The host verifies receipts; the exporter checks shape and binds it to the terminal line."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError as e:
+            raise Reject("native_envelope_invalid", str(e)) from e
+    if not isinstance(value, dict) or type(value.get("version")) is not int or value["version"] != 2:
+        raise Reject("native_envelope_invalid", "version is not 2")
+    if value.get("provider") not in _NATIVE_PROVIDERS:
+        raise Reject("native_envelope_invalid", "unknown provider")
+    for key in ("model", "response_id", "session_id"):
+        if not isinstance(value.get(key), str) or not value[key]:
+            raise Reject("native_envelope_invalid", f"{key} is not a non-empty string")
+    if not isinstance(value.get("profile_id"), str) or not re.fullmatch(r"[1-9][0-9]{0,18}", value["profile_id"]):
+        raise Reject("native_envelope_invalid", "profile_id is not a canonical positive decimal")
+    if not isinstance(value.get("state"), dict):
+        raise Reject("native_envelope_invalid", "state is not an object")
+    if not isinstance(value.get("receipt"), str) or not value["receipt"]:
+        raise Reject("native_receipt_missing", "receipt absent or not a non-empty string")
+    if "reasoning_effort" in value and (not isinstance(value["reasoning_effort"], str) or not value["reasoning_effort"]):
+        raise Reject("native_envelope_invalid", "reasoning_effort is not a non-empty string")
+    return value
+
+
+_SAFE_CODE = re.compile(r"[a-z0-9_-]+")
+
+
+def _raw_json_member(line: str, wanted: str) -> bytes | None:
+    decoder = json.JSONDecoder()
+    pos = len(line) - len(line.lstrip())
+    if pos == len(line) or line[pos] != "{":
+        return None
+    pos += 1
+    while pos < len(line):
+        while pos < len(line) and line[pos] in " \t\r\n,":
+            pos += 1
+        if pos < len(line) and line[pos] == "}":
+            return None
+        key, pos = decoder.raw_decode(line, pos)
+        if not isinstance(key, str):
+            return None
+        while pos < len(line) and line[pos] in " \t\r\n":
+            pos += 1
+        if pos == len(line) or line[pos] != ":":
+            return None
+        start = pos + 1
+        while start < len(line) and line[start] in " \t\r\n":
+            start += 1
+        _, end = decoder.raw_decode(line, start)
+        if key == wanted:
+            return line[start:end].encode("utf-8")
+        pos = end
+    return None
+
+
+def _raw_json_array(raw: bytes | None) -> list[str]:
+    """Slice array items without rounding JSON numbers in tool arguments."""
+    if raw is None:
+        raise Reject("native_state_invalid", "raw JSON array missing")
+    text = raw.decode("utf-8").lstrip()
+    if not text.startswith("["):
+        raise Reject("native_state_invalid", "raw JSON value is not an array")
+    decoder = json.JSONDecoder()
+    items = []
+    pos = 1
+    while pos < len(text):
+        while pos < len(text) and text[pos] in " \t\r\n,":
+            pos += 1
+        if pos < len(text) and text[pos] == "]":
+            return items
+        _, end = decoder.raw_decode(text, pos)
+        items.append(text[pos:end])
+        pos = end
+    raise Reject("native_state_invalid", "raw JSON array incomplete")
+
+
+def _native_terminal(raw: str) -> dict[str, Any]:
+    """The one terminal line (done or error) of a native NDJSON stream."""
+    term = None
+    wire = None
+    for n, line in enumerate(raw.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError as e:
+            raise Reject("unparseable_raw_response", f"line {n}: {e}") from e
+        if not isinstance(obj, dict):
+            raise Reject("unparseable_raw_response", f"line {n} is not an object")
+        kind = obj.get("type")
+        if term is not None:
+            raise Reject("native_stream_multiple_terminals" if kind in ("done", "error") else "native_stream_event_after_terminal", f"line {n}")
+        if kind == "wire_request":
+            if wire is not None:
+                raise Reject("native_stream_multiple_requests", f"line {n}")
+            wire = obj.get("payload")
+            if not isinstance(wire, dict):
+                raise Reject("native_wire_request_invalid", f"line {n}: payload is not an object")
+            continue
+        if kind == "wire_sse":
+            continue
+        if kind not in ("done", "error"):
+            raise Reject("native_stream_unknown_event", f"line {n}: {str(kind)[:80]}")
+        term = obj
+        term["_raw_state"] = _raw_json_member(line, "state")
+        term["_raw_response"] = _raw_json_member(line, "response")
+    if term is None:
+        raise Reject("native_stream_incomplete", "no done or error line")
+    term["_wire_request"] = wire
+    return term
+
+
+def _native_events(provider: str, state: dict[str, Any], raw_state: bytes) -> list[tuple]:
+    """Project only the blocks surfaced by provider_native.go, preserving candidate and part order."""
+    if provider == "claude":
+        content = state.get("content")
+        if state.get("role") != "assistant" or not isinstance(content, list):
+            raise Reject("native_state_invalid", "claude terminal state malformed")
+        evs = []
+        raw_blocks = _raw_json_array(_raw_json_member(raw_state.decode("utf-8"), "content"))
+        for index, block in enumerate(content):
+            if not isinstance(block, dict):
+                raise Reject("native_state_invalid", "claude content block malformed")
+            for key in ("type", "text", "thinking", "signature", "id", "name"):
+                if block.get(key) is not None and not isinstance(block[key], str):
+                    raise Reject("native_state_invalid", f"claude block {key} is not a string")
+            kind = block.get("type")
+            if kind == "text":
+                evs.append(("text", block.get("text") or ""))
+            elif kind == "thinking":
+                evs.append(("thinking", block.get("thinking") or "", "anthropic.thinking"))
+                if block.get("signature") is not None:
+                    evs.append(("signature", _as_text(block["signature"]), "anthropic.signature"))
+            elif kind == "redacted_thinking":
+                data = block.get("data")
+                if not isinstance(data, str):
+                    raise Reject("native_state_invalid", "claude redacted thinking data is not a string")
+                evs.append(("signature", data, "anthropic.redacted_thinking.data"))
+            elif kind == "tool_use":
+                evs.append(("tool_start", block.get("id") or "", block.get("name") or ""))
+                raw_input = _raw_json_member(raw_blocks[index], "input")
+                evs.append(("tool_json", raw_input.decode("utf-8") if raw_input is not None else "null"))
+            # Native-only content blocks remain private in provider_state.
+        return evs
+    if provider == "codex":
+        output = state.get("output")
+        if not isinstance(output, list):
+            raise Reject("native_state_invalid", "codex terminal state malformed")
+        evs: list[tuple] = []
+        has_call = False
+        for item in output:
+            if not isinstance(item, dict):
+                raise Reject("native_state_invalid", "codex output item malformed")
+            if item.get("type") is not None and not isinstance(item["type"], str):
+                raise Reject("native_state_invalid", "codex output type is not a string")
+            for key in ("call_id", "name"):
+                if item.get(key) is not None and not isinstance(item[key], str):
+                    raise Reject("native_state_invalid", f"codex output {key} is not a string")
+            kind = item.get("type")
+            if kind == "message":
+                for content in _blocks(item.get("content")):
+                    if content.get("type") == "output_text":
+                        evs.append(("text", content.get("text") or ""))
+            elif kind == "function_call":
+                has_call = True
+                args = item.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        json.loads(args)
+                    except ValueError as e:
+                        raise Reject("malformed_tool_arguments", str(e)) from e
+                    arguments = args
+                else:
+                    arguments = json.dumps(args, ensure_ascii=False) if args is not None else "null"
+                evs.extend((("tool_start", item.get("call_id") or "", item.get("name") or ""), ("tool_json", arguments)))
+            elif kind == "reasoning":
+                for summary in _blocks(item.get("summary")):
+                    if summary.get("text"):
+                        evs.append(("thinking", summary["text"], "responses.summary"))
+                if item.get("encrypted_content") is not None:
+                    evs.append(("signature", _as_text(item["encrypted_content"]), "responses.encrypted_content"))
+            # Unprojected native items remain private in the unchanged provider_state.
+        evs.append(("stop", "tool_use" if has_call else "end_turn"))
+        return evs
+    candidates = state.get("candidates")
+    if not isinstance(candidates, list):
+        raise Reject("native_state_invalid", "antigravity candidates are not an array")
+    feedback = state.get("promptFeedback")
+    if feedback is None:
+        feedback = {}
+    if not isinstance(feedback, dict):
+        raise Reject("native_state_invalid", "antigravity prompt feedback is not an object")
+    reason = feedback.get("blockReason")
+    if reason is not None and not isinstance(reason, str):
+        raise Reject("native_state_invalid", "antigravity prompt block reason is not a string")
+    blocked = isinstance(reason, str) and reason not in ("", "BLOCK_REASON_UNSPECIFIED") and reason.strip() == reason
+    if not candidates:
+        if blocked:
+            return []
+        raise Reject("native_state_invalid", "empty antigravity candidates without a prompt block")
+    if blocked:
+        raise Reject("native_state_invalid", "blocked antigravity prompt includes assistant candidates")
+    evs = []
+    digest = hashlib.sha256(raw_state).hexdigest()[:12]
+    calls = _GeminiCalls(_NO_HISTORY)
+    raw_candidates = _raw_json_array(_raw_json_member(raw_state.decode("utf-8"), "candidates"))
+    for ci, candidate in enumerate(candidates):
+        content = candidate.get("content") if isinstance(candidate, dict) else None
+        if not isinstance(content, dict) or content.get("role") != "model" or not isinstance(content.get("parts"), list):
+            raise Reject("native_state_invalid", "candidate is not model content with parts")
+        raw_content = _raw_json_member(raw_candidates[ci], "content")
+        if raw_content is None:
+            raise Reject("native_state_invalid", "raw candidate content missing")
+        raw_parts = _raw_json_array(_raw_json_member(raw_content.decode("utf-8"), "parts"))
+        for pi, part in enumerate(content["parts"]):
+            if not isinstance(part, dict):
+                raise Reject("native_state_invalid", "antigravity part malformed")
+            for key in ("text", "thoughtSignature"):
+                if part.get(key) is not None and not isinstance(part[key], str):
+                    raise Reject("native_state_invalid", f"antigravity part {key} is not a string")
+            if part.get("thought") is not None and type(part["thought"]) is not bool:
+                raise Reject("native_state_invalid", "antigravity part thought is not a boolean")
+            if isinstance(part.get("functionCall"), dict):
+                for key in ("id", "name"):
+                    if part["functionCall"].get(key) is not None and not isinstance(part["functionCall"][key], str):
+                        raise Reject("native_state_invalid", f"antigravity functionCall {key} is not a string")
+            call = part.get("functionCall")
+            native_id = f"ag_{digest}_{ci}_{pi}" if isinstance(call, dict) and not call.get("id") else None
+            raw_args = None
+            if isinstance(call, dict):
+                raw_call = _raw_json_member(raw_parts[pi], "functionCall")
+                if raw_call is None:
+                    raise Reject("native_state_invalid", "raw function call missing")
+                raw_args = _raw_json_member(raw_call.decode("utf-8"), "args")
+            evs.extend(_gemini_part_events(part, calls, native_id, raw_args))
+    return evs
+
+
+
+
+def _native_wire_body(wire: dict[str, Any], provider: str) -> dict[str, Any]:
+    body = wire.get("request", wire)
+    if not isinstance(body, dict):
+        raise Reject("native_wire_request_invalid", "provider request is not an object")
+    field = {"claude": "messages", "codex": "input", "antigravity": "contents"}[provider]
+    types = (list, str) if provider == "codex" else (list,)
+    if not isinstance(body.get(field), types):
+        raise Reject("native_wire_request_invalid", f"provider request has no valid {field}")
+    return body
+
+
+def _native_request_metadata(env: dict[str, Any], term: dict[str, Any], rec: dict[str, Any]) -> dict[str, Any]:
+    try:
+        guest = json.loads(_as_text(rec.get("raw_request")))
+    except ValueError as error:
+        raise Reject("unparseable_raw_request", str(error)) from error
+    if not isinstance(guest, dict):
+        raise Reject("unparseable_raw_request", "not a JSON object")
+    current = any(key in guest for key in ("provider", "session_id", "replay")) or isinstance(guest.get("input"), dict)
+    provider = env["provider"]
+    if current:
+        if any(guest.get(key) != env[key] for key in ("provider", "model", "session_id")):
+            raise Reject("native_request_mismatch", "guest request identity differs from provider_state")
+        if not isinstance(guest.get("input"), dict) or not isinstance(guest.get("replay"), list):
+            raise Reject("native_wire_request_invalid", "guest input or replay has the wrong shape")
+        guest_input = guest["input"]
+    else:
+        guest_input = _native_wire_body(guest, provider)
+    wire = term["_wire_request"]
+    source = "native_wire_request"
+    if wire is None:
+        if current:
+            raise Reject("native_wire_request_missing", "current guest envelope has no captured provider request")
+        wire, source = guest, "raw_request"
+    body = _native_wire_body(wire, provider)
+    expected_model = env["model"]
+    if provider == "antigravity" and expected_model == "gemini-4-argon":
+        generation = guest_input.get("generationConfig", {})
+        thinking = generation.get("thinkingConfig", {}) if isinstance(generation, dict) else None
+        level = thinking.get("thinkingLevel") if isinstance(thinking, dict) else False
+        if level is None:
+            level = ""
+        if not isinstance(level, str) or level not in ("", "low", "medium", "high"):
+            raise Reject("native_wire_request_invalid", "invalid logical Argon thinking configuration")
+        expected_model += "-" + (level or "low")
+    wire_model = wire.get("model")
+    legacy_unwrapped_gemini = source == "raw_request" and provider == "antigravity" and "request" not in wire
+    if wire_model != expected_model and not (legacy_unwrapped_gemini and wire_model is None):
+        raise Reject("native_request_mismatch", "captured provider model differs from the selected model")
+    if provider == "antigravity":
+        generation = body.get("generationConfig", {})
+        if not isinstance(generation, dict):
+            raise Reject("native_wire_request_invalid", "generationConfig is not an object")
+        thinking = generation.get("thinkingConfig")
+    else:
+        thinking = body.get("thinking" if provider == "claude" else "reasoning")
+    if thinking is not None and not isinstance(thinking, dict):
+        raise Reject("native_wire_request_invalid", "thinking configuration is not an object")
+    return {"wire_request": wire, "wire_request_source": source, "wire_thinking_config": thinking}
+
+
+def _parse_native(env_value: Any, raw: str, rec: dict[str, Any]) -> dict[str, Any]:
+    """Bind native v2 state, receipt, identity and usage to the recorded database row."""
+    env = _native_envelope(env_value)
+    term = _native_terminal(raw)
+    if term.get("type") == "error":
+        code = term.get("code")
+        raise Reject("native_error", code if isinstance(code, str) and _SAFE_CODE.fullmatch(code) else "unknown")
+    native_stop = term.get("stop")
+    if native_stop == "error":
+        raise Reject("native_error", "done.stop is error")
+    if native_stop not in _NATIVE_STOP:
+        raise Reject("native_stop_unknown", str(native_stop)[:200])
+    if term.get("receipt") != env["receipt"]:
+        raise Reject("native_receipt_mismatch", "terminal receipt differs from provider_state.receipt")
+    if term.get("state") != env["state"]:
+        raise Reject("native_state_mismatch", "terminal state differs from provider_state.state")
+    if env["model"] != rec.get("model") or env["session_id"] != rec.get("session_id"):
+        raise Reject("native_identity_mismatch", "model or session does not match llm_records")
+    state = env["state"]
+    response_id = state.get("id") if env["provider"] in ("claude", "codex") else state.get("responseId")
+    if not response_id:
+        response_raw, state_raw = term.get("_raw_response"), term.get("_raw_state")
+        if not isinstance(response_raw, bytes) or not isinstance(state_raw, bytes):
+            raise Reject("native_state_invalid", "terminal response or state bytes missing")
+        response_id = "response_" + hashlib.sha256(response_raw + b"\x00" + state_raw).digest()[:16].hex()
+    if env["response_id"] != response_id:
+        raise Reject("native_identity_mismatch", "response_id does not match terminal state")
+    usage = term.get("usage")
+    usage_keys = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+    if not isinstance(usage, dict) or any(type(usage.get(k)) is not int or usage[k] < 0 for k in usage_keys):
+        raise Reject("native_usage_invalid", "done.usage counters are missing or invalid")
+    if "reasoning_tokens" in usage and (type(usage["reasoning_tokens"]) is not int or usage["reasoning_tokens"] < 0):
+        raise Reject("native_usage_invalid", "done.usage reasoning_tokens is invalid")
+    expected = tuple(usage[k] for k in usage_keys)
+    row_usage = tuple(rec.get(k) for k in ("input_tokens", "output_tokens", "cache_read", "cache_write"))
+    body_usage = _json_object(rec, "response_body").get("usage")
+    body_usage = tuple(body_usage.get(k) for k in usage_keys) if isinstance(body_usage, dict) else ()
+    if row_usage != expected or body_usage != expected:
+        raise Reject("native_usage_mismatch", "done.usage differs from llm_records counters or response_body.usage")
+    raw_state = term.get("_raw_state")
+    if not isinstance(raw_state, bytes):
+        raise Reject("native_state_invalid", "terminal state bytes missing")
+    evs = [e for e in _native_events(env["provider"], state, raw_state) if e[0] != "stop"]
+    evs.append(("stop", _NATIVE_STOP[native_stop]))
+    turn = _Turn()
+    for ev in evs:
+        turn.add(ev)
+    result = turn.finish()
+    result.update(_native_request_metadata(env, term, rec))
+    if "reasoning_tokens" in usage:
+        result["native_reasoning_tokens"] = usage["reasoning_tokens"]
+    if "reasoning_effort" in env:
+        result["configured_reasoning_effort"] = env["reasoning_effort"]
+    return result
+
+
+def _response_provider_state(rec: dict[str, Any]) -> Any:
+    """Read response_body.provider_state, preserving explicit malformed values for native rejection."""
+    value = rec.get("response_body")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return _ABSENT_PROVIDER_STATE
+    if not isinstance(value, dict):
+        return _ABSENT_PROVIDER_STATE
+    return value.get("provider_state", _ABSENT_PROVIDER_STATE)
+
+
 def _recover(rec: dict[str, Any], req: dict[str, Any]) -> dict[str, Any]:
-    """Parsed assistant turn from raw_response: the SDK stream for SDK records, else the legacy formats."""
+    """Parsed assistant turn: native NDJSON if response_body carries provider_state."""
     raw = _select_attempt(_as_text(rec.get("raw_response")))
+    env = _response_provider_state(rec)
+    if env is not _ABSENT_PROVIDER_STATE:
+        return _parse_native(env, raw, rec)
     bridge = _sdk_request(rec)
     if bridge is not None:
         return _parse_sdk(raw, bridge["provider"])
@@ -963,14 +1353,17 @@ def _checked_tools(out: list[dict[str, Any]], req: dict[str, Any]) -> list[dict[
 
 
 
-def _wire_tools(raw_request: str, req: dict[str, Any]) -> list[dict[str, Any]]:
+def _wire_tools(raw_request: str | dict[str, Any], req: dict[str, Any]) -> list[dict[str, Any]]:
     """Tool schemas from the actual wire body. Empty when the wire body has none."""
-    if not raw_request.strip():
-        return []
-    try:
-        wire = json.loads(raw_request)
-    except ValueError as e:
-        raise Reject("unparseable_raw_request", str(e)) from e
+    if isinstance(raw_request, dict):
+        wire = raw_request
+    else:
+        if not raw_request.strip():
+            return []
+        try:
+            wire = json.loads(raw_request)
+        except ValueError as e:
+            raise Reject("unparseable_raw_request", str(e)) from e
     if not isinstance(wire, dict):
         raise Reject("unparseable_raw_request", "not a JSON object")
     body = wire["request"] if isinstance(wire.get("request"), dict) else wire  # Gemini wraps the request
@@ -1004,12 +1397,13 @@ def _args(value: Any) -> str:
     return json.dumps(value if value is not None else {}, ensure_ascii=False)
 
 
-def _history_assistant(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+def _history_assistant(blocks: list[dict[str, Any]], raw_blocks: list[str] | None = None) -> dict[str, Any]:
     texts: list[str] = []
     thoughts: list[str] = []
     calls: list[dict[str, Any]] = []
     opaque = False
-    for b in blocks:
+    native_state = False
+    for index, b in enumerate(blocks):
         t = b.get("type")
         if t == "text":
             texts.append(b.get("text") or "")
@@ -1021,12 +1415,19 @@ def _history_assistant(blocks: list[dict[str, Any]]) -> dict[str, Any]:
                 opaque = True
         elif t == "redacted_thinking":
             opaque = True
+        elif t == "provider_state":
+            if native_state:
+                raise Reject("native_envelope_invalid", "multiple historical provider states")
+            _native_envelope(b.get("input"))
+            native_state = True
         elif t == "tool_use":
+            raw_input = _raw_json_member(raw_blocks[index], "input") if raw_blocks is not None else None
+            arguments = raw_input.decode("utf-8") if raw_input is not None and b.get("input") is not None else _args(b.get("input"))
             calls.append(
                 {
                     "id": b.get("id") or "",
                     "type": "function",
-                    "function": {"name": b.get("name") or "", "arguments": _args(b.get("input"))},
+                    "function": {"name": b.get("name") or "", "arguments": arguments},
                 }
             )
             opaque = opaque or bool(b.get("signature"))
@@ -1042,7 +1443,7 @@ def _history_assistant(blocks: list[dict[str, Any]]) -> dict[str, Any]:
     return msg
 
 
-def _convert_history(req: dict[str, Any]) -> list[dict[str, Any]]:
+def _convert_history(req: dict[str, Any], raw_request: str | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     system = req.get("system") or []
     if isinstance(system, str):
@@ -1058,7 +1459,8 @@ def _convert_history(req: dict[str, Any]) -> list[dict[str, Any]]:
 
     pending: set[str] = set()  # tool_use ids awaiting a tool_result
     issued: set[str] = set()  # every tool_use id seen in history
-    for msg in messages:
+    raw_messages = _raw_json_array(_raw_json_member(raw_request, "messages")) if raw_request is not None else None
+    for index, msg in enumerate(messages):
         if not isinstance(msg, dict):
             raise Reject("unsupported_message", "message is not an object")
         role = msg.get("role")
@@ -1095,7 +1497,8 @@ def _convert_history(req: dict[str, Any]) -> list[dict[str, Any]]:
         elif role == "assistant":
             if pending:
                 raise Reject("unmatched_tool_call", f"no tool_result for {sorted(pending)}")
-            converted = _history_assistant(blocks)
+            raw_blocks = _raw_json_array(_raw_json_member(raw_messages[index], "content")) if raw_messages is not None and isinstance(msg.get("content"), list) else None
+            converted = _history_assistant(blocks, raw_blocks)
             for call in converted.get("tool_calls", []):
                 cid = call["id"]
                 if not cid or cid in issued:
@@ -1178,12 +1581,15 @@ def _kind_for(label: str, verified: bool, summarized: bool) -> str:
     return "raw" if verified else "unclassified"
 
 
-def _display_summarized(raw_request: str) -> bool:
+def _display_summarized(raw_request: str | dict[str, Any]) -> bool:
     """True only when the captured wire body itself asks for summarized thinking."""
-    try:
-        wire = json.loads(raw_request)
-    except ValueError:
-        return False
+    if isinstance(raw_request, dict):
+        wire = raw_request
+    else:
+        try:
+            wire = json.loads(raw_request)
+        except ValueError:
+            return False
     thinking = wire.get("thinking") if isinstance(wire, dict) else None
     return isinstance(thinking, dict) and thinking.get("display") == "summarized"
 
@@ -1191,7 +1597,7 @@ def _display_summarized(raw_request: str) -> bool:
 def _reasoning_view(rec: dict[str, Any], mapping: dict[str, tuple[str, str]], parsed: dict[str, Any]) -> dict[str, Any]:
     backend, prov = _provenance_for(mapping, rec.get("profile_name"))
     verified = prov == RAW_PROVENANCE
-    summarized = _display_summarized(_as_text(rec.get("raw_request")))
+    summarized = _display_summarized(parsed.get("wire_request", _as_text(rec.get("raw_request"))))
     blocks = [
         {"kind": _kind_for(b["field"], verified, summarized), "field": b["field"], "text": b["text"]}
         for b in parsed["reasoning_blocks"]
@@ -1247,8 +1653,8 @@ def _build_sample(rec: dict[str, Any], mapping: dict[str, tuple[str, str]]) -> d
         raise Reject("truncated_max_tokens", "response was cut off")
 
     view = _reasoning_view(rec, mapping, parsed)
-    tools = _sdk_tools(bridge, req) if bridge is not None else _wire_tools(_as_text(rec.get("raw_request")), req)
-    history = _sdk_convert_history(bridge["context"]) if bridge is not None else _convert_history(req)
+    tools = _sdk_tools(bridge, req) if bridge is not None else _wire_tools(parsed.get("wire_request", _as_text(rec.get("raw_request"))), req)
+    history = _sdk_convert_history(bridge["context"]) if bridge is not None else _convert_history(req, _as_text(rec.get("request_body")))
     target: dict[str, Any] = {"role": "assistant", "content": parsed["text"]}
     if parsed["thinking"]:
         target["reasoning"] = parsed["thinking"]
@@ -1260,6 +1666,40 @@ def _build_sample(rec: dict[str, Any], mapping: dict[str, tuple[str, str]]) -> d
     if calls:
         target["tool_calls"] = calls
 
+    usage_metadata = {
+        "input_tokens": rec.get("input_tokens"),
+        "output_tokens": rec.get("output_tokens"),
+        "cache_read": rec.get("cache_read"),
+        "cache_write": rec.get("cache_write"),
+    }
+    if "native_reasoning_tokens" in parsed:
+        usage_metadata["reasoning_tokens"] = parsed["native_reasoning_tokens"]
+    handoff_raw = req.get("handoff")
+    if handoff_raw is not None or "handoff" in req:
+        if not isinstance(handoff_raw, dict):
+            raise Reject("malformed_handoff", "handoff is not an object")
+        from_models = handoff_raw.get("from_models")
+        if not isinstance(from_models, list) or not from_models or not all(isinstance(m, str) and m for m in from_models):
+            raise Reject("malformed_handoff", "from_models is not a non-empty list of strings")
+        to_model = handoff_raw.get("to_model")
+        if not isinstance(to_model, str) or not to_model:
+            raise Reject("malformed_handoff", "to_model is not a non-empty string")
+        if to_model != rec.get("model"):
+            raise Reject("handoff_model_mismatch", f"handoff to_model {to_model!r} does not match record model {rec.get('model')!r}")
+        kind = handoff_raw.get("kind")
+        if kind != "readable_history":
+            raise Reject("malformed_handoff", f"kind {kind!r} is not 'readable_history'")
+        prefix_count = handoff_raw.get("prefix_count")
+        if type(prefix_count) is not int or prefix_count < 0:
+            raise Reject("malformed_handoff", "prefix_count is not a non-negative integer")
+        handoff_metadata = {
+            "from_models": list(from_models),
+            "to_model": to_model,
+            "kind": kind,
+            "prefix_count": prefix_count,
+        }
+    else:
+        handoff_metadata = None
     sample: dict[str, Any] = {"id": rec.get("id"), "messages": history + [target]}
     if tools:
         sample["tools"] = tools
@@ -1273,16 +1713,13 @@ def _build_sample(rec: dict[str, Any], mapping: dict[str, tuple[str, str]]) -> d
         "latency_ms": rec.get("latency_ms"),
         "status": "ok",
         "stop_reason": stop,
-        "usage": {
-            "input_tokens": rec.get("input_tokens"),
-            "output_tokens": rec.get("output_tokens"),
-            "cache_read": rec.get("cache_read"),
-            "cache_write": rec.get("cache_write"),
-        },
+        "usage": usage_metadata,
         "tools_offered": req.get("tools") or [],
         "tools_called": [c["name"] for c in parsed["tool_calls"]],
-        "tools_schema_source": ("sdk_context" if bridge is not None else "raw_request") if tools else "none",
-        "thinking_config": req.get("thinking") if bridge is None else bridge.get("options"),
+        "tools_schema_source": ("sdk_context" if bridge is not None else parsed.get("wire_request_source", "raw_request")) if tools else "none",
+        "thinking_config": parsed.get("wire_thinking_config", req.get("thinking")) if bridge is None else bridge.get("options"),
+        "configured_reasoning_effort": parsed.get("configured_reasoning_effort"),
+        "handoff": handoff_metadata,
         "reasoning_source": "explicit" if parsed["thinking"] else "none",
         "reasoning_opaque": parsed["opaque_reasoning"],
         "model_backend": view["model_backend"],
@@ -1298,14 +1735,24 @@ def _build_sample(rec: dict[str, Any], mapping: dict[str, tuple[str, str]]) -> d
 
 # Heuristic only. Matches common secret shapes, not every secret.
 _SECRET_KEY = re.compile(
-    r"(^|[_.-])(api[_-]?key|apikey|authorization|x-api-key|password|passwd|secret|token|access[_-]?token|refresh[_-]?token|cookie)$",
+    r"(api[_-]?key|apikey|authorization|x-api-key|password|passwd|secret|token|access[_-]?token|refresh[_-]?token|cookie|credentials|private[_-]?key)$",
     re.I,
 )
 _SECRET_PATTERNS = (
+    # Scheme-specific auth headers first: the generic key pattern below would
+    # otherwise consume only "Authorization: Basic" and leave the credential.
+    (
+        # A scheme-header value runs to the end of the header line: Digest and
+        # Negotiate carry several comma-separated credential parameters, so a
+        # \S+ match would redact only the first one.
+        re.compile(r"(?i)\b((?:proxy-)?authorization)\s*:\s*(?:basic|digest|token|negotiate|ntlm)[^\r\n]*"),
+        r"\1: [REDACTED]",
+    ),
+    (re.compile(r"(?i)\b((?:set-)?cookie)\s*:[^\r\n\"']+"), r"\1: [REDACTED]"),
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S), "[REDACTED PRIVATE KEY]"),
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer [REDACTED]"),
     (
-        re.compile(r"(?i)\b(authorization|x-api-key|api[_-]?key|password|passwd|secret|token)(['\"]?\s*[:=]\s*['\"]?)[^\s'\"\\,}&]{6,}"),
+        re.compile(r"(?i)\b(authorization|x-api-key|api[_-]?key|password|passwd|secret|token|credentials|client_?secret|id_?token|auth_?token|session_?token|private[_-]?key)(['\"]?\s*[:=]\s*['\"]?)[^\s'\"\\,}&]{6,}"),
         r"\1\2[REDACTED]",
     ),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "[REDACTED]"),
@@ -1314,22 +1761,103 @@ _SECRET_PATTERNS = (
 )
 
 
-def _redact(value: Any, key: str = "") -> Any:
+def _task_credential_passwords(raw_dir: str) -> tuple[str, ...]:
+    path = os.path.join(raw_dir, "task_credentials.jsonl")
+    if not os.path.exists(path):
+        return ()
+    passwords = []
+    with open(path, encoding="utf-8") as rows:
+        for lineno, line in enumerate(rows, 1):
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("row is not an object")
+                password = row.get("password")
+                if password is not None and not isinstance(password, str):
+                    raise ValueError("password is not text")
+                if password:
+                    passwords.append(password)
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise ValueError(f"invalid task_credentials.jsonl row {lineno}") from exc
+    return tuple(passwords)
+
+
+class ShortSecretInSample(Reject):
+    pass
+
+def _redact_arguments(value: str, secrets: tuple[str, ...]) -> str:
+    """Redact string spans without rounding numeric JSON argument tokens."""
+    decoder = json.JSONDecoder()
+    edits = []
+
+    def visit(pos: int, key: str) -> int:
+        while value[pos] in " \t\r\n":
+            pos += 1
+        if value[pos] in "{[":
+            is_object = value[pos] == "{"
+            closer = "}" if is_object else "]"
+            pos += 1
+            while True:
+                while value[pos] in " \t\r\n":
+                    pos += 1
+                if value[pos] == closer:
+                    return pos + 1
+                child_key = key
+                if is_object:
+                    child_key, pos = decoder.raw_decode(value, pos)
+                    while value[pos] in " \t\r\n":
+                        pos += 1
+                    pos += 1  # The caller already validated the JSON colon.
+                pos = visit(pos, child_key)
+                while value[pos] in " \t\r\n":
+                    pos += 1
+                if value[pos] == ",":
+                    pos += 1
+        parsed, end = decoder.raw_decode(value, pos)
+        if isinstance(parsed, str):
+            cleaned = _redact(parsed, key, secrets)
+            if cleaned != parsed:
+                edits.append((pos, end, json.dumps(cleaned, ensure_ascii=False)))
+        return end
+
+    visit(0, "")
+    parts = []
+    start = 0
+    for begin, end, replacement in edits:
+        parts.extend((value[start:begin], replacement))
+        start = end
+    parts.append(value[start:])
+    return "".join(parts)
+
+
+def _redact(value: Any, key: str = "", secrets: tuple[str, ...] = ()) -> Any:
     if isinstance(value, dict):
-        return {k: _redact(v, str(k)) for k, v in value.items()}
+        return {k: _redact(v, str(k), secrets) for k, v in value.items()}
     if isinstance(value, list):
-        return [_redact(v, key) for v in value]
+        return [_redact(v, key, secrets) for v in value]
     if isinstance(value, str):
+        for secret in secrets:
+            if not secret:
+                continue
+            escaped = json.dumps(secret, ensure_ascii=False)[1:-1]
+            go_escaped = (escaped.replace("<", r"\u003c").replace(">", r"\u003e").replace("&", r"\u0026")
+                          .replace("\u2028", r"\u2028").replace("\u2029", r"\u2029"))
+            targets = {secret, escaped, go_escaped, json.dumps(secret)[1:-1],
+                       urllib.parse.quote(secret, safe=""), urllib.parse.quote_plus(secret)}
+            for target in sorted(targets, key=len, reverse=True):
+                if target in value:
+                    if len(secret) < 4:
+                        raise ShortSecretInSample("short_task_credential_present")
+                    value = value.replace(target, "[REDACTED TASK CREDENTIAL]")
         if value and key and _SECRET_KEY.search(key):
             return "[REDACTED]"
-        # arguments is JSON text: redact the values inside and re-serialize so escapes survive
         if key == "arguments":
             try:
                 parsed = json.loads(value)
             except ValueError:
-                parsed = None  # not JSON: plain-text patterns below
+                parsed = None
             if isinstance(parsed, (dict, list)):
-                return json.dumps(_redact(parsed), ensure_ascii=False)
+                return _redact_arguments(value, secrets)
         for pat, repl in _SECRET_PATTERNS:
             value = pat.sub(repl, value)
         return value
@@ -1356,7 +1884,7 @@ def _reject(out, counts: dict[str, Any], lineno: int, rec: dict[str, Any] | None
 def _parse_record(text: str) -> dict[str, Any]:
     try:
         rec = json.loads(text)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         raise Reject("malformed_record", str(e)) from e
     if not isinstance(rec, dict):
         raise Reject("malformed_record", "not a JSON object")
@@ -1395,9 +1923,9 @@ def _reasoning_lines(lineno: int, rec: dict[str, Any] | None, mapping: dict[str,
 
 
 def export(raw_dir: str, out_dir: str) -> dict[str, Any]:
-    """Export raw_dir/llm_records.jsonl. Writes redacted train.jsonl and NOTICE.txt to
-    out_dir, and unredacted rejects.jsonl and reasoning.jsonl to raw_dir. Returns counts."""
+    """Export raw records while scrubbing task credential passwords from training data."""
     records_path = os.path.join(raw_dir, RECORDS_FILE)
+    secrets = _task_credential_passwords(raw_dir)
     if not os.path.isfile(records_path):
         raise FileNotFoundError(f"{records_path} not found")
     mapping = _load_provenance(raw_dir)
@@ -1408,7 +1936,8 @@ def export(raw_dir: str, out_dir: str) -> dict[str, Any]:
     counts: dict[str, Any] = {"records": 0, "exported": 0, "rejected": 0, "rejects_by_reason": {}}
 
     with contextlib.ExitStack() as stack, open(records_path, encoding="utf-8") as src:
-        train = stack.enter_context(_open_private(train_path))
+        tmp_train_path = train_path + ".tmp"
+        train = stack.enter_context(_open_private(tmp_train_path))
         rejects = stack.enter_context(_open_private(rejects_path))
         sidecar = stack.enter_context(_open_private(reasoning_path))
         for lineno, line in enumerate(src, 1):
@@ -1425,19 +1954,23 @@ def export(raw_dir: str, out_dir: str) -> dict[str, Any]:
             reject = ""
             try:
                 sample = _build_sample(rec, mapping)
+                sample = _redact(sample, secrets=secrets)
             except Reject as r:
                 _reject(rejects, counts, lineno, rec, r, rec)
                 reject = r.reason
-            except (AttributeError, TypeError, KeyError, IndexError, ValueError) as e:
-                # malformed provider shape: keep the record verbatim and keep going
+            except (AttributeError, TypeError, KeyError, IndexError, ValueError, RecursionError) as e:
                 r = Reject("malformed_provider_record", f"{type(e).__name__}: {e}")
                 _reject(rejects, counts, lineno, rec, r, rec)
                 reject = r.reason
             else:
-                train.write(json.dumps(_redact(sample), ensure_ascii=False) + "\n")
+                train.write(json.dumps(sample, ensure_ascii=False) + "\n")
                 counts["exported"] += 1
-            _write_lines(sidecar, _reasoning_lines(lineno, rec, mapping, reject))
+            try:
+                _write_lines(sidecar, _reasoning_lines(lineno, rec, mapping, reject))
+            except (ValueError, RecursionError, AttributeError, TypeError, KeyError, IndexError):
+                reject = reject or "unparseable_record"
 
+    os.replace(tmp_train_path, train_path)
     _write_private(os.path.join(out_dir, NOTICE_FILE), NOTICE)
     counts["train_file"] = train_path
     counts["rejects_file"] = rejects_path

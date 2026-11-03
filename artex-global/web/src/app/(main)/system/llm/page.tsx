@@ -32,6 +32,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getDateLocale } from "@/i18n/datetime";
 import { api, type LLMOAuthPoll } from "@/lib/api";
+import { formatAllocationReset, markUsageStale } from "@/lib/subscription-usage";
 import type {
   LLMAuthMethod,
   LLMPoolMember,
@@ -56,7 +57,7 @@ const OAUTH_FORMAT: Partial<Record<LLMAuthMethod, LLMProfile["format"]>> = {
   antigravity: "antigravity",
 };
 
-// Poll interval for an SDK login session. The poll response carries no interval, so this is a fixed short delay.
+// Poll interval for a native proxy login session. The response carries no interval, so this is a fixed short delay.
 const OAUTH_POLL_MS = 2000;
 const OAUTH_PROVIDER: Record<Exclude<LLMAuthMethod, "api_key">, string> = {
   claude_code: "Claude Code",
@@ -325,10 +326,10 @@ function ProfileSheet({
   const [models, setModels] = React.useState<string[]>([]);
   const [loadingModels, setLoadingModels] = React.useState(false);
   const [modelsOpen, setModelsOpen] = React.useState(false);
-  // Effort metadata per SDK catalog model ID. A model without an entry keeps the full effort list.
+  // Effort metadata per native catalog model ID. A model without an entry keeps the full effort list.
   const [modelEfforts, setModelEfforts] = React.useState<Record<string, string[]>>({});
   const [authMethod, setAuthMethod] = React.useState<LLMAuthMethod>("api_key");
-  // The live SDK login session shown in the drawer. Its server session is cancelled when the drawer closes, the profile changes, the auth method switches, or the component unmounts.
+  // The active native proxy login session shown in the drawer. Its server session is cancelled when the drawer closes, the profile changes, the auth method switches, or the component unmounts.
   const [oauthSessionId, setOauthSessionId] = React.useState<string | null>(null);
   const [oauthPoll, setOauthPoll] = React.useState<LLMOAuthPoll | null>(null);
   const [oauthBusy, setOauthBusy] = React.useState(false);
@@ -437,6 +438,7 @@ function ProfileSheet({
       const u = await api.profileUsage(profileId);
       setUsage(u);
     } catch (e) {
+      setUsage((current) => (current ? markUsageStale(current) : current));
       if (!quiet) toast.error(t("profile.allocation.fetchFailed", { msg: (e as Error).message }));
     } finally {
       setLoadingUsage(false);
@@ -451,9 +453,20 @@ function ProfileSheet({
 
   const addFallbackStep = () => {
     if (refusalFallback.length >= 8) return;
-    const available = models.filter((m) => m !== model.trim() && !refusalFallback.some((s) => s.model.trim() === m));
-    const nextModel = authMethod !== "api_key" ? (available[0] ?? "") : "";
-    setRefusalFallback([...refusalFallback, { model: nextModel, reasoning_effort: "" }]);
+    const effectiveEffort = (value: string) => value || (effort === NONE ? "" : effort);
+    const used = new Set([
+      JSON.stringify([model.trim(), effectiveEffort("")]),
+      ...refusalFallback.map((step) => JSON.stringify([step.model.trim(), effectiveEffort(step.reasoning_effort)])),
+    ]);
+    const next = authMethod === "api_key"
+      ? { model: "", reasoning_effort: "" }
+      : models.flatMap((candidate) => [
+          { model: candidate, reasoning_effort: "" },
+          ...(modelEfforts[candidate] ?? EFFORT_LEVELS.filter((item) => item.value !== NONE).map((item) => item.value))
+            .map((value) => ({ model: candidate, reasoning_effort: value })),
+        ]).find((step) => !used.has(JSON.stringify([step.model.trim(), effectiveEffort(step.reasoning_effort)]))) ??
+        { model: "", reasoning_effort: "" };
+    setRefusalFallback([...refusalFallback, next]);
   };
 
   const removeFallbackStep = (index: number) => {
@@ -562,20 +575,19 @@ function ProfileSheet({
       toast.error(effortError);
       return;
     }
-    const seenFallbackModels = new Set<string>();
-    const trimmedPrimary = model.trim();
+    const effectiveEffort = (value: string) => value || (effort === NONE ? "" : effort);
+    const seenFallbackChoices = new Set<string>([
+      JSON.stringify([model.trim(), effectiveEffort("")]),
+    ]);
     for (const step of refusalFallback) {
       const trimmedStep = step.model.trim();
       if (!trimmedStep) continue;
-      if (trimmedStep === trimmedPrimary) {
-        toast.error(t("profile.refusalFallback.primaryError"));
-        return;
-      }
-      if (seenFallbackModels.has(trimmedStep)) {
+      const choice = JSON.stringify([trimmedStep, effectiveEffort(step.reasoning_effort)]);
+      if (seenFallbackChoices.has(choice)) {
         toast.error(t("profile.refusalFallback.duplicateError"));
         return;
       }
-      seenFallbackModels.add(trimmedStep);
+      seenFallbackChoices.add(choice);
     }
     if (saving) return;
     setSaving(true);
@@ -754,7 +766,13 @@ function ProfileSheet({
               <Label htmlFor="p-format">{t("profile.format.label")}</Label>
               <Select
                 value={format}
-                onValueChange={(v) => setFormat(v as LLMProfile["format"])}
+                onValueChange={(v) => {
+                  const next = v as LLMProfile["format"];
+                  setFormat(next);
+                  if (next === "ollama" && !baseUrl.trim()) {
+                    setBaseUrl("http://127.0.0.1:11434/v1");
+                  }
+                }}
                 disabled={authMethod !== "api_key"}
               >
                 <SelectTrigger id="p-format">
@@ -764,6 +782,7 @@ function ProfileSheet({
                   <SelectItem value="anthropic">Anthropic</SelectItem>
                   <SelectItem value="openai">OpenAI (Chat Completions)</SelectItem>
                   <SelectItem value="openai-responses">OpenAI (Responses API)</SelectItem>
+                  <SelectItem value="ollama">Ollama (local, no key needed)</SelectItem>
                   {authMethod === "antigravity" && <SelectItem value="antigravity">Google Gemini</SelectItem>}
                 </SelectContent>
               </Select>
@@ -812,7 +831,7 @@ function ProfileSheet({
               <Input
                 id="p-model"
                 className="font-mono"
-                placeholder="claude-opus-4-8"
+                placeholder={format === "ollama" ? "llama3.2" : "claude-opus-4-8"}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               />
@@ -860,7 +879,7 @@ function ProfileSheet({
                 <Input
                   id="p-base-url"
                   className="font-mono"
-                  placeholder="https://api.openai.com/v1"
+                  placeholder={format === "ollama" ? "http://127.0.0.1:11434/v1" : "https://api.openai.com/v1"}
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                 />
@@ -898,11 +917,11 @@ function ProfileSheet({
 
           {authMethod === "api_key" ? (
             <div className="grid gap-2">
-              <Label htmlFor="p-api-key">API Key</Label>
+              <Label htmlFor="p-api-key">{format === "ollama" ? t("profile.apiKey.labelOllama") : t("profile.apiKey.label")}</Label>
               <Input
                 id="p-api-key"
                 type="password"
-                placeholder={keyHint ? t("profile.apiKey.placeholderSet", { hint: keyHint }) : "sk-…"}
+                placeholder={format === "ollama" ? t("profile.apiKey.placeholderOllama") : keyHint ? t("profile.apiKey.placeholderSet", { hint: keyHint }) : "sk-…"}
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
               />
@@ -1008,22 +1027,22 @@ function ProfileSheet({
                   </Button>
                 </div>
 
-                {!grantReady || !usage?.connected ? (
-                  <p className="text-muted-foreground text-xs italic">{t("profile.allocation.notConnected")}</p>
-                ) : usage.error ? (
-                  <p className="text-destructive text-xs">{usage.error}</p>
-                ) : !usage.windows || usage.windows.length === 0 ? (
-                  <p className="text-muted-foreground text-xs">{t("profile.allocation.noWindows")}</p>
+                {usage?.error && (
+                  <p className="text-destructive text-xs">{t("profile.allocation.fetchFailed", { msg: usage.error })}</p>
+                )}
+                {!usage?.connected ? (
+                  usage?.error ? null : (
+                    <p className="text-muted-foreground text-xs italic">{t("profile.allocation.notConnected")}</p>
+                  )
+                ) : usage.windows.length === 0 ? (
+                  usage.error ? null : (
+                    <p className="text-muted-foreground text-xs">{t("profile.allocation.noWindows")}</p>
+                  )
                 ) : (
                   <div className="grid gap-3">
                     {usage.windows.map((w) => {
                       const remainingPct = Math.round(w.remaining_fraction * 100);
-                      const resetsText = w.resets_at
-                        ? new Date(w.resets_at).toLocaleTimeString(getDateLocale(), {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : null;
+                      const resetsText = formatAllocationReset(w.resets_at);
                       return (
                         <div key={w.id} className="grid gap-1">
                           <div className="flex items-center justify-between text-xs">
@@ -1240,13 +1259,12 @@ function ProfileSheet({
               <div className="flex flex-col gap-2">
                 {refusalFallback.map((step, idx) => {
                   const stepModelEfforts = authMethod !== "api_key" ? modelEfforts[step.model.trim()] : undefined;
-                  const stepEffortOptions =
-                    stepModelEfforts === undefined
-                      ? EFFORT_LEVELS
-                      : [
-                          { value: NONE, label: t("profile.refusalFallback.effortDefault") },
-                          ...stepModelEfforts.map((v) => ({ value: v, label: v })),
-                        ];
+                  const stepEffortOptions = [
+                    { value: NONE, label: t("profile.refusalFallback.effortInherit") },
+                    ...(stepModelEfforts === undefined
+                      ? EFFORT_LEVELS.filter((item) => item.value !== NONE)
+                      : stepModelEfforts.map((value) => ({ value, label: value }))),
+                  ];
                   return (
                     <div
                       key={idx}
@@ -1266,7 +1284,7 @@ function ProfileSheet({
                             </SelectTrigger>
                             <SelectContent>
                               {models.map((m) => (
-                                <SelectItem key={m} value={m} disabled={m === model.trim()}>
+                                <SelectItem key={m} value={m}>
                                   {m} {m === model.trim() ? "(primary)" : ""}
                                 </SelectItem>
                               ))}
@@ -1383,7 +1401,7 @@ export default function LLMPage() {
   // Whether a profile is healthy, shown on its card. A profile without a Key cannot send any requests at all, so this should be reported before the circuit breaker state.
   const healthOf = React.useCallback(
     (p: LLMProfile, m?: LLMPoolMember): Health => {
-      if (p.auth_method === "api_key" ? !p.api_key_hint : !p.has_grant) {
+      if (p.auth_method === "api_key" ? (!p.api_key_hint && p.format !== "ollama") : !p.has_grant) {
         const keylessOAuth = p.auth_method !== "api_key";
         return {
           label: t(keylessOAuth ? "health.noOAuth.label" : "health.noKey.label"),

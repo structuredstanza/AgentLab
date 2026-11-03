@@ -55,6 +55,7 @@ import { api, sseUrl } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
 import { MOCK } from "@/lib/mock/enabled";
 import { isBtwCommand } from "@/lib/side-questions";
+import { taskAssetSourceLabel, taskAssetTypeLabel } from "@/lib/task-assets";
 import type {
   Activity,
   ChatAttachment,
@@ -453,7 +454,6 @@ function truncateWorkerAssetLabel(value: string, maxChars = 30): string {
 }
 
 function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
-  const t = useTranslations("sessions");
   const displayAssets = assets.filter(
     (asset) => asset.type === "root_domain" || asset.type === "subdomain" || asset.type === "ip",
   );
@@ -466,7 +466,7 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
     <Tooltip>
       <TooltipTrigger asChild>
         <Badge variant="outline" className="max-w-60 shrink-0 font-normal" title={firstRawLabel}>
-          <span className="truncate">{t("asset.current", { label: firstLabel })}</span>
+          <span className="truncate">Current assets: {firstLabel}</span>
           {displayAssets.length > 1 && <span className="shrink-0 tabular-nums">+{displayAssets.length - 1}</span>}
         </Badge>
       </TooltipTrigger>
@@ -476,9 +476,8 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
             <div key={`${asset.intent_id}-${asset.asset_id}`} className="min-w-0">
               <div className="break-all font-mono text-xs">{asset.label.trim() || `#${asset.asset_id}`}</div>
               <div className="mt-0.5 text-xs text-muted-foreground">
-                {t(`asset.type.${asset.type}`)} ·{" "}
-                {t.has(`asset.source.${asset.source}`) ? t(`asset.source.${asset.source}`) : asset.source}
-                {asset.inherited ? ` · ${t("asset.sourceTask", { id: asset.source_task_id })}` : ""}
+                {taskAssetTypeLabel(asset.type)} · {taskAssetSourceLabel(asset.source)}
+                {asset.inherited ? ` · from source task #${asset.source_task_id}` : ""}
               </div>
               <div className="mt-0.5 [overflow-wrap:anywhere] text-xs">{asset.source_summary}</div>
             </div>
@@ -489,7 +488,7 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
   );
 }
 
-export function SessionsTab({ taskId }: { taskId: string }) {
+export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; taskPaused?: boolean }) {
   const t = useTranslations("sessions");
   const approvalFocus = useApprovalFocus({ taskId });
   const [selectedSessionId, setActiveId] = React.useState(MAIN_ID);
@@ -1474,6 +1473,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
 
   // Run duration = span from this session's first step to its last (for a live
   // session, "now" so it ticks up — the 1.5s setTick above re-renders it).
+  // While the TASK is paused nothing time-derived may advance (#84): sessions
+  // keep state='running' in the store during a pause, so live alone would keep
+  // ticking and misrepresent the frozen budget. Freeze at the last step instead.
   const runDuration = React.useMemo(() => {
     let min = Infinity,
       max = 0;
@@ -1484,9 +1486,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       if (t > max) max = t;
     }
     if (!Number.isFinite(min) || max === 0) return null;
-    const end = active.live ? Date.now() : max;
+    const end = active.live && !taskPaused ? Date.now() : max;
     return Math.max(0, end - min);
-  }, [activity, active.live]);
+  }, [activity, active.live, taskPaused]);
 
   // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
   const contentRef = React.useRef<HTMLDivElement | null>(null);

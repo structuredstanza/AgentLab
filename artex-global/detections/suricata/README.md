@@ -41,14 +41,10 @@ under [`../sigma/`](../sigma/); the [English defense guide](../../docs/defense-e
   [`../sigma/artex_guard_audit_framing.yml`](../sigma/artex_guard_audit_framing.yml). The server port `:8787`
   and recording proxy `127.0.0.1:8788` (`cmd/artex/main.go`) are host-forensic (`ss`/`netstat`), not a
   network signature.
-- **One indicator rests on a pinned dependency, not this repository's own source.** The opening line says
-  every indicator is verified in this repository's source; sid 1000003 is the single carve-out. Its `norma/`
-  User-Agent is hardcoded in the norma SDK (`github.com/Autumn-27/norma/tool/webfetch.go`), which ARTEX pins
-  at `v0.4.3` in `go.mod` rather than vendoring into this tree, so the string is grounded in that pinned
-  upstream dependency (hardcoded across v0.1.0–v0.4.3, verified), not a file here. This is why the
-  indicator-source test re-reads ARTEX's own emitters but not this one. The
-  [indicators list](../indicators/README.md) states the same caveat; it is noted here too so the
-  "verified in this repository's source" claim above holds without an unstated exception.
+- **The norma User-Agent is shared, not ARTEX-specific.** Sid 1000003 matches `norma/`, emitted by
+  the owned SDK at [`../../third_party/norma/tool/webfetch.go`](../../third_party/norma/tool/webfetch.go)
+  (based on BaaRai/Norma v0.4.4). Other norma-based applications emit the same prefix.
+  The [indicators list](../indicators/README.md) therefore keeps it out of atomic blocking indicators.
 
 ## Validate and test
 

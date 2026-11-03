@@ -8,9 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"strings"
 )
 
 // EvidenceExchange exposes complete captured bodies only during the callback.
@@ -55,27 +52,18 @@ func (t *Traffic) readEvidence(id string, consume func(EvidenceExchange) error) 
 	err := t.db.QueryRow(`SELECT req_head,req_body,req_blob,resp_head,resp_body,resp_blob FROM exchange_bodies WHERE id=?`, id).
 		Scan(&e.ReqHead, &req, &reqBlob, &e.RespHead, &resp, &respBlob)
 	if errors.Is(err, sql.ErrNoRows) && legacy != "" {
-		if !filepath.IsLocal(legacy) {
-			return errors.New("legacy traffic path is invalid")
-		}
-		r, err := os.Open(filepath.Join(t.dir, legacy, "request.http"))
+		request, err := t.openLegacySide(legacy, "request.http", e.ReqLen)
 		if err != nil {
 			return err
 		}
-		defer r.Close()
-		p, err := os.Open(filepath.Join(t.dir, legacy, "response.http"))
+		defer request.close()
+		response, err := t.openLegacySide(legacy, "response.http", e.RespLen)
 		if err != nil {
 			return err
 		}
-		defer p.Close()
-		e.ReqHead, e.Request, err = splitLegacyEvidence(r)
-		if err != nil {
-			return err
-		}
-		e.RespHead, e.Response, err = splitLegacyEvidence(p)
-		if err != nil {
-			return err
-		}
+		defer response.close()
+		e.ReqHead, e.Request, e.ReqHash = request.head, request.body, request.hash
+		e.RespHead, e.Response, e.RespHash = response.head, response.body, response.hash
 		return consume(e)
 	}
 	if err != nil {
@@ -104,23 +92,34 @@ func (t *Traffic) readEvidence(id string, consume func(EvidenceExchange) error) 
 	return consume(e)
 }
 
-func splitLegacyEvidence(r io.Reader) (string, io.Reader, error) {
+func splitLegacyEvidence(r io.Reader) (string, *bufio.Reader, bool, error) {
 	b := bufio.NewReader(r)
-	var head strings.Builder
+	var head bytes.Buffer
+	lineStart := 0
 	for {
-		line, err := b.ReadString('\n')
-		if line == "\n" || line == "\r\n" {
-			return head.String(), b, nil
+		fragment, err := b.ReadSlice('\n')
+		if len(fragment) > (1<<20)-head.Len() {
+			return "", nil, false, errors.New("legacy traffic header is too large")
 		}
-		head.WriteString(line)
-		if head.Len() > 1<<20 {
-			return "", nil, errors.New("legacy traffic header is too large")
+		head.Write(fragment)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
 		}
+		line := head.Bytes()[lineStart:]
+		if bytes.Equal(line, []byte("\n")) || bytes.Equal(line, []byte("\r\n")) {
+			head.Truncate(lineStart)
+			return head.String(), b, true, nil
+		}
+		if bytes.HasSuffix(line, []byte("\r\n")) {
+			head.Truncate(head.Len() - 2)
+			head.WriteByte('\n')
+		}
+		lineStart = head.Len()
 		if errors.Is(err, io.EOF) {
-			return head.String(), b, nil
+			return head.String(), b, false, nil
 		}
 		if err != nil {
-			return "", nil, err
+			return "", nil, false, err
 		}
 	}
 }

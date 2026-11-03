@@ -70,6 +70,15 @@ func (p *Pool) Members() []*Member { return p.members }
 // Head returns the first member of the chain.
 func (p *Pool) Head() *Member { return p.members[0] }
 
+func (p *Pool) RequiresComplete() bool {
+	for _, member := range p.members {
+		if llm.RequiresComplete(member.Prov) {
+			return true
+		}
+	}
+	return false
+}
+
 // Stream implements llm.Provider with failover.
 //
 // The one hard rule: a member may only be abandoned BEFORE it has yielded any
@@ -87,6 +96,10 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			emitted := false
 			var failed error
 			for ev, err := range m.Prov.Stream(ctx, req) {
+				if errors.Is(err, llm.ErrHistoryRejected) {
+					yield(llm.StreamEvent{}, err)
+					return
+				}
 				if err != nil && !emitted && shouldFailover(ctx, err) {
 					failed = err
 					break // safe window: nothing reached the caller yet
@@ -132,6 +145,9 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 	var lastErr error
 	for i, m := range order {
 		msg, sr, usage, err := m.Prov.Complete(ctx, req)
+		if errors.Is(err, llm.ErrHistoryRejected) {
+			return llm.Message{}, "", llm.Usage{}, err
+		}
 		if err == nil {
 			p.health.Pass(m.ID)
 			return msg, sr, usage, nil
@@ -260,8 +276,32 @@ func isHardFailure(err error) bool {
 }
 
 // trimErr shortens an error for logs/UI — provider bodies can be long.
+// Provider error bodies are copied verbatim into the error by the transport, and
+// this string is persisted to llm_health and served to the UI as last_error. An
+// upstream that echoes the credential back (OpenAI's "Incorrect API key provided:
+// sk-…", a Gemini ?key= URL, a validation error quoting the request) would store
+// it in the database and display it, so credential shapes are scrubbed first.
+var secretShapes = []*regexp.Regexp{
+	regexp.MustCompile(`sk-[A-Za-z0-9_-]{8,}`),
+	regexp.MustCompile(`(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}`),
+	regexp.MustCompile(`(?i)\b(x-api-key|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|token|secret|key)"?\s*[=:]\s*"?[A-Za-z0-9._~+/=-]{8,}`),
+	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
+}
+
+func redactSecrets(s string) string {
+	for _, re := range secretShapes {
+		s = re.ReplaceAllStringFunc(s, func(m string) string {
+			if i := strings.IndexAny(m, "=:"); i >= 0 {
+				return m[:i+1] + " [REDACTED]"
+			}
+			return "[REDACTED]"
+		})
+	}
+	return s
+}
+
 func trimErr(err error) string {
-	s := strings.TrimSpace(strings.ReplaceAll(err.Error(), "\n", " "))
+	s := redactSecrets(strings.TrimSpace(strings.ReplaceAll(err.Error(), "\n", " ")))
 	if len(s) > 300 {
 		s = s[:300] + "…"
 	}

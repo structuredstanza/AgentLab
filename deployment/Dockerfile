@@ -17,7 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl wget unzip git jq ripgrep \
-      python3 \
+      python3 python-is-python3 python3-venv python3-pip \
       postgresql postgresql-client \
       nmap dnsutils iputils-ping netcat-openbsd whois \
       tcpdump strace procps util-linux \
@@ -25,6 +25,49 @@ RUN apt-get update \
 
 # The postgresql package creates and starts a default cluster; guest-start.py owns /state/postgres instead.
 RUN set -eu; for d in /etc/postgresql/*/main; do [ -d "$d" ] || continue; pg_dropcluster --stop "$(basename "$(dirname "$d")")" main; done
+
+# Web-recon toolbox (pinned release binaries in /usr/local/bin):
+ARG NUCLEI_VERSION=v3.11.1
+ARG HTTPX_VERSION=v1.12.0
+ARG SUBFINDER_VERSION=v2.17.0
+ARG KATANA_VERSION=v1.8.0
+ARG FFUF_VERSION=v2.3.0
+ARG DALFOX_VERSION=v3.2.4
+RUN set -eux; \
+    base="https://github.com"; \
+    pd_fetch() { repo="$1"; ver="$2"; name="$3"; nov="${ver#v}"; \
+      curl -fsSL "$base/$repo/releases/download/$ver/${name}_${nov}_linux_${TARGETARCH}.zip" -o /tmp/t.zip \
+      && unzip -o -q /tmp/t.zip -d /tmp/td \
+      && find /tmp/td -type f -name "$name" -exec install -m 0755 {} /usr/local/bin/ \; \
+      && rm -rf /tmp/t.zip /tmp/td; }; \
+    case "$TARGETARCH" in amd64) FFUF_ARCH=amd64; DALFOX_ARCH=x86_64;; arm64) FFUF_ARCH=arm64; DALFOX_ARCH=aarch64;; esac; \
+    pd_fetch projectdiscovery/nuclei "$NUCLEI_VERSION" nuclei; \
+    pd_fetch projectdiscovery/httpx "$HTTPX_VERSION" httpx; \
+    pd_fetch projectdiscovery/subfinder "$SUBFINDER_VERSION" subfinder; \
+    pd_fetch projectdiscovery/katana "$KATANA_VERSION" katana; \
+    tar_fetch() { url="$1"; name="$2"; \
+      curl -fsSL "$url" -o /tmp/t.tgz \
+      && mkdir -p /tmp/td && tar -xzf /tmp/t.tgz -C /tmp/td \
+      && find /tmp/td -type f -name "$name" -exec install -m 0755 {} /usr/local/bin/ \; \
+      && rm -rf /tmp/t.tgz /tmp/td; }; \
+    tar_fetch "$base/ffuf/ffuf/releases/download/$FFUF_VERSION/ffuf_${FFUF_VERSION#v}_linux_${FFUF_ARCH}.tar.gz" ffuf; \
+    tar_fetch "$base/hahwul/dalfox/releases/download/$DALFOX_VERSION/dalfox-${DALFOX_VERSION}-linux-${DALFOX_ARCH}-musl.tar.gz" dalfox; \
+    git clone --depth 1 https://github.com/sqlmapproject/sqlmap /opt/sqlmap; \
+    ln -s /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap; \
+    nuclei -version >/dev/null; httpx -version; subfinder -version; katana -version; \
+    ffuf -V >/dev/null; dalfox --version >/dev/null 2>&1 || true; sqlmap --version >/dev/null
+
+# bbot recursive recon orchestrator: isolated venv with preinstalled dependencies
+ARG BBOT_VERSION=3.0.2
+RUN set -eux; \
+    python3 -m venv /opt/bbot; \
+    /opt/bbot/bin/pip install --no-cache-dir "bbot==${BBOT_VERSION}"; \
+    ln -s /opt/bbot/bin/bbot /usr/local/bin/bbot; \
+    bbot -y --install-all-deps; \
+    bbot --version >/dev/null; \
+    bbot --dry-run -t example.com -m wafw00f,paramminer_getparams,lightfuzz,sslcert,gowitness >/dev/null 2>&1 || true; \
+    bbot --dry-run -t example.com -m wafw00f,paramminer_getparams,lightfuzz,sslcert,gowitness --no-color >/tmp/bbot-dry.log 2>&1 || true; \
+    ! grep -qE "Installing|ERRR|CRITICAL" /tmp/bbot-dry.log || { cat /tmp/bbot-dry.log; exit 1; }
 
 # Pin matching browser tooling so rebuilds retain the verified runtime.
 RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" @playwright/mcp@0.0.83 @playwright/cli@0.1.22 \

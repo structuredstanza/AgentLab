@@ -72,12 +72,12 @@ func (s *Server) poolMember(p *db.LLMProfile, rank int) *llmpool.Member {
 // poolChain reads the failover chain from the DB. headID/headProv/headCfg describe
 // the member that must lead the chain — the globally active profile on the normal
 // path, or an explicitly bound one when bound-profile fallback is on. The head is
-// passed in (rather than resolved through the cache) so applyLLM's already-built
+// passed in (rather than resolved through the cache) so the already-built
 // provider is reused instead of duplicated.
 //
 // Returns nil when failover is off or the chain has fewer than two usable members
 // — callers then use the bare provider, which is byte-for-byte the old behavior.
-func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Config) *llmpool.Pool {
+func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Config, activeID int64) *llmpool.Pool {
 	if s.m == nil || s.m.pg == nil || !s.m.LLMPoolEnabled() {
 		return nil
 	}
@@ -85,6 +85,11 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 	if err != nil {
 		log.Printf("[llmpool] failed to read polling chain: %v", err)
 		return nil
+	}
+	if activeID != 0 {
+		for _, p := range profs {
+			p.IsDefault = p.ID == activeID
+		}
 	}
 	var head *db.LLMProfile
 	for _, p := range profs {
@@ -100,13 +105,16 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 			return nil
 		}
 	}
+	if activeID != 0 {
+		head.IsDefault = head.ID == activeID
+	}
 	members := []*llmpool.Member{{
 		ID: head.ID, Name: head.Name, Model: head.Model, Format: head.Format,
 		Priority: head.Priority, Active: head.IsDefault, Rank: llmpool.RankActive,
 		WindowTokens: headCfg.CompactionWindow(), Prov: headProv,
 	}}
 	for _, p := range profs {
-		if p.ID == headID {
+		if p.ID == headID || (activeID != 0 && p.PoolExclude && p.ID != activeID) {
 			continue
 		}
 		// The globally active profile outranks the others when it isn't the head
@@ -128,7 +136,7 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 // poolForActive wraps the globally-active provider in the failover chain. Returns
 // prov unchanged when failover is off or there's nothing to fall back to.
 func (s *Server) poolForActive(activeID int64, prov llm.Provider, cfg agent.Config) llm.Provider {
-	pool := s.poolChain(activeID, prov, cfg)
+	pool := s.poolChain(activeID, prov, cfg, activeID)
 	if pool == nil {
 		return prov
 	}
@@ -148,7 +156,7 @@ func (s *Server) poolForBinding(id int64, prov llm.Provider, cfg agent.Config) l
 	if s.m == nil || !s.m.LLMPoolEnabled() || !s.m.LLMPoolBindFallback() {
 		return prov
 	}
-	if pool := s.poolChain(id, prov, cfg); pool != nil {
+	if pool := s.poolChain(id, prov, cfg, 0); pool != nil {
 		return pool
 	}
 	return prov

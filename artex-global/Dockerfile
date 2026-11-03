@@ -20,6 +20,48 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+# Web-recon toolbox: pinned release binaries installed into /usr/local/bin
+ARG NUCLEI_VERSION=v3.11.1
+ARG HTTPX_VERSION=v1.12.0
+ARG SUBFINDER_VERSION=v2.17.0
+ARG KATANA_VERSION=v1.8.0
+ARG FFUF_VERSION=v2.3.0
+ARG DALFOX_VERSION=v3.2.4
+RUN set -eux; \
+    base="https://github.com"; \
+    pd_fetch() { repo="$1"; ver="$2"; name="$3"; nov="${ver#v}"; \
+      curl -fsSL "$base/$repo/releases/download/$ver/${name}_${nov}_linux_${TARGETARCH}.zip" -o /tmp/t.zip \
+      && unzip -o -q /tmp/t.zip -d /tmp/td \
+      && find /tmp/td -type f -name "$name" -exec install -m 0755 {} /usr/local/bin/ \; \
+      && rm -rf /tmp/t.zip /tmp/td; }; \
+    case "$TARGETARCH" in amd64) FFUF_ARCH=amd64; DALFOX_ARCH=x86_64;; arm64) FFUF_ARCH=arm64; DALFOX_ARCH=aarch64;; esac; \
+    pd_fetch projectdiscovery/nuclei "$NUCLEI_VERSION" nuclei; \
+    pd_fetch projectdiscovery/httpx "$HTTPX_VERSION" httpx; \
+    pd_fetch projectdiscovery/subfinder "$SUBFINDER_VERSION" subfinder; \
+    pd_fetch projectdiscovery/katana "$KATANA_VERSION" katana; \
+    tar_fetch() { url="$1"; name="$2"; \
+      curl -fsSL "$url" -o /tmp/t.tgz \
+      && mkdir -p /tmp/td && tar -xzf /tmp/t.tgz -C /tmp/td \
+      && find /tmp/td -type f -name "$name" -exec install -m 0755 {} /usr/local/bin/ \; \
+      && rm -rf /tmp/t.tgz /tmp/td; }; \
+    tar_fetch "$base/ffuf/ffuf/releases/download/$FFUF_VERSION/ffuf_${FFUF_VERSION#v}_linux_${FFUF_ARCH}.tar.gz" ffuf; \
+    tar_fetch "$base/hahwul/dalfox/releases/download/$DALFOX_VERSION/dalfox-${DALFOX_VERSION}-linux-${DALFOX_ARCH}-musl.tar.gz" dalfox; \
+    git clone --depth 1 https://github.com/sqlmapproject/sqlmap /opt/sqlmap; \
+    ln -s /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap; \
+    nuclei -version >/dev/null; httpx -version; subfinder -version; katana -version; \
+    ffuf -V >/dev/null; dalfox --version >/dev/null 2>&1 || true; sqlmap --version >/dev/null
+
+# bbot recursive recon orchestrator: isolated venv with preinstalled dependencies
+ARG BBOT_VERSION=3.0.2
+RUN set -eux; \
+    python -m venv /opt/bbot; \
+    /opt/bbot/bin/pip install --no-cache-dir "bbot==${BBOT_VERSION}"; \
+    ln -s /opt/bbot/bin/bbot /usr/local/bin/bbot; \
+    bbot -y --install-all-deps; \
+    bbot --version >/dev/null; \
+    bbot --dry-run -t example.com -m wafw00f,paramminer_getparams,lightfuzz,sslcert,gowitness >/dev/null 2>&1 || true; \
+    bbot --dry-run -t example.com -m wafw00f,paramminer_getparams,lightfuzz,sslcert,gowitness --no-color >/tmp/bbot-dry.log 2>&1 || true; \
+    ! grep -qE "Installing|ERRR|CRITICAL" /tmp/bbot-dry.log || { cat /tmp/bbot-dry.log; exit 1; }
 # Pre-install the Playwright MCP and CLI globally (so that npx does not download anything over the network at runtime).
 # @playwright/mcp: the browser MCP runs directly with `npx @playwright/mcp` (globally installed, -y/@latest not needed).
 # @playwright/cli: provides playwright-cli; after installation, check whether it can run via --help.
@@ -32,9 +74,7 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
 WORKDIR /app
 # Pre-compiled binary for the matching architecture (dist/amd64/artex or dist/arm64/artex)
 COPY dist/${TARGETARCH}/artex /app/artex
-# Supervisor startup script: after the process exits, decides whether to restart it based on the exit code; the one-click update in the UI uses this script to complete the binary replacement.
-# This script is also responsible for forwarding SIGTERM to artex: docker stop sends the signal only to PID 1,
-# otherwise artex never receives it, cannot shut down gracefully, and is force-killed with SIGKILL after 10 seconds.
+# Daemon startup script: relaunches the process after abnormal exit and forwards SIGTERM to artex
 COPY start.sh /app/start.sh
 RUN chmod +x /app/artex /app/start.sh
 COPY skills/ /app/skills/

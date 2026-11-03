@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/sdkbridge"
+	"github.com/Autumn-27/artex/nativeproxy"
 )
 
 const (
@@ -15,7 +15,7 @@ const (
 type cachedUsage struct {
 	plan      *string
 	fetchedAt *time.Time
-	windows   []sdkbridge.UsageWindow
+	windows   []nativeproxy.UsageWindow
 	cachedAt  time.Time
 }
 
@@ -60,7 +60,7 @@ func (c *usageCache) get(profileID int64, now time.Time) (entry cachedUsage, hit
 	return
 }
 
-func (c *usageCache) set(profileID int64, plan *string, fetchedAt *time.Time, windows []sdkbridge.UsageWindow, now time.Time) {
+func (c *usageCache) set(profileID int64, plan *string, fetchedAt *time.Time, windows []nativeproxy.UsageWindow, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

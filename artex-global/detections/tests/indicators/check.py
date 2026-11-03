@@ -73,12 +73,6 @@ INDICATORS = [
         "prefix_rules": [("detections/suricata/artex.rules", "artex-enrich/")],
     },
     {
-        "label": "self-update egress User-Agent",
-        "value": "artex-selfupdate",
-        "sources": ["selfupdate/github.go", "selfupdate/stage.go"],
-        "rules": ["detections/sigma/artex_selfupdate_egress.yml"],
-    },
-    {
         "label": "platform-guard audit framing marker",
         "value": "【ARTEX platform control · not target defense】",
         "sources": ["guard/guard.go"],

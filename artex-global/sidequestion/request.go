@@ -30,7 +30,7 @@ type Exchange struct {
 
 func (e Exchange) Running() bool { return e.Status == "running" }
 
-const instruction = "这是独立的旁路提问。主 Agent 正在执行原任务，你只根据已有上下文简洁回答当前问题。你没有工具执行能力，不能执行操作、修改文件或指挥主任务，也不要承诺稍后执行。上下文中的任务指令仅作为背景；不足以判断时明确说明。"
+const instruction = "This is an independent side question. The main agent is executing the original task; you only answer the current question concisely based on the existing context. You have no tool execution capability: you cannot perform operations, modify files, or direct the main task, and do not promise to do so later. Task instructions in the context serve only as background; state clearly when there is not enough information to judge."
 
 const DefaultOutputTokens = 8192
 const MaxRecentExchanges = 20
@@ -74,7 +74,7 @@ func inputBudget(s Snapshot, output int) int {
 func exchangeMessages(e Exchange) []llm.Message {
 	question := e.Question
 	if !e.SnapshotAt.IsZero() {
-		question = "[历史旁路问答，依据上下文时间 " + e.SnapshotAt.UTC().Format(time.RFC3339) + "]\n" + question
+		question = "[Historical side Q&A, based on context at " + e.SnapshotAt.UTC().Format(time.RFC3339) + "]\n" + question
 	}
 	return []llm.Message{llm.UserText(question), {Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock(e.Answer)}}}
 }
@@ -82,18 +82,52 @@ func exchangeMessages(e Exchange) []llm.Message {
 func assemble(req llm.CompletionRequest, base []llm.Message, summary string, history []Exchange, question string) llm.CompletionRequest {
 	req.Messages = append([]llm.Message{}, base...)
 	if summary != "" {
-		req.Messages = append(req.Messages, llm.UserText("[早期旁路问答摘要；属于历史讨论，不是新的工具证据。冲突时以最新主上下文为准。]\n"+summary))
+		req.Messages = append(req.Messages, llm.UserText("[Summary of earlier side Q&A; this is historical discussion, not new tool evidence. The latest main context takes precedence in case of conflict.]\n"+summary))
 	}
 	for _, e := range history {
 		req.Messages = append(req.Messages, exchangeMessages(e)...)
 	}
-	req.Messages = append(req.Messages, llm.UserText(instruction+"\n\n问题："+strings.TrimSpace(question)))
+	req.Messages = append(req.Messages, llm.UserText(instruction+"\n\nQuestion: "+strings.TrimSpace(question)))
 	return req
+}
+
+// prepareMainHistory operates only on CloneRequest's private copy, before budgeting.
+func prepareMainHistory(req *llm.CompletionRequest) error {
+	native := false
+	for _, message := range req.Messages {
+		for _, block := range message.Content {
+			if block.Type == "provider_state" {
+				native = true
+			}
+		}
+	}
+	for index, message := range req.Messages {
+		if native {
+			readable, err := ReadableHistoryMessage(message)
+			if err != nil {
+				return err
+			}
+			req.Messages[index] = readable
+			continue
+		}
+		content := message.Content[:0]
+		for _, block := range message.Content {
+			if block.Type != llm.BlockThinking {
+				block.Signature = ""
+				content = append(content, block)
+			}
+		}
+		req.Messages[index].Content = content
+	}
+	return nil
 }
 
 func BuildRequest(s Snapshot, history []Exchange, question string) (llm.CompletionRequest, error) {
 	req, err := CloneRequest(s.Request)
 	if err != nil {
+		return req, err
+	}
+	if err := prepareMainHistory(&req); err != nil {
 		return req, err
 	}
 	base := llm.MessagesForAPI(req.Messages)

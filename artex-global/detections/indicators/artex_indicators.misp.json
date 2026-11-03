@@ -26,15 +26,6 @@
         "comment": "ARTEX asset-enrichment prober User-Agent (enrich/enrich.go). Target-side. An operator can change it, so absence is not safety. Sigma: artex_enrich_user_agent.yml."
       },
       {
-        "uuid": "dbe975a6-0a12-43a7-a8e8-4bd0ba65daea",
-        "type": "user-agent",
-        "category": "Network activity",
-        "to_ids": true,
-        "disable_correlation": false,
-        "value": "artex-selfupdate",
-        "comment": "ARTEX self-update egress User-Agent to the release host (selfupdate/github.go, selfupdate/stage.go). Seen in outbound logs from an ARTEX host. Sigma: artex_selfupdate_egress.yml."
-      },
-      {
         "uuid": "053cbbbd-c345-49f0-b6e3-1b6f6075a218",
         "type": "pattern-in-file",
         "category": "Artifacts dropped",

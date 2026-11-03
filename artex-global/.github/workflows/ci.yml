@@ -29,8 +29,12 @@ jobs:
         run: go build ./...
       - name: go vet
         run: go vet ./...
+      - name: go vet (owned SDK)
+        run: go vet github.com/Autumn-27/norma/...
       - name: go test (no DB — integration tests skipped)
         run: go test ./... -count=1
+      - name: go test (owned SDK)
+        run: go test github.com/Autumn-27/norma/... -count=1
 
   # Takes charge of DB integration tests (notifications, evidence, usage metering, etc.) that only run when a real PostgreSQL is available.
   # Forces the paths the go job above skips (notification channel validation, evidence storage, llm_usage metering, etc.) against a real
@@ -74,3 +78,19 @@ jobs:
         env:
           ARTEX_PG_DSN: postgres://artex:artex@localhost:5432/artex?sslmode=disable
         run: go test ./${{ matrix.pkg }}/ -count=1
+
+  # The exporter and the browser extension have their own suites under deployment/, and nothing ran them:
+  # test_export_traces.py carries the training-data redaction and malformed-record cases, and
+  # test_extension_capture.mjs covers what the extension posts to /api/traffic/ingest. Both are plain
+  # interpreters with no services, so they run here rather than in a database job.
+  deployment-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: exporter suite (redaction, malformed records, atomic output)
+        run: cd deployment && python3 -m unittest test_export_traces -v
+      - name: extension capture suite (CDP events → ingest payload)
+        run: cd deployment && node --test test_extension_capture.mjs

@@ -456,14 +456,30 @@ export default function SkillsPage() {
       return;
     }
     setFileLoading(true);
+    // A read that resolves after the selection moved on must not touch the
+    // editor: its text would belong to the previous file while the header and
+    // the Save target show the new one, so Save would write one file's contents
+    // into another.
+    let alive = true;
     api
       .readSkillFile(selected.skill, selected.path)
       .then((c) => {
+        if (!alive) return;
         setFileContent(c);
         setDirty(false);
       })
-      .catch(() => toast.error(t("readFileFailed")))
-      .finally(() => setFileLoading(false));
+      .catch(() => {
+        if (!alive) return;
+        setFileContent(""); // never leave the previous file's text under this name
+        setDirty(false);
+        toast.error(t("readFileFailed"));
+      })
+      .finally(() => {
+        if (alive) setFileLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, [selected, t]);
 
   // ── Expand helpers ────────────────────────────────────────────────────────
@@ -639,8 +655,14 @@ export default function SkillsPage() {
         mcps: newMcps.length ? newMcps : undefined,
         instructions: newInst.trim() || undefined,
       });
-      // apply initial visibility (fire-and-forget per agent; best-effort)
-      await Promise.all(newVisibility.map((id) => api.toggleSkillVisibility(id, name, true)));
+      // The skill exists from here on. Initial visibility is per-agent and
+      // best-effort: a failure there must not read as "create failed" and leave
+      // the dialog filled, or the next click recreates and gets a 409.
+      try {
+        await Promise.all(newVisibility.map((id) => api.toggleSkillVisibility(id, name, true)));
+      } catch (visibilityError) {
+        toast.error(t("createFailed", { msg: (visibilityError as Error).message }));
+      }
       toast.success(t("skillCreated"));
       setNewOpen(false);
       setNewName("");

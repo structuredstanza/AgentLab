@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"iter"
 	"strings"
 	"testing"
@@ -10,18 +11,29 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/transcript"
 )
 
-type reviewCaptureProvider struct{ request llm.CompletionRequest }
+type reviewCaptureProvider struct {
+	request  llm.CompletionRequest
+	sessions []string
+	reply    *llm.Message
+	stop     string
+}
 
-func (p *reviewCaptureProvider) Stream(_ context.Context, request llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	p.request = request
+func (p *reviewCaptureProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
-		yield(llm.StreamEvent{Type: llm.SETextDelta, Text: `{"decision":"ask","comment":"Action: delete file; Consequence: file will be lost, ownership unconfirmed; Matched rule: ASK (ownership unclear)"}`}, nil)
+		yield(llm.StreamEvent{}, errors.New("judge provider supports Complete only"))
 	}
 }
+
 func (p *reviewCaptureProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	return accumulateStreamForTest(ctx, p.Stream, req)
+	p.request = req
+	p.sessions = append(p.sessions, transcript.SessionIDFrom(ctx))
+	if p.reply != nil {
+		return *p.reply, p.stop, llm.Usage{}, nil
+	}
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock(`{"decision":"ask","comment":"Action: delete file; Consequence: file will be lost, ownership unconfirmed; Matched rule: ASK (ownership unclear)"}`)}}, "end_turn", llm.Usage{}, nil
 }
 
 // Assert the actual model request, rather than merely the envelope helper.
@@ -72,5 +84,44 @@ func TestReviewCompletionSendsCurrentCallWithoutHistory(t *testing.T) {
 	}
 	if got.Version != 4 || got.Background == nil || got.Background.Source != intercept.BackgroundUserMessage || got.Background.Text != "清理本次测试文件" || got.WorkingDir != "/tmp/review-fixture" || string(got.Arguments) != string(args) || strings.Contains(body, "worker speculation") || strings.Contains(body, "GLOBAL_OVERVIEW_SENTINEL") {
 		t.Fatalf("wrong model input: %s", body)
+	}
+}
+
+func TestJudgeCompletionUsesIndependentSessionsAndRejectsUnsafeAnswers(t *testing.T) {
+	ctx := transcript.WithSessionID(t.Context(), "main-native-session")
+	provider := &reviewCaptureProvider{}
+	for range 2 {
+		if _, err := judgeCompletion(ctx, provider, "review", "current call"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if provider.sessions[0] == "main-native-session" || provider.sessions[1] == provider.sessions[0] {
+		t.Fatalf("judge reused a native reasoning session: %v", provider.sessions)
+	}
+	verdict := llm.TextBlock(`{"decision":"allow","comment":"Action: inspect file; Consequence: read only; Matched rule: ALLOW"}`)
+	for _, test := range []struct {
+		name, stop string
+		role       llm.Role
+		content    []llm.ContentBlock
+		canceled   bool
+	}{
+		{"refused", "refusal", llm.RoleAssistant, []llm.ContentBlock{verdict}, false},
+		{"truncated", "max_tokens", llm.RoleAssistant, []llm.ContentBlock{verdict}, false},
+		{"missing stop", "", llm.RoleAssistant, []llm.ContentBlock{verdict}, false},
+		{"wrong role", "end_turn", llm.RoleUser, []llm.ContentBlock{verdict}, false},
+		{"tool with verdict", "end_turn", llm.RoleAssistant, []llm.ContentBlock{verdict, {Type: llm.BlockToolUse, ID: "unexpected", Name: "Bash", Input: json.RawMessage(`{}`)}}, false},
+		{"canceled", "end_turn", llm.RoleAssistant, []llm.ContentBlock{verdict}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			if test.canceled {
+				cancel()
+			}
+			provider := &reviewCaptureProvider{reply: &llm.Message{Role: test.role, Content: test.content}, stop: test.stop}
+			if text, err := judgeCompletion(ctx, provider, "review", "current call"); err == nil || text != "" {
+				t.Fatalf("unsafe judge answer became a verdict: %q %v", text, err)
+			}
+		})
 	}
 }

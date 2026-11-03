@@ -1169,6 +1169,28 @@ WHERE exploration_id=$1 AND kind='goal' AND state='open')`, s.expID).Scan(&exist
 	return exists, err
 }
 
+// OpenGoalFingerprint returns a stable fingerprint of the open-goal set: the
+// sorted goal ids joined by commas, "" when none. Planner quiet-mode (#79) uses
+// it to tell "the goal set changed since the last planning round" apart from
+// "nothing the plan depends on changed".
+func (s *ExplorationStore) OpenGoalFingerprint() (string, error) {
+	rows, err := s.db.Query(`SELECT id FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='goal' AND state='open' ORDER BY id`, s.expID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return "", err
+		}
+		ids = append(ids, strconv.FormatInt(id, 10))
+	}
+	return strings.Join(ids, ","), rows.Err()
+}
+
 // ClaimIntent atomically moves an open intent to running. Returns true if claimed.
 func (s *ExplorationStore) ClaimIntent(id int64, owner string) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1
@@ -1658,6 +1680,43 @@ func (s *ExplorationStore) ActivityPageForTerminalIntent(nodeID, before int64, l
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
 			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
+			return nil, false, err
+		}
+		desc = append(desc, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(desc) > limit
+	if hasMore {
+		desc = desc[:limit]
+	}
+	out := make([]Activity, len(desc))
+	for i, a := range desc {
+		out[len(desc)-1-i] = a
+	}
+	return out, hasMore, nil
+}
+
+// ActivityPageByNode is the newest-first equivalent of ActivityList for one
+// node. It changes only the direction of the scan, so a long run's terminal
+// row is always inside the window instead of falling off the oldest page.
+func (s *ExplorationStore) ActivityPageByNode(nodeID int64, limit int) ([]Activity, bool, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
+	rows, err := s.db.Query(`SELECT `+cols+`
+FROM activity WHERE exploration_id=$1 AND node_id=$2 ORDER BY id DESC LIMIT $3`, s.expID, nodeID, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	desc := []Activity{}
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg); err != nil {
 			return nil, false, err
 		}
 		desc = append(desc, a)

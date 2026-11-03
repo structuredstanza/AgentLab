@@ -111,17 +111,23 @@ def heading_slugs(root: str, md: str) -> set:
 
 
 def main() -> int:
-    root = subprocess.check_output(
-        ["git", "rev-parse", "--show-toplevel"], text=True
-    ).strip()
-    tracked = set(subprocess.check_output(
-        ["git", "ls-files"], cwd=root, text=True
-    ).splitlines())
-    # Tracked-but-deleted files cannot be opened. Exclude them from the scan
-    # set and report each one; links that point at them are still checked below.
-    deleted = set(subprocess.check_output(
-        ["git", "ls-files", "--deleted"], cwd=root, text=True
-    ).splitlines())
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    try:
+        tracked = set(subprocess.check_output(
+            ["git", "ls-files", "."], cwd=root, text=True
+        ).splitlines())
+        deleted = set(subprocess.check_output(
+            ["git", "ls-files", "--deleted", "."], cwd=root, text=True
+        ).splitlines())
+    except Exception:
+        tracked = set()
+        for dirpath, _, filenames in os.walk(root):
+            if "/." in dirpath or "/node_modules" in dirpath:
+                continue
+            for f in filenames:
+                rel = os.path.relpath(os.path.join(dirpath, f), root).replace(os.sep, "/")
+                tracked.add(rel)
+        deleted = set()
     for path in sorted(p for p in deleted if p.endswith(".md")):
         print(f"note: tracked but deleted from worktree, not scanned: {path}", file=sys.stderr)
     md_files = sorted(f for f in tracked - deleted if f.endswith(".md"))

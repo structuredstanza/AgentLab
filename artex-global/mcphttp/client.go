@@ -96,12 +96,19 @@ func normalizeHeaders(headers map[string]string) (map[string]string, error) {
 // headers are sent on every request (Authorization, custom API keys, …).
 // When insecure is true, TLS certificate verification is skipped so servers that
 // present a self-signed certificate can still be reached (issue #108).
-func New(ctx context.Context, server, url string, headers map[string]string, insecure bool) (*Client, error) {
+// timeoutSeconds bounds each request (handshake, tools/list, one tools/call); 0
+// falls back to the 120s default. Analysis servers with minutes-long tool calls
+// raise it per server.
+func New(ctx context.Context, server, url string, headers map[string]string, insecure bool, timeoutSeconds int) (*Client, error) {
 	cleanHeaders, err := normalizeHeaders(headers)
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{Timeout: 120 * time.Second}
+	timeout := 120 * time.Second
+	if timeoutSeconds > 0 {
+		timeout = time.Duration(timeoutSeconds) * time.Second
+	}
+	hc := &http.Client{Timeout: timeout}
 	if insecure {
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
@@ -131,6 +138,10 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	streamCtx, cancel := context.WithCancel(context.Background())
+	// Caller cancellation owns setup only; a returned stream lives until Close.
+	bridgeDone := make(chan struct{})
+	stopBridge := context.AfterFunc(ctx, func() { cancel(); close(bridgeDone) })
+	defer stopBridge()
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, sseURL, nil)
 	if err != nil {
 		cancel()
@@ -143,6 +154,9 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	resp, err := hc.Do(req)
 	if err != nil {
 		cancel()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -155,6 +169,9 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	if err != nil {
 		resp.Body.Close()
 		cancel()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
 	c := &Client{
@@ -173,6 +190,18 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	}
 	go c.readLegacySSE(reader)
 	if err := c.initialize(ctx); err != nil {
+		_ = c.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, err
+	}
+	if !stopBridge() {
+		<-bridgeDone
+		_ = c.Close()
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
 		_ = c.Close()
 		return nil, err
 	}

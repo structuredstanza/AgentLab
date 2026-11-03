@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -50,13 +51,19 @@ type Task struct {
 	ActiveLLMProfileID *int64  `json:"active_llm_profile_id,omitempty"`
 	LLMChainRevision   int64   `json:"-"`
 	LLMFailoverState   string  `json:"llm_failover_state,omitempty"`
-	LLMFailoverReason  string  `json:"llm_failover_reason,omitempty"`
-	SourceTaskIDs      []int64 `json:"source_task_ids,omitempty"`
-	CompanyIDs         []int64 `json:"company_ids,omitempty"`
-	Status             string  `json:"status"` // Persisted lifecycle status (done/failed/timeout are terminal states; empty or other values are derived from runtime state)
+	// LLMRotate (#85): per-intent round-robin over the task's LLM chain heads.
+	LLMRotate         bool `json:"llm_rotate,omitempty"`
+	rotateMu          sync.Mutex
+	rotateNext        int
+	LLMFailoverReason string  `json:"llm_failover_reason,omitempty"`
+	SourceTaskIDs     []int64 `json:"source_task_ids,omitempty"`
+	CompanyIDs        []int64 `json:"company_ids,omitempty"`
+	PausedAt          int64   `json:"paused_at,omitempty"`
+	Status            string  `json:"status"` // Persisted lifecycle status (done/failed/timeout are terminal states; empty or other values are derived from runtime state)
 	// Task-level timeouts (see docs/\u4efb\u52a1\u7ea7\u8d85\u65f6\u4e0e\u6536\u5c3e\u8bbe\u8ba1.md). DeadlineAt/FirstRunAt are Unix seconds; 0 = unset/not yet run.
 	TimeoutSeconds       int                    `json:"timeout_seconds"`
 	PlanHeartbeatSeconds int                    `json:"plan_heartbeat_seconds"` // Planner heartbeat trigger interval (seconds)
+	PlanQuietMode        bool                   `json:"plan_quiet_mode"`        // planner quiet-mode switch (#86), editable mid-run
 	CoverageEnabled      bool                   `json:"coverage_enabled"`       // Asset coverage feature toggle (set at creation time, default on)
 	FirstRunAt           int64                  `json:"first_run_at,omitempty"`
 	DeadlineAt           int64                  `json:"deadline_at,omitempty"`
@@ -82,6 +89,7 @@ type taskLifecycleState struct {
 	PinnedAt      int64
 	Status        string
 	Paused        bool
+	PausedAt      int64
 	Queued        bool
 	QueuedAt      int64
 	QueueMode     string
@@ -109,6 +117,7 @@ func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 		PinnedAt:      t.PinnedAt,
 		Status:        t.Status,
 		Paused:        t.Paused,
+		PausedAt:      t.PausedAt,
 		Queued:        t.Queued,
 		QueuedAt:      t.QueuedAt,
 		QueueMode:     t.QueueMode,
@@ -133,6 +142,7 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.PinnedAt = state.PinnedAt
 	t.Status = state.Status
 	t.Paused = state.Paused
+	t.PausedAt = state.PausedAt
 	t.Queued = state.Queued
 	t.QueuedAt = state.QueuedAt
 	t.QueueMode = state.QueueMode
@@ -189,6 +199,22 @@ func (t *Task) setLLMState(profileID, activeID *int64, profileIDs []int64, revis
 	t.LLMFailoverState = state
 	t.LLMFailoverReason = reason
 	return true
+}
+
+// nextRotatedProfile returns the chain head for the NEXT claimed worker
+// intent under per-intent rotation (#85): strict round-robin over the task's
+// chain. The active head stays authoritative for every non-worker role and for
+// failover ordering; rotation only distributes worker lanes across heads.
+func (t *Task) nextRotatedProfile() (int64, bool) {
+	t.rotateMu.Lock()
+	defer t.rotateMu.Unlock()
+	ids := t.LLMProfileIDs
+	if len(ids) == 0 {
+		return 0, false
+	}
+	pick := ids[t.rotateNext%len(ids)]
+	t.rotateNext++
+	return pick, true
 }
 
 // DeleteTaskOptions controls cleanup of data stored outside the task's own
@@ -467,7 +493,7 @@ func (m *Manager) TrafficEnabled() bool {
 }
 
 // SetTrafficEnabled persists and applies the traffic-capture toggle. Callers must
-// rebuild the agents (applyLLM) afterwards so the new proxy/tools/prompt take hold.
+// rebuild the agents afterwards so the new proxy/tools/prompt take hold.
 func (m *Manager) SetTrafficEnabled(on bool) error {
 	if err := m.pg.SetBool(settingTrafficCapture, on); err != nil {
 		return err
@@ -477,7 +503,7 @@ func (m *Manager) SetTrafficEnabled(on bool) error {
 	m.mu.Unlock()
 	// Inject (on) or strip (off) the recording proxy + CA on the browser MCP so
 	// Playwright routes through the MITM. Must run after the flag flip above, since
-	// ProxyAddr/ProxyCACert honor it. putSettings rebuilds agents next (applyLLM),
+	// ProxyAddr/ProxyCACert honor it. putSettings rebuilds agents next,
 	// which re-spawns the MCP with the new args/env.
 	m.syncBrowserMCPProxy()
 	return nil
@@ -493,7 +519,7 @@ func (m *Manager) LLMRecordEnabled() bool {
 }
 
 // SetLLMRecordEnabled persists and applies the LLM-record toggle. Effective at
-// once — no applyLLM needed, since the recorder reads the flag on every call.
+// once, since the recorder reads the flag on every call.
 func (m *Manager) SetLLMRecordEnabled(on bool) error {
 	if err := m.pg.SetBool(settingLLMRecord, on); err != nil {
 		return err
@@ -518,7 +544,7 @@ func (m *Manager) SetNoaCompaction(on bool) error {
 }
 
 // LLMPoolEnabled reports whether LLM failover ("polling") is on (default off;
-// settings.llm_pool_enabled). Read when the provider chain is built (applyLLM),
+// settings.llm_pool_enabled). Read when the provider chain is built,
 // so a change requires a rebuild — putSettings does that.
 func (m *Manager) LLMPoolEnabled() bool {
 	if m.pg == nil {
@@ -528,7 +554,7 @@ func (m *Manager) LLMPoolEnabled() bool {
 }
 
 // SetLLMPoolEnabled persists the failover toggle. Callers rebuild agents
-// (applyLLM) afterwards so it takes effect.
+// afterwards so it takes effect.
 func (m *Manager) SetLLMPoolEnabled(on bool) error { return m.pg.SetBool(settingLLMPoolOn, on) }
 
 func (m *Manager) LLMRefusalFallbackEnabled() bool {
@@ -553,7 +579,7 @@ func (m *Manager) LLMPoolBindFallback() bool {
 }
 
 // SetLLMPoolBindFallback persists the bound-profile fallback toggle. Callers
-// rebuild agents (applyLLM) afterwards.
+// rebuild agents afterwards.
 func (m *Manager) SetLLMPoolBindFallback(on bool) error {
 	return m.pg.SetBool(settingLLMPoolBindFallback, on)
 }
@@ -606,7 +632,7 @@ func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string) {
 
 // SetWebSearch persists and applies the web-search settings. braveKey, tavilyKey, and
 // proxy are each left untouched when nil (so toggling the switch doesn't wipe a saved
-// key/proxy; pass a pointer to "" to clear). Callers must rebuild agents (applyLLM)
+// key/proxy; pass a pointer to "" to clear). Callers must rebuild agents
 // afterwards so the settings take effect.
 func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, proxy *string) error {
 	backend = strings.TrimSpace(backend)
@@ -798,7 +824,7 @@ func (m *Manager) GlobalProxy() string {
 
 // SetGlobalProxy validates, persists and applies the global egress proxy
 // (http/https/socks5, optional user:pass; empty = direct). It updates the MITM's
-// upstream immediately; callers must rebuild agents (applyLLM) afterwards so the
+// upstream immediately; callers must rebuild agents afterwards so the
 // capture-off path (bash env / WebFetch) picks up the change too.
 func (m *Manager) SetGlobalProxy(raw string) error {
 	raw = strings.TrimSpace(raw)
@@ -858,15 +884,17 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		CategoryID: cloneInt64Ptr(pt.CategoryID), CategoryName: pt.CategoryName,
 		PinnedAt:    unixOrZero(pt.PinnedAt),
 		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused, Queued: pt.Queued,
+		PausedAt: unixOrZero(pt.PausedAt),
 		QueuedAt: unixNanoOrZero(pt.QueuedAt), QueueMode: pt.QueueMode,
 		CompletedAt: unixOrZero(pt.CompletedAt), Status: pt.Status, ParentRef: pt.ParentRef,
 		LLMProfileID:  pt.LLMProfileID,
-		LLMProfileIDs: append([]int64(nil), pt.LLMProfileIDs...), ActiveLLMProfileID: pt.ActiveLLMProfileID,
+		LLMProfileIDs: append([]int64(nil), pt.LLMProfileIDs...), ActiveLLMProfileID: pt.ActiveLLMProfileID, LLMRotate: pt.LLMRotate,
 		LLMChainRevision: pt.LLMChainRevision,
 		LLMFailoverState: pt.LLMFailoverState, LLMFailoverReason: pt.LLMFailoverReason,
 		SourceTaskIDs:  append([]int64(nil), pt.SourceTaskIDs...),
 		CompanyIDs:     append([]int64(nil), pt.CompanyIDs...),
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
+		PlanQuietMode:   pt.PlanQuietMode,
 		CoverageEnabled: pt.CoverageEnabled,
 		FirstRunAt:      unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic), notify: make(chan struct{}, 1),
@@ -896,6 +924,9 @@ func (m *Manager) UpdateTaskMetadata(taskID string, patch pgdb.TaskPatch) (*Task
 		state.Name = updated.Name
 		state.PinnedAt = unixOrZero(updated.PinnedAt)
 	})
+	// Live switch (#86): runRound reads the flag per round, so the next
+	// planning round (edge or heartbeat) already respects the new value.
+	task.PlanQuietMode = updated.PlanQuietMode
 	return task, nil
 }
 
@@ -1214,8 +1245,10 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	    END,
 	    deadline_at=CASE
 	        WHEN $6='timeout' AND $2 NOT IN ('done','failed','timeout') THEN NULL
+	        WHEN paused_at IS NOT NULL AND deadline_at IS NOT NULL THEN deadline_at + (now() - paused_at)
 	        ELSE deadline_at
-	    END
+	    END,
+	    paused_at=NULL
 	WHERE id=$1 AND deleted_at IS NULL AND status=$6
 	RETURNING queued_at, queue_mode, completed_at, first_run_at, deadline_at`, n, status, queued, mode, preservePosition, expectedStatus).
 		Scan(&queuedAt, &committedMode, &completedAt, &firstRunAt, &deadlineAt)
@@ -1231,6 +1264,7 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Status = status
 			state.Paused = false
+			state.PausedAt = 0
 			state.Queued = queued
 			state.QueueMode = committedMode
 			state.QueuedAt = 0
@@ -1267,11 +1301,12 @@ func (m *Manager) ApplyTaskPause(id string) error {
 		return err
 	}
 	var mode string
+	var pausedAt sql.NullTime
 	err = m.pg.QueryRow(`UPDATE tasks
-		SET paused=true, queued=false, queued_at=NULL
+		SET paused=true, paused_at=COALESCE(paused_at, now()), queued=false, queued_at=NULL
 		WHERE id=$1 AND deleted_at IS NULL AND paused=false
 		  AND status NOT IN ('done','failed','timeout')
-		RETURNING COALESCE(queue_mode,'')`, n).Scan(&mode)
+		RETURNING COALESCE(queue_mode,''), paused_at`, n).Scan(&mode, &pausedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("task %s is unavailable for pause", id)
 	}
@@ -1282,6 +1317,9 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	if t := m.tasks[id]; t != nil {
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Paused = true
+			if pausedAt.Valid {
+				state.PausedAt = pausedAt.Time.Unix()
+			}
 			state.Queued = false
 			state.QueuedAt = 0
 			state.QueueMode = mode
@@ -1427,6 +1465,7 @@ func (m *Manager) SetTaskStatusGuarded(id, status string) (won bool, err error) 
 		})
 	}
 	m.mu.Unlock()
+	m.extractLessons(n)
 	return true, nil
 }
 
@@ -1458,7 +1497,20 @@ func (m *Manager) SetTaskStatus(id, status string) error {
 		})
 	}
 	m.mu.Unlock()
+	if pgdb.IsTerminal(status) {
+		m.extractLessons(n)
+	}
 	return nil
+}
+
+// extractLessons derives RSI candidate lessons from a task that just reached a
+// terminal status. It is best-effort: a lesson failure must never fail a status
+// update. The extraction is idempotent (evidence unique key), so a restart or a
+// manual backfill cannot inflate support.
+func (m *Manager) extractLessons(taskID int64) {
+	if _, err := m.pg.ExtractLessonsForTask(context.Background(), taskID); err != nil {
+		log.Printf("[rsi] lesson extraction failed for task %d: %v", taskID, err)
+	}
 }
 
 // DeleteTask removes a task and optionally its related global data. Traffic has
@@ -1497,7 +1549,7 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 			if len(p.TrafficHosts) == 0 {
 				return nil
 			}
-			trafficStage, err = m.traffic.StageDeleteHostsExact(p.TrafficHosts)
+			trafficStage, err = m.traffic.StageDeleteHostsExact(p.TrafficHosts, n)
 			if err != nil {
 				return err
 			}

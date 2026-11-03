@@ -252,6 +252,10 @@ function InterceptCard({ step, getDetail }: { step: Activity; getDetail: (seq: n
       toast.success(decision === "allowed" ? t("approval.allowedToast") : t("approval.deniedToast"));
     } catch (e) {
       toast.error((e as Error).message);
+      // The card only knows what the last poll told it. If the decide failed
+      // because the request already expired or another client resolved it, the
+      // card would sit on "pending" forever, so ask again.
+      setRetry((n) => n + 1);
     } finally {
       setDeciding(false);
     }

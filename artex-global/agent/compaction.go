@@ -324,8 +324,16 @@ func (c *Compactor) tryStart(expID int64) bool {
 func (c *Compactor) finish(expID int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.running[expID] = false
-	c.lastRun[expID] = time.Now()
+	// Both maps are keyed by exploration and would otherwise keep one entry per
+	// task for the process lifetime: tryStart treats a missing key as "not
+	// running", and a lastRun past the cooldown can no longer block a start.
+	delete(c.running, expID)
+	now := time.Now()
+	for id, at := range c.lastRun {
+		if now.Sub(at) >= c.cooldown {
+			delete(c.lastRun, id)
+		}
+	}
 }
 
 // --- helpers: db ↔ coldgraph ---

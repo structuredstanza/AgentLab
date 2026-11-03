@@ -15,9 +15,10 @@ services:
     restart: unless-stopped
 
   artex:
-    # Image this fork publishes to GitHub Container Registry on every release tag (v*)
-    # (the docker job in .github/workflows/release.yml). The upstream autumn27/artex was removed from Docker Hub.
-    image: ghcr.io/jiwoochris/artex-global:${ARTEX_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agentlab/artex:${ARTEX_TAG:-local}
     depends_on:
       postgres:
         condition: service_healthy

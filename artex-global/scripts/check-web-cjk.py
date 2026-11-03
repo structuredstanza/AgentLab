@@ -71,9 +71,22 @@ EXCEPTIONS: list = [
 
 
 def repo_root() -> str:
-    return subprocess.check_output(
-        ["git", "rev-parse", "--show-toplevel"], text=True
-    ).strip()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.abspath(os.path.join(script_dir, ".."))
+    if os.path.isdir(os.path.join(candidate, "web")):
+        return candidate
+    try:
+        git_top = subprocess.check_output(
+            ["git", "-C", script_dir, "rev-parse", "--show-toplevel"],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        if os.path.isdir(os.path.join(git_top, "artex-global", "web")):
+            return os.path.join(git_top, "artex-global")
+        if os.path.isdir(os.path.join(git_top, "web")):
+            return git_top
+    except Exception:
+        pass
+    return candidate
 
 
 def find_out_dir(root: str) -> str:

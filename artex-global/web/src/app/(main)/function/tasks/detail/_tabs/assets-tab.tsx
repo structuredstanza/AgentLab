@@ -41,6 +41,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
+import { taskAssetSourceLabel } from "@/lib/task-assets";
 import type { Asset, NewAssetType } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -134,23 +135,24 @@ function Chips({ items, mono }: { items: string[]; mono?: boolean }) {
 }
 
 function SourceCell({ asset }: { asset: Asset }) {
-  const t = useTranslations("taskDetail.assetsTab");
   const source = firstText([asset.task_source], "legacy");
-  const sourceLabel = t.has(`source.label.${source}`) ? t(`source.label.${source}`) : source;
-  const summary = firstText([asset.task_source_summary], t("source.legacySummary"));
+  const summary = firstText(
+    [asset.task_source_summary],
+    "Migrated from a historical task's asset association; no more detailed source information",
+  );
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Badge variant="outline" className="max-w-28 shrink-0 font-normal">
-          <span className="truncate">{sourceLabel}</span>
+          <span className="truncate">{taskAssetSourceLabel(source)}</span>
         </Badge>
       </TooltipTrigger>
       <TooltipContent side="left" align="start" className="max-w-sm">
         <div className="flex min-w-0 flex-col gap-1">
-          <span className="font-medium">{sourceLabel}</span>
+          <span className="font-medium">{taskAssetSourceLabel(source)}</span>
           <span className="[overflow-wrap:anywhere]">{summary}</span>
           {asset.task_source_node_id ? (
-            <span className="font-mono opacity-80">{t("source.node", { id: asset.task_source_node_id })}</span>
+            <span className="font-mono opacity-80">Source node #{asset.task_source_node_id}</span>
           ) : null}
         </div>
       </TooltipContent>

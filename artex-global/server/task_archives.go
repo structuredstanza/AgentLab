@@ -120,6 +120,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		return errors.New("Another archive or deletion operation is already in progress for this task")
 	}
 	committed := false
+	var archivedHostCounts map[string]int64
 	defer func() {
 		if !committed {
 			s.abortTaskDelete(taskID)
@@ -174,11 +175,12 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	}
 	if s.m.traffic != nil && len(snapshot.Hosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "snapshot_traffic", 38)
-		trafficCount, err := s.m.traffic.ExportHosts(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
+		trafficCount, exportedPerHost, err := s.m.traffic.ExportHostsCounted(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
 		if err != nil {
 			return err
 		}
 		snapshot.DataCounts["traffic"] = trafficCount
+		archivedHostCounts = exportedPerHost
 	}
 	archivePath := taskArchivePath(s.m.dir, job.ID, taskID)
 	evidenceSnapshots, err := pgdb.ArchiveEvidenceSnapshots(snapshot)
@@ -202,9 +204,16 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	var trafficStage *traffic.HostDeleteStage
 	if s.m.traffic != nil && len(snapshot.ExclusiveHosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "compact_traffic", 68)
-		trafficStage, err = s.m.traffic.StageDeleteHostsExactForArchive(snapshot.ExclusiveHosts, job.ID, job.TaskID)
+		trafficStage, err = s.m.traffic.StageDeleteHostsExactForArchive(snapshot.ExclusiveHosts, job.ID, job.TaskID, archivedHostCounts)
 		if err != nil {
-			return err
+			if errors.Is(err, traffic.ErrTrafficGrewDuringArchive) {
+				// The package is complete; leaving the extra exchanges in the hot
+				// store is the safe outcome. Record it and finish the archive.
+				_ = s.m.pg.AppendTaskArchiveWarning(job.ID, err.Error())
+				trafficStage = nil
+			} else {
+				return err
+			}
 		}
 		defer func() {
 			if !committed {

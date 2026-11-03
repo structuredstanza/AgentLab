@@ -18,10 +18,12 @@ func TestLegacySSEClientDiscoverAndCall(t *testing.T) {
 	var flusher http.Flusher
 	sessions := make(map[string]bool)
 	messages := make(chan []byte, 8)
+	streamExited := make(chan struct{})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sse":
+			defer close(streamExited)
 			id := "test-session"
 			mu.Lock()
 			sessions[id] = true
@@ -93,15 +95,36 @@ func TestLegacySSEClientDiscoverAndCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	tools, err := c.Tools(ctx)
+	cancel()
+	callCtx, callCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer callCancel()
+	tools, err := c.Tools(callCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(tools) != 1 || !strings.Contains(tools[0].Name(), "echo") {
 		t.Fatalf("unexpected tools: %#v", tools)
 	}
-	got, err := c.Call(ctx, "echo", map[string]any{"value": "x"})
+	got, err := c.Call(callCtx, "echo", map[string]any{"value": "x"})
 	if err != nil || got != "ok" {
 		t.Fatalf("Call() = %q, %v", got, err)
+	}
+	select {
+	case <-streamExited:
+		t.Fatal("setup context cancellation closed the established stream")
+	default:
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-streamExited:
+	case <-time.After(time.Second):
+		t.Fatal("Close left the SSE request alive")
+	}
+	select {
+	case <-c.streamDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close left the SSE reader alive")
 	}
 }

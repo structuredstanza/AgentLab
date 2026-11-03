@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/artex/sdkbridge"
+	"github.com/Autumn-27/artex/nativeproxy"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
@@ -31,12 +31,18 @@ import (
 
 const FormatAntigravity llm.Format = "antigravity"
 
+const FormatOllama llm.Format = "ollama"
+
+const DefaultOllamaBaseURL = "http://127.0.0.1:11434/v1"
+
+const ollamaPlaceholderKey = "ollama"
+
 // Config describes the LLM backend resolved from the environment.
 type Config struct {
 	Format  llm.Format
 	BaseURL string
 	APIKey  string
-	// AuthMethod selects API-key or SDK-bridge subscription credentials.
+	// AuthMethod selects API-key or native proxy subscription credentials.
 	AuthMethod string
 	Model      string
 	// Proxy routes all LLM requests through the given proxy URL (http/https/socks5,
@@ -114,6 +120,9 @@ const (
 	maxWindowK     = 1000 // cap at 1M tokens (user request)
 )
 
+// NeedsAPIKey reports whether this provider format requires an API key.
+func (c Config) NeedsAPIKey() bool { return c.Format != FormatOllama }
+
 // CompactionWindow returns the model context window in TOKENS for compaction
 // thresholds, resolved from the user-configured size (ContextWindowK). 0/unset →
 // a 200K default; otherwise clamped to [32K, 1M] so compaction stays effective.
@@ -152,9 +161,10 @@ func FromEnv() (Config, bool) {
 	prov := os.Getenv("ARTEX_LLM_PROVIDER")
 	anthKey := os.Getenv("ANTHROPIC_API_KEY")
 	oaiKey := os.Getenv("OPENAI_API_KEY")
-
 	if prov == "" {
 		switch {
+		case os.Getenv("OLLAMA_HOST") != "":
+			prov = "ollama"
 		case anthKey != "":
 			prov = "anthropic"
 		case oaiKey != "":
@@ -164,12 +174,15 @@ func FromEnv() (Config, bool) {
 		}
 	}
 
+	baseURL := os.Getenv("ARTEX_LLM_BASE_URL")
+	if strings.TrimSpace(baseURL) == "" && prov == "ollama" {
+		baseURL = os.Getenv("OLLAMA_HOST")
+	}
 	c := Config{
-		BaseURL: os.Getenv("ARTEX_LLM_BASE_URL"),
+		BaseURL: baseURL,
 		Model:   os.Getenv("ARTEX_LLM_MODEL"),
 		Proxy:   strings.TrimSpace(os.Getenv("ARTEX_LLM_PROXY")),
-		// Streaming is on by default; setting ARTEX_LLM_STREAM=false/0/off explicitly disables it and uses non-streaming.
-		Stream: !isFalsy(os.Getenv("ARTEX_LLM_STREAM")),
+		Stream:  !isFalsy(os.Getenv("ARTEX_LLM_STREAM")),
 	}
 	switch prov {
 	case "openai":
@@ -184,6 +197,15 @@ func FromEnv() (Config, bool) {
 		if c.Model == "" {
 			c.Model = "gpt-5"
 		}
+	case "ollama":
+		c.Format = FormatOllama
+		if c.BaseURL == "" {
+			c.BaseURL = DefaultOllamaBaseURL
+		}
+		c.BaseURL = normalizeOllamaBaseURL(c.BaseURL)
+		if c.Model == "" {
+			c.Model = "llama3.2"
+		}
 	default:
 		c.Format = llm.FormatAnthropic
 		c.APIKey = anthKey
@@ -191,7 +213,7 @@ func FromEnv() (Config, bool) {
 			c.Model = "claude-opus-4-8"
 		}
 	}
-	if c.APIKey == "" {
+	if c.APIKey == "" && c.NeedsAPIKey() {
 		return Config{}, false
 	}
 	return c, true
@@ -230,6 +252,13 @@ func ConfigFrom(provider, model, baseURL, apiKey, proxy string) Config {
 		if c.Model == "" {
 			c.Model = "gemini-3.1-pro"
 		}
+	case "ollama":
+		c.Format = FormatOllama
+		c.BaseURL = normalizeOllamaBaseURL(c.BaseURL)
+		if c.Model == "" {
+			c.Model = "llama3.2"
+		}
+
 	default:
 		c.Format = llm.FormatAnthropic
 		// provider appends "/v1/messages".
@@ -239,6 +268,22 @@ func ConfigFrom(provider, model, baseURL, apiKey, proxy string) Config {
 		}
 	}
 	return c
+}
+
+func normalizeOllamaBaseURL(raw string) string {
+	base := strings.TrimRight(strings.TrimSpace(raw), "/")
+	base = strings.TrimSuffix(base, "/chat/completions")
+	base = strings.TrimRight(base, "/")
+	if base == "" {
+		return DefaultOllamaBaseURL
+	}
+	if !strings.Contains(base, "://") {
+		base = "http://" + base
+	}
+	if !strings.HasSuffix(base, "/v1") {
+		base += "/v1"
+	}
+	return base
 }
 
 // isFalsy reports whether an env-var string explicitly requests "off". Empty or
@@ -251,7 +296,7 @@ func isFalsy(s string) bool {
 	return false
 }
 
-// Provider returns the short provider name ("anthropic", "openai", or a native format).
+// Provider returns the short provider name ("anthropic", "openai", "ollama", or a native format).
 func (c Config) Provider() string {
 	switch c.Format {
 	case llm.FormatOpenAI:
@@ -260,19 +305,24 @@ func (c Config) Provider() string {
 		return "openai-responses"
 	case FormatAntigravity:
 		return "antigravity"
+	case FormatOllama:
+		return "ollama"
 	}
 	return "anthropic"
 }
 
-// sdkBridgeProviders maps SDK-bridge auth methods to the bridge provider id and the provider format each requires.
-var sdkBridgeProviders = map[string]struct {
+// nativeProviders maps subscription auth methods to native executor providers and formats.
+var nativeProviders = map[string]struct {
 	provider string
 	format   llm.Format
 }{
-	"claude_code": {"anthropic", llm.FormatAnthropic},
-	"codex":       {"openai-codex", llm.FormatOpenAIResponses},
-	"antigravity": {"google-antigravity", FormatAntigravity},
+	"claude_code": {"claude", llm.FormatAnthropic},
+	"codex":       {"codex", llm.FormatOpenAIResponses},
+	"antigravity": {"antigravity", FormatAntigravity},
 }
+
+// NativeProviderName returns the canonical subscription executor, or empty for API-key providers.
+func (c Config) NativeProviderName() string { return nativeProviders[c.AuthMethod].provider }
 
 // NewProvider builds an API-key llm.Provider from the config. When a rate is set, the
 // limiter lives on the single provider instance — so planner + all workers +
@@ -291,10 +341,18 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	if c.Format == llm.FormatOpenAIResponses && c.ReasoningEffort == "" {
 		log.Printf("llm: model %s has no reasoning_effort, so reasoning summaries are not requested", c.Model)
 	}
+	wireFormat, baseURL, apiKey := c.Format, c.BaseURL, c.APIKey
+	if wireFormat == FormatOllama {
+		wireFormat = llm.FormatOpenAI
+		baseURL = normalizeOllamaBaseURL(baseURL)
+		if strings.TrimSpace(apiKey) == "" {
+			apiKey = ollamaPlaceholderKey
+		}
+	}
 	lc := llm.Config{
-		Format:     c.Format,
-		BaseURL:    c.BaseURL,
-		APIKey:     c.APIKey,
+		Format:     wireFormat,
+		BaseURL:    baseURL,
+		APIKey:     apiKey,
 		Model:      c.Model,
 		HTTPClient: client,
 	}
@@ -314,31 +372,28 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	return llm.NewProvider(lc)
 }
 
-// NewProviderForProfile builds the provider for a profile. API-key configs ignore bridge; SDK subscription
-// configs require it and get a Complete-only provider whose credentials stay on the host bridge.
-func (c Config) NewProviderForProfile(profileID string, bridge *sdkbridge.Client) (llm.Provider, error) {
+// NewProviderForProfile builds a provider for a profile. Subscription credentials remain on the native host proxy.
+func (c Config) NewProviderForProfile(profileID string, proxy *nativeproxy.Client) (llm.Provider, error) {
 	if c.AuthMethod == "" || c.AuthMethod == "api_key" {
 		return c.NewProvider()
 	}
-	sp, ok := sdkBridgeProviders[c.AuthMethod]
+	sp, ok := nativeProviders[c.AuthMethod]
 	if !ok {
 		return nil, fmt.Errorf("unsupported LLM authentication method")
 	}
 	if c.Format != sp.format {
 		return nil, fmt.Errorf("LLM authentication method does not match provider format")
 	}
-	if bridge == nil || profileID == "" {
-		return nil, fmt.Errorf("SDK bridge client and profile id are required")
+	if proxy == nil || profileID == "" {
+		return nil, fmt.Errorf("native proxy client and profile id are required")
 	}
-	// The bridge holds the only credentials and only forwards allowlisted options, so per-profile
-	// endpoints, proxies, and API keys cannot be honored on this path; reject them instead of dropping them.
 	if c.BaseURL != "" || c.APIKey != "" || c.Proxy != "" {
-		return nil, fmt.Errorf("base URL, API key, and proxy are not supported for SDK subscription profiles")
+		return nil, fmt.Errorf("base URL, API key, and proxy are not supported for native subscription profiles")
 	}
 	if c.SessionHeaderKey != "" {
-		return nil, fmt.Errorf("session header is not supported for SDK subscription profiles")
+		return nil, fmt.Errorf("session header is not supported for native subscription profiles")
 	}
-	p := &sdkProvider{bridge: bridge, profileID: profileID, provider: sp.provider, model: c.Model, thinking: c.ThinkingType, effort: c.ReasoningEffort}
+	p := &nativeProvider{proxy: proxy, profileID: profileID, provider: sp.provider, model: c.Model, thinking: c.ThinkingType, effort: c.ReasoningEffort}
 	return llm.RateLimited(p, llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}), nil
 }
 
@@ -555,9 +610,9 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	return testConnection(ctx, c, prov, !c.Stream, true)
 }
 
-// TestConnectionForProfile tests an SDK-bridge subscription profile. The SDK path is Complete-only, so the test never streams.
-func TestConnectionForProfile(ctx context.Context, c Config, bridge *sdkbridge.Client, profileID string) (time.Duration, string, error) {
-	prov, err := c.NewProviderForProfile(profileID, bridge)
+// TestConnectionForProfile tests a native subscription profile without exposing credentials to the app.
+func TestConnectionForProfile(ctx context.Context, c Config, proxy *nativeproxy.Client, profileID string) (time.Duration, string, error) {
+	prov, err := c.NewProviderForProfile(profileID, proxy)
 	if err != nil {
 		return 0, "", err
 	}

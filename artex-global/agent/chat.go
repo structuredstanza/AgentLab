@@ -77,14 +77,14 @@ func (c *ChatAgent) SetGuard(g *guard.Guard) { c.guard = g }
 // chatWorkDirSpec returns a working-directory notice appended to every chat
 // agent's system prompt. Mirrors artifactSpec but without pentest-specific
 // wording ("payload", "grab response body") that would be odd in a general assistant.
-func chatWorkDirSpec(workDir string) string {
-	return "\n\n**File output convention**: when writing files, always write to the working directory " + workDir + " (this is the default CWD, so relative paths land here; this absolute path may also be used). Do not write to /tmp or other absolute paths."
+func chatWorkDirSpec() string {
+	return "\n\n**File output convention**: write files in the current workspace using relative paths. Relative paths resolve against the workspace directory. Do not write to /tmp or other absolute paths."
 }
 
 // chatSystem renders the DB-managed prompt body for agentKey. Custom agents have
 // no per-key in-code default, so DefaultAssistantPrompt is the render fallback.
-func chatSystem(agentKey, dataDir, workDir string) string {
-	return renderSystem(agentKey, DefaultAssistantPrompt, chatVars{DataDir: dataDir, Now: nowStr()}) + chatWorkDirSpec(workDir) + langDirective()
+func chatSystem(agentKey, dataDir string) string {
+	return renderSystem(agentKey, DefaultAssistantPrompt, chatVars{DataDir: dataDir, Now: nowStr()}) + chatWorkDirSpec() + langDirective()
 }
 
 // chatVars carries the runtime variables a custom agent's prompt may reference.
@@ -122,8 +122,9 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	ctx = WithRunInfo(ctx, RunInfo{SessionID: sessionID})
 	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
+	ctx = intercept.WithToolAliases(ctx, def.ToolAliases)
 
-	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir), def)
+	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir), def)
 	opts := agentcore.Options{
 		Provider:        c.prov,
 		SystemPrompt:    system,
@@ -169,8 +170,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	}
 	// Experimental feature: when enabled, context compression is taken over by noa (archives are kept persistently under <workDir>/noa/<SessionID>).
 	enableNoa(&opts, c.noaEnabledFn, c.workDir, "chat-"+sessionID, noaWarn("chat-"+sessionID))
-	ctx = attachSideCapture(ctx, &opts)
-	s := agentcore.NewSession(opts)
+	ctx, s := newSession(ctx, opts)
 	defer s.Close()
 	// reload prior conversation so the agent has context across turns (each Chat is
 	// a fresh session). First turn: no file yet → Resume loads nothing and proceeds.

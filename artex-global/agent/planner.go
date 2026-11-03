@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
@@ -22,6 +23,7 @@ import (
 // into the frontier. It is the sole intent generator.
 type Planner struct {
 	findingRecorder   FindingRecorder
+	guard             *guard.Guard
 	prov              llm.Provider
 	model             string
 	tx                *transcript.Store                      // raw LLM conversation persistence (nil = off)
@@ -39,6 +41,9 @@ type Planner struct {
 	noaEnabledFn      func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn       func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor         *Compactor                             // cold-node compaction (§7); nil = disabled
+	// lessonsBlock is the code-owned RSI evidence block appended after the
+	// rendered system prompt. Empty = off. Rendered by the server as data.
+	lessonsBlock string
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
@@ -51,6 +56,9 @@ type Planner struct {
 func NewPlanner(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int) *Planner {
 	return &Planner{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, todos: map[int64]*actool.TodoStore{}}
 }
+
+// SetGuard attaches the task's tool policy before planning begins.
+func (p *Planner) SetGuard(g *guard.Guard) { p.guard = g }
 
 func (p *Planner) SetCompactionWindowResolver(fn func() int) { p.windowFn = fn }
 
@@ -102,6 +110,10 @@ func (p *Planner) SetConstraintInject(fn func() bool) { p.injectConstraints = fn
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (p *Planner) wantConstraints() bool { return p.injectConstraints == nil || p.injectConstraints() }
+
+// SetLessonsBlock sets the code-owned RSI evidence block, rendered by the server
+// from outcome records; it is never editable through the prompt UI.
+func (p *Planner) SetLessonsBlock(block string) { p.lessonsBlock = block }
 
 // todoFor returns the task's persistent planning todo store, creating it on first
 // use. Shared across all of this task's planner wake-ups.
@@ -247,7 +259,7 @@ func intentSummary(ts *db.ExplorationStore, id int64) string {
 // workerOutput returns the finished worker's conclusion for an intent — the last
 // 'result' (else 'text') activity's full detail, truncated. Same source get_worker_output uses.
 func workerOutput(ts *db.ExplorationStore, id int64) string {
-	acts, _, err := ts.ActivityList(&id, 0, 1000)
+	acts, _, err := ts.ActivityPageByNode(id, 1000)
 	if err != nil {
 		return "(取输出失败)"
 	}
@@ -353,6 +365,7 @@ func plannerSystem(goal, dataDir, workDir string) string {
 // for time/heartbeat wakes). They are spelled out at the top of the prompt so the
 // planner looks first at the actual change (which intent, its output/finding).
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
+	ctx = intercept.WithTaskContext(ctx, fmt.Sprint(taskID), "planner", emit)
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
 	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
@@ -376,6 +389,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "planner", base)
 	defer cleanup()
+	ctx = intercept.WithToolAliases(ctx, def.ToolAliases)
 	// The key situation (the intent just completed + the full prefetched graph) is moved into [this turn's user input] (see input below), and the system
 	// Keep only the static planning body. move-out makes the system stable across each round, which is better for caching; the cost is that if a single round becomes longer, the situation may
 	// Compressed by compaction (planner single turns are usually short, so the risk is low). situational gets concatenated into the input below.
@@ -390,7 +404,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// The working directory for this task is <workDir>/tasks/<taskID>; create it first.
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
-	sysBody := plannerSystem(goal, p.workDir, taskDir)
+	sysBody := plannerSystem(goal, p.workDir, taskDir) + p.lessonsBlock
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // Operational constraints (if any) are injected into the system prompt to frame the exploration boundary
 	}
@@ -437,6 +451,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		Settlement:   settle,
 		NonStreaming: p.nonStreaming(), // When this profile selects non-streaming, call Provider.Complete
 		MaxTokens:    p.maxTokens(),    // 0 = no upper limit on sending; the server-side default decides
+	}
+	if p.guard != nil {
+		opts.Hooks = p.guard.Hooks()
 	}
 	if p.tx != nil { // persist raw LLM conversation; one accumulating file per task's planner
 		opts.Transcript = p.tx

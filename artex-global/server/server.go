@@ -24,8 +24,8 @@ import (
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
+	"github.com/Autumn-27/artex/nativeproxy"
 	"github.com/Autumn-27/artex/report"
-	"github.com/Autumn-27/artex/sdkbridge"
 	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/llm"
 	actool "github.com/Autumn-27/norma/tool"
@@ -126,15 +126,20 @@ type Server struct {
 	// free slots off the same snapshot and over-promote past the limit.
 	concMu sync.Mutex
 
+	// Profile changes and OAuth reconciliation share one cross-store mutation order.
+	profileMu    sync.Mutex
+	oauthApplied map[int64]string
+
 	cfgMu     sync.Mutex
 	chatAgent *agent.ChatAgent // conversational runner for the chat page; nil w/o LLM
 	// llmProv is the fully-decorated global provider (recorder + failover chain)
-	// installed by applyLLM. Task routers use it after an explicit chain is cleared.
-	llmProv   llm.Provider
-	llmDirect llm.Provider // concrete global provider, before any failover pool
-	llmCfg    agent.Config // current LLM config (key not exposed)
-	llmOn     bool
-	llmProf   string // active LLM profile name (for llmrec tagging)
+	// installed by publishLLM. Task routers use it after an explicit chain is cleared.
+	llmProv      llm.Provider
+	llmDirect    llm.Provider // concrete global provider, before any failover pool
+	llmCfg       agent.Config // current LLM config (key not exposed)
+	llmOn        bool
+	llmProf      string // active LLM profile name (for llmrec tagging)
+	llmProfileID int64
 
 	// chatBusy guards the per-task main-agent run: the chat handler launches the
 	// agent on the server's background ctx (not the request ctx) and returns
@@ -165,13 +170,12 @@ type Server struct {
 	// profChatAgents caches a per-profile ChatAgent (chat page), keyed by profile id.
 	// Built lazily on first use; invalidated when any profile is saved/activated/deleted
 	// so edits take effect.
-	profMu         sync.Mutex
 	profChatAgents map[int64]*agent.ChatAgent // per-profile ChatAgent cache (chat page)
-	sdk            *sdkbridge.Client          // SDK login bridge; nil when not configured
+	nativeProxy    *nativeproxy.Client        // native proxy login client; nil when not configured
 
 	// provByProfile caches ONE provider per LLM profile id so every agent bound or
 	// pinned to the same profile shares a single provider instance — hence one rate
-	// limiter. applyLLM also resolves the persisted global-active profile through this
+	// limiter. Runtime preparation resolves the persisted global-active profile through this
 	// cache, so global fallback and task chains do not accidentally double the
 	// configured request rate. Cleared on profile edits, then repopulated by active reapply.
 	provCacheMu   sync.Mutex
@@ -226,7 +230,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
-		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), sdk: newSDKBridge()}
+		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), nativeProxy: newNativeProxy()}
 	// First-run protection: cache the password hash and, while none is set, issue
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
 	s.bootstrapAuth()
@@ -246,11 +250,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	})
 	// Global readiness (Ready()/llm_configured): a global active LLM provider is
 	// installed. Task-level runnability is separate (ReadyFor → the resolver above).
-	s.engine.SetReadiness(func() bool {
-		s.cfgMu.Lock()
-		defer s.cfgMu.Unlock()
-		return s.llmOn
-	})
+	s.engine.SetReadiness(s.globalLLMReady)
 	// Wire DB-stored prompt templates into the agents (new scheme §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
@@ -326,21 +326,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		go s.discoverEmptyMCPsOnStartup()
 		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 	}
-	// precedence: persisted DB config > env.
-	if cfg, ok := s.loadLLMConfig(); ok {
-		if err := s.applyLLM(cfg); err != nil {
-			log.Printf("[engine] saved LLM config init failed — engine idle: %v", err)
-		} else {
-			log.Printf("[engine] LLM configured from DB: %s / %s", cfg.Provider(), cfg.Model)
-		}
-	} else if cfg, ok := agent.FromEnv(); ok {
-		if err := s.applyLLM(cfg); err != nil {
-			log.Printf("[engine] env provider init failed — engine idle: %v", err)
-		} else {
-			log.Printf("[engine] LLM configured from env: %s / %s", cfg.Provider(), cfg.Model)
-		}
-	} else {
-		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
+	if err := s.reapplyActiveProfile(); err != nil {
+		log.Printf("[engine] selected LLM unavailable — engine idle: %v", err)
 	}
 	s.restoreTaskRuntimes()
 	go s.reconcileConcurrency()
@@ -409,88 +396,44 @@ func (s *Server) agentRunSeconds(key string) int {
 	return a.RunSecs
 }
 
-// loadLLMConfig reads the active LLM profile from PG (llm_profiles).
-func (s *Server) loadLLMConfig() (agent.Config, bool) {
-	p, err := s.m.pg.ActiveProfile()
-	if err != nil || p == nil {
-		return agent.Config{}, false
-	}
-	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
-	cfg.AuthMethod = p.AuthMethod
-	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
-	cfg.ContextWindowK = p.ContextWindowK
-	cfg.ThinkingType = p.ThinkingType
-	cfg.ReasoningEffort = p.ReasoningEffort
-	// Native Gemini needs Complete to retain tool/text replay signatures.
-	cfg.Stream = p.Streaming && p.AuthMethod == "api_key" && cfg.Format != agent.FormatAntigravity
-	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
-	cfg.SessionHeaderKey = p.SessionHeaderKey
-	s.applyProfileRetry(&cfg, p)
-	if !s.profileUsable(p) {
-		return cfg, false
-	}
-	s.cfgMu.Lock()
-	s.llmProf = p.Name
-	s.cfgMu.Unlock()
-	return cfg, true
-}
-
-// saveLLMConfig persists the LLM config as the active "default" profile in PG.
-func (s *Server) saveLLMConfig(cfg agent.Config) error {
-	// cfg.Provider() maps to the persisted wire format (including Antigravity).
-	format := cfg.Provider()
-	var id int64
-	var authMethod string
-	var priority int
-	var poolExclude bool
-	streaming := true
-	var maxTokens int
-	var maxTokensField string
-	var sessionHeaderKey string
-	var retry db.RetryOverride
-	if profs, _ := s.m.pg.ListProfiles(); profs != nil {
-		for _, p := range profs {
-			if p.Name == "default" {
-				id, authMethod, priority, poolExclude, streaming = p.ID, p.AuthMethod, p.Priority, p.PoolExclude, p.Streaming
-				maxTokens, maxTokensField = p.MaxTokens, p.MaxTokensField
-				sessionHeaderKey = p.SessionHeaderKey
-				retry = p.Retry
+// saveLLMConfig persists legacy edits without moving an OAuth grant to another profile.
+func (s *Server) saveLLMConfig(ctx context.Context, cfg agent.Config) (int64, error) {
+	var p *db.LLMProfile
+	if cfg.AuthMethod != "" && cfg.AuthMethod != "api_key" {
+		var err error
+		p, err = s.m.pg.ActiveProfile()
+		if err != nil {
+			return 0, err
+		}
+		if p == nil || p.AuthMethod != cfg.AuthMethod {
+			return 0, errors.New("OAuth configuration requires its selected profile")
+		}
+	} else {
+		profiles, err := s.m.pg.ListProfiles()
+		if err != nil {
+			return 0, err
+		}
+		for _, candidate := range profiles {
+			if candidate.Name == "default" {
+				p = candidate
 				break
 			}
 		}
 	}
-	if cfg.AuthMethod != "" {
-		authMethod = cfg.AuthMethod
-	} else if cfg.APIKey != "" {
-		authMethod = "api_key"
+	if p == nil {
+		p = &db.LLMProfile{Name: "default", Streaming: true}
 	}
-	newID, err := s.m.pg.SaveProfile(&db.LLMProfile{
-		ID: id, Name: "default", Format: format, AuthMethod: authMethod, Model: cfg.Model, BaseURL: cfg.BaseURL, Proxy: cfg.Proxy,
-		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
-		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
-		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
-		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
-		Retry: retry,
+	p.Format, p.AuthMethod, p.Model = cfg.Provider(), cfg.AuthMethod, cfg.Model
+	p.BaseURL, p.Proxy, p.APIKey = cfg.BaseURL, cfg.Proxy, cfg.APIKey
+	p.RatePerSecond, p.RatePerMinute = cfg.RatePerSecond, cfg.RatePerMinute
+	p.ContextWindowK, p.ThinkingType, p.ReasoningEffort = cfg.ContextWindowK, cfg.ThinkingType, cfg.ReasoningEffort
+	p.Streaming = p.Streaming && (cfg.AuthMethod == "" || cfg.AuthMethod == "api_key")
+	return s.m.pg.SaveProfileWithCleanup(ctx, p, func(ctx context.Context, oldAuth string) error {
+		if oldAuth == "" || oldAuth == "api_key" || oldAuth == p.AuthMethod {
+			return nil
+		}
+		return s.disconnectNativeProxyProfile(ctx, p.ID)
 	})
-	if err != nil {
-		return err
-	}
-	return s.m.pg.SetActiveProfile(newID)
-}
-
-// reapplyActiveProfile hot-reloads the engine from the active DB profile so that
-// saving or activating a profile takes effect without a restart. Best-effort:
-// logs on failure and leaves the running engine untouched.
-func (s *Server) reapplyActiveProfile() {
-	cfg, ok := s.loadLLMConfig()
-	if !ok {
-		return
-	}
-	if err := s.applyLLM(cfg); err != nil {
-		log.Printf("[engine] reapply active profile failed: %v", err)
-		return
-	}
-	log.Printf("[engine] LLM reapplied from active profile: %s / %s", cfg.Provider(), cfg.Model)
 }
 
 // webSearchFor gates the global web-search opts (backend/key) by an agent's own
@@ -504,7 +447,7 @@ func (s *Server) webSearchFor(key string) agent.WebSearchOpts {
 }
 
 // nonStreamingResolver returns a resolver capturing a profile's streaming choice.
-// The agents read it per run; a profile change rebuilds the agents (applyLLM),
+// The agents read it per run; a profile change rebuilds the agents,
 // so the captured value is always the one in effect for this build.
 func nonStreamingResolver(cfg agent.Config) func() bool {
 	nonStreaming := !cfg.Stream
@@ -517,72 +460,6 @@ func maxTokensResolver(cfg agent.Config) func() int {
 	return func() int { return maxTokens }
 }
 
-// applyLLM (re)builds the planner/worker/main-agent from cfg and installs them on
-// the running engine as the GLOBAL active pair. Safe to call at runtime (UI configures LLM).
-func (s *Server) applyLLM(cfg agent.Config) error {
-	var prov llm.Provider
-	// A persisted active profile must use the same cached provider as task chains
-	// and Agent bindings, otherwise each path owns a separate rate limiter.
-	if active, _ := s.m.pg.ActiveProfile(); active != nil {
-		if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
-			prov, _, _ = s.providerForProfile(active.ID)
-		}
-	}
-	if prov == nil {
-		var err error
-		prov, err = cfg.NewProvider()
-		if err != nil {
-			return err
-		}
-		// Non-persisted/env configs do not have a profile cache key.
-		s.cfgMu.Lock()
-		profName := s.llmProf
-		s.cfgMu.Unlock()
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
-		prov = bindSideProvider(prov, cfg, 0, profName)
-	}
-	s.cfgMu.Lock()
-	s.llmDirect = prov
-	s.cfgMu.Unlock()
-	// LLM polling (off by default): wraps the active configuration in a failover chain, so that when the current configuration is unavailable it automatically switches to the next one.
-	// Only affects the path that "uses the global active configuration" — agent bindings / task pin go through providerForProfile,
-	// and by default still have exclusive use of that configuration (see poolForBinding). When disabled or when no fallback is available, the original provider is returned and behavior is unchanged.
-	if act, err := s.m.pg.ActiveProfile(); err == nil && act != nil {
-		prov = s.poolForActive(act.ID, prov, cfg)
-	}
-	// No global planner/worker pair: every task runs on its own task-routed pair
-	// (agentsForTask), resolved through the engine's authoritative resolver. Global
-	// readiness (Ready()/llm_configured) is reported from s.llmOn, set below.
-
-	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
-	win := cfg.CompactionWindow()
-	// chat stays the GLOBAL fallback since one ChatAgent serves many agent keys — its
-	// per-agent binding is resolved at Chat time (runConversationSync →
-	// chatAgentForProfile). The main-agent has no global instance: each task builds its
-	// own via agentsForTask (task-routed), so nothing is constructed for it here.
-	s.cfgMu.Lock()
-	// chat agent serves MANY custom agents by key → it holds the GLOBAL opts
-	// (backend/key) and gates Enabled per-conversation-agent at Chat time. The conversation always uses the active configuration.
-	s.chatAgent = agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, win) // chat page runner
-	s.chatAgent.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
-	s.chatAgent.SetWebSearch(s.m.WebSearchOpts())
-	s.chatAgent.SetGuard(s.chatGuard())
-	s.chatAgent.SetNonStreaming(nonStreamingResolver(cfg))
-	s.chatAgent.SetMaxTokens(maxTokensResolver(cfg))
-	s.chatAgent.SetNoaEnabled(s.m.NoaCompactionEnabled) // Experimental feature: noa context compression (read on every run)
-	s.llmProv = prov
-	s.llmCfg = cfg
-	s.llmOn = true
-	s.cfgMu.Unlock()
-	s.invalidateTaskAgents()
-
-	// wake the active task so a task created while idle starts exploring.
-	if t := s.m.ActiveTask(); t != nil {
-		t.Notify()
-	}
-	return nil
-}
-
 // loadProfileConfig builds an agent.Config from a specific profile and its configured credentials.
 // ok=false when the profile is missing or has no usable credential.
 func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
@@ -590,6 +467,14 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	if err != nil || p == nil {
 		return agent.Config{}, false
 	}
+	cfg := s.configForProfile(p)
+	if !s.profileUsable(p) {
+		return cfg, false
+	}
+	return cfg, true
+}
+
+func (s *Server) configForProfile(p *db.LLMProfile) agent.Config {
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.AuthMethod = p.AuthMethod
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
@@ -600,10 +485,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
-	if !s.profileUsable(p) {
-		return cfg, false
-	}
-	return cfg, true
+	return cfg
 }
 
 // effectiveProfileForAgent resolves the LLM profile id an agent should run on, by
@@ -656,17 +538,29 @@ func (s *Server) chatUnavailableReason() string {
 // ok=false when the profile is missing/invalid → caller falls back to the global pair.
 func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool) {
 	s.provCacheMu.Lock()
+	generation := s.provCacheGen
 	if e := s.provByProfile[id]; e != nil {
 		s.provCacheMu.Unlock()
+		if e.cfg.AuthMethod != "" && e.cfg.AuthMethod != "api_key" {
+			if _, usable := s.loadProfileConfig(id); !usable {
+				s.clearLLMForProfile(id, generation)
+				return nil, agent.Config{}, false
+			}
+			s.provCacheMu.Lock()
+			current := s.provByProfile[id] == e
+			s.provCacheMu.Unlock()
+			if !current {
+				return s.providerForProfile(id)
+			}
+		}
 		return e.prov, e.cfg, true
 	}
-	generation := s.provCacheGen
 	s.provCacheMu.Unlock()
 	cfg, ok := s.loadProfileConfig(id)
 	if !ok {
 		return nil, agent.Config{}, false
 	}
-	prov, err := cfg.NewProviderForProfile(strconv.FormatInt(id, 10), s.sdk)
+	prov, err := cfg.NewProviderForProfile(strconv.FormatInt(id, 10), s.nativeProxy)
 	if err != nil {
 		log.Printf("[engine] build provider for LLM profile %d failed: %v", id, err)
 		return nil, agent.Config{}, false
@@ -674,6 +568,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	// Wrap with recorder, tagged with this profile's name.
 	if p, _ := s.m.pg.ProfileByID(id); p != nil {
 		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = s.withNativeHistory(prov, id, cfg)
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
 	s.provCacheMu.Lock()
@@ -703,13 +598,14 @@ func (s *Server) providerForProfileFallback(id int64, model string, effort strin
 	if effort != "" {
 		cfg.ReasoningEffort = effort
 	}
-	prov, err := cfg.NewProviderForProfile(strconv.FormatInt(id, 10), s.sdk)
+	prov, err := cfg.NewProviderForProfile(strconv.FormatInt(id, 10), s.nativeProxy)
 	if err != nil {
 		log.Printf("[engine] build fallback provider for LLM profile %d (model %s) failed: %v", id, model, err)
 		return nil, agent.Config{}, false
 	}
 	if p, _ := s.m.pg.ProfileByID(id); p != nil {
 		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = s.withNativeHistory(prov, id, cfg)
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
 	return prov, cfg, true
@@ -718,10 +614,20 @@ func (s *Server) providerForProfileFallback(id int64, model string, effort strin
 // chatAgentForProfile returns a ChatAgent built from a specific LLM profile, cached
 // per profile id. Returns nil if the profile is missing or has no API key.
 func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
-	s.profMu.Lock()
+	s.provCacheMu.Lock()
 	cached := s.profChatAgents[id]
-	s.profMu.Unlock()
+	generation := s.provCacheGen
+	s.provCacheMu.Unlock()
 	if cached != nil {
+		if _, _, ok := s.providerForProfile(id); !ok {
+			return nil
+		}
+		s.provCacheMu.Lock()
+		current := generation == s.provCacheGen
+		s.provCacheMu.Unlock()
+		if !current {
+			return s.chatAgentForProfile(id)
+		}
 		return cached
 	}
 	prov, cfg, ok := s.providerForProfile(id)
@@ -736,13 +642,17 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	ca.SetNonStreaming(nonStreamingResolver(cfg))
 	ca.SetMaxTokens(maxTokensResolver(cfg))
 	ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // Experimental feature: noa context compression (read on every run)
-	s.profMu.Lock()
+	s.provCacheMu.Lock()
+	if generation != s.provCacheGen {
+		s.provCacheMu.Unlock()
+		return s.chatAgentForProfile(id)
+	}
 	if ex := s.profChatAgents[id]; ex != nil { // lost the race → keep the winner
 		ca = ex
 	} else {
 		s.profChatAgents[id] = ca
 	}
-	s.profMu.Unlock()
+	s.provCacheMu.Unlock()
 	return ca
 }
 
@@ -750,10 +660,8 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 // save/activate/delete — or an agent's binding change — rebuilds pinned tasks' agents
 // (and re-resolves each agent's bound model) on their next round.
 func (s *Server) invalidateProfileAgents() {
-	s.profMu.Lock()
-	s.profChatAgents = map[int64]*agent.ChatAgent{}
-	s.profMu.Unlock()
 	s.provCacheMu.Lock()
+	s.profChatAgents = map[int64]*agent.ChatAgent{}
 	s.provCacheGen++
 	s.provByProfile = map[int64]*provEntry{}
 	s.provCacheMu.Unlock()
@@ -782,15 +690,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/logs/history", s.getLogsHistory)
 	mux.HandleFunc("GET /api/logs/stream", s.streamLogs)
 
-	// One-click page update. It goes through the default JWT authentication (auth.go only lets /api/auth/* through and
-	// /api/health), so the interfaces of these changes themselves naturally require login.
-	mux.HandleFunc("GET /api/update/check", s.updateCheck)
-	mux.HandleFunc("POST /api/update/apply", s.updateApply)
-	mux.HandleFunc("POST /api/update/rollback", s.updateRollback)
-	mux.HandleFunc("GET /api/update/stream", s.updateStream)
-
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
+	mux.HandleFunc("GET /api/skill-gaps", s.skillGaps)
 	mux.HandleFunc("GET /api/task-categories", s.pgListTaskCategories)
 	mux.HandleFunc("POST /api/task-categories", s.pgCreateTaskCategory)
 	mux.HandleFunc("PATCH /api/task-categories/{id}", s.pgRenameTaskCategory)
@@ -801,6 +703,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/task-templates/{id}", s.pgUpdateTaskTemplate)
 	mux.HandleFunc("DELETE /api/task-templates/{id}", s.pgDeleteTaskTemplate)
 	mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
+	mux.HandleFunc("GET /api/tasks/{id}/outcome", s.taskOutcome)
+	mux.HandleFunc("GET /api/tasks/{id}/lessons", s.taskLessons)
+	mux.HandleFunc("POST /api/tasks/{id}/lessons/extract", s.extractTaskLessons)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
 	// Task-level asset block/allow rules
@@ -812,6 +717,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/control/batch", s.controlTasksBatch)
 	mux.HandleFunc("GET /api/task-archives", s.listTaskArchives)
 	mux.HandleFunc("GET /api/task-archives/{id}", s.getTaskArchive)
+	mux.HandleFunc("GET /api/tasks/{id}/credentials", s.listTaskCredentials)
+	mux.HandleFunc("POST /api/tasks/{id}/credentials", s.addTaskCredential)
+	mux.HandleFunc("DELETE /api/tasks/{id}/credentials/{cid}", s.deleteTaskCredential)
 	mux.HandleFunc("POST /api/tasks/{id}/archive", s.queueTaskArchive)
 	mux.HandleFunc("POST /api/tasks/archive/batch", s.queueTaskArchivesBatch)
 	mux.HandleFunc("POST /api/task-archives/{id}/restore", s.queueTaskArchiveRestore)
@@ -909,6 +817,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/traffic/all", s.deleteAllTraffic)
 	mux.HandleFunc("GET /api/traffic/exchange", s.getTrafficExchange)
 	mux.HandleFunc("GET /api/traffic/blob", s.getTrafficBlob)
+	mux.HandleFunc("POST /api/traffic/ingest", s.ingestTraffic)
 	mux.HandleFunc("GET /api/commands", s.pgListCommands)
 	mux.HandleFunc("GET /api/commands/stats", s.pgToolStats) // Aggregate call counts by tool
 	mux.HandleFunc("GET /api/llm/records", s.pgListLLMRecords)
@@ -1220,7 +1129,7 @@ func (s *Server) setActive(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -1246,7 +1155,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Action string `json:"action"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -1287,7 +1196,7 @@ func (s *Server) controlIntent(w http.ResponseWriter, r *http.Request) {
 		Reason string `json:"reason"` // Required when cancel(delete): reason for deletion
 		Mode   string `json:"mode"`   // For cancel only: soft (default, soft delete) | hard (true delete, cascades to remove exclusively owned descendants)
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
@@ -1412,6 +1321,11 @@ func (s *Server) rerunBlocked(w http.ResponseWriter, r *http.Request) {
 
 // getLLM returns the current LLM config (key never exposed).
 func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
+	s.globalLLMReady()
+	s.writeLLMConfig(w)
+}
+
+func (s *Server) writeLLMConfig(w http.ResponseWriter) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 	writeJSON(w, 200, map[string]any{
@@ -1431,6 +1345,8 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 
 // setLLM configures the LLM at runtime. A blank api_key keeps the existing key.
 func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
+	s.profileMu.Lock()
+	defer s.profileMu.Unlock()
 	var req struct {
 		Provider        string  `json:"provider"`
 		Model           string  `json:"model"`
@@ -1444,7 +1360,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		ThinkingType    string  `json:"thinking_type"`
 		ReasoningEffort string  `json:"reasoning_effort"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -1477,7 +1393,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "OAuth profile grant required")
 			return
 		}
-		if _, err := cfg.NewProviderForProfile(strconv.FormatInt(authProfile.ID, 10), s.sdk); err != nil {
+		if _, err := cfg.NewProviderForProfile(strconv.FormatInt(authProfile.ID, 10), s.nativeProxy); err != nil {
 			writeErr(w, 400, "provider init failed: "+err.Error())
 			return
 		}
@@ -1491,21 +1407,21 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.saveLLMConfig(cfg); err != nil {
-		writeErr(w, 500, "persist provider failed: "+err.Error())
+	id, err := s.saveLLMConfig(r.Context(), cfg)
+	if err != nil {
+		s.invalidateProfileAgents()
+		_ = s.reapplyActiveProfileLocked()
+		writeErr(w, 500, "Could not save the provider; refresh its profile and login status before retrying")
 		return
 	}
 	s.invalidateProfileAgents()
-	if _, ok := s.loadLLMConfig(); !ok {
-		writeErr(w, 500, "saved provider is unavailable")
-		return
-	}
-	if err := s.applyLLM(cfg); err != nil {
-		writeErr(w, 400, "provider init failed: "+err.Error())
+	if err := s.activateProfile(id); err != nil {
+		_ = s.reapplyActiveProfileLocked()
+		writeErr(w, 503, "Provider saved, but its runtime could not be activated")
 		return
 	}
 	log.Printf("[engine] LLM configured via UI: %s / %s", cfg.Provider(), cfg.Model)
-	s.getLLM(w, r)
+	s.writeLLMConfig(w)
 }
 
 // testLLM makes a real minimal completion to verify the config works.
@@ -1523,7 +1439,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		Streaming        *bool  `json:"streaming"`          // Omitted = streaming, the same default as when the profile is saved.
 		SessionHeaderKey string `json:"session_header_key"` // Non-empty = also send that custom session header during the test; the value is a one-time random session id.
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -1557,6 +1473,13 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// When the key comes from the saved profile, the request may not redirect it:
+	// a caller-supplied base_url with no key of its own would otherwise deliver a
+	// stored provider credential to an arbitrary host. Testing a different
+	// endpoint is still possible, but only with a key supplied for it.
+	if authProfile != nil && strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(authProfile.BaseURL) != "" {
+		cfg.BaseURL = strings.TrimRight(strings.TrimSpace(authProfile.BaseURL), "/")
+	}
 	if cfg.AuthMethod == "" {
 		cfg.AuthMethod = strings.TrimSpace(req.AuthMethod)
 	}
@@ -1573,7 +1496,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		testProfileID = authProfile.ID
-	} else {
+	} else if cfg.NeedsAPIKey() {
 		if cfg.APIKey == "" {
 			s.cfgMu.Lock()
 			cfg.APIKey = s.llmCfg.APIKey
@@ -1590,7 +1513,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	if cfg.AuthMethod == "api_key" {
 		lat, reply, err = agent.TestConnection(r.Context(), cfg)
 	} else {
-		lat, reply, err = agent.TestConnectionForProfile(r.Context(), cfg, s.sdk, strconv.FormatInt(testProfileID, 10))
+		lat, reply, err = agent.TestConnectionForProfile(r.Context(), cfg, s.nativeProxy, strconv.FormatInt(testProfileID, 10))
 	}
 	if err != nil {
 		message := err.Error()
@@ -1631,13 +1554,25 @@ type createTaskReq struct {
 	PlanHeartbeatSeconds int      `json:"plan_heartbeat_seconds"`      // planner heartbeat trigger interval (seconds); 0/omitted = default 600 (10 min); minimum = default = 600, values below are automatically raised to 600
 	SeedFirstIntent      *bool    `json:"seed_first_intent,omitempty"` // On creation, directly dispatch one seed intent (content = description + goal) so the worker can start running immediately without waiting for the first planner round; omitted/null = default off, following the standard plan-then-execute flow. Only enabled when explicitly passed as true (in CTF, when a challenge is often solved in one work, the planner round before starting can be skipped).
 	CoverageEnabled      *bool    `json:"coverage_enabled,omitempty"`  // Asset coverage feature; omitted/null = default on (true). false = disable coverage calculation/display/automatic scope accumulation + hide add_task_scope/list_untested_assets. Company association is not affected.
+	PlanQuietMode        *bool    `json:"plan_quiet_mode,omitempty"`   // planner quiet-mode switch (#86); omitted = default on; false = edge rounds always plan
+	LLMRotate            *bool    `json:"llm_rotate"`                  // per-intent chain-head rotation (#85); omitted/null = off (ordered failover)
 	// InterceptRules: task-level asset intercept/allow rules (entered at creation time, stored in task_intercept_rules, not in the global table).
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
+	// Credentials: test accounts declared at creation (#3). An empty password means
+	// "agent generates": the agent registers that account and records it back.
+	Credentials []taskCredentialReq `json:"credentials,omitempty"`
+}
+
+type taskCredentialReq struct {
+	Domain   string `json:"domain"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Note     string `json:"note"`
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	var req createTaskReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
@@ -1648,6 +1583,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		req.LLMProfileIDs = []int64{*req.LLMProfileID}
 	}
 	if err := s.validateTaskProfileIDs(req.LLMProfileIDs); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if err := goalGateCheck(req.Goal); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -1684,14 +1623,28 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errCreateTaskInterceptRules+err.Error())
 		return
 	}
+	credentials := make([]db.TaskCredentialInput, len(req.Credentials))
+	for i, c := range req.Credentials {
+		credentials[i] = db.TaskCredentialInput{
+			Domain: c.Domain, Username: c.Username, Password: c.Password,
+			Source: "user", Note: c.Note,
+		}
+	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
 		CoverageEnabled: req.CoverageEnabled,
+		PlanQuietMode:   req.PlanQuietMode,
+		LLMRotate:       req.LLMRotate,
 		InterceptRules:  interceptRules,
+		Credentials:     credentials,
 	})
 	if err != nil {
+		if errors.Is(err, db.ErrTaskCredentialInvalid) {
+			writeErr(w, 400, err.Error())
+			return
+		}
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {
 			writeErr(w, 400, errCreateTaskCategoryInvalid)
 			return
@@ -1700,7 +1653,8 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, errCreateTaskCompanyInvalid)
 			return
 		}
-		writeErr(w, 500, err.Error())
+		log.Printf("[task] creation failed: %v", err)
+		writeErr(w, 500, "Could not create the task")
 		return
 	}
 	log.Printf("[task] created task #%s '%s' goal: %s", t.ID, req.Description, req.Goal)
@@ -1737,7 +1691,7 @@ func (s *Server) updateTaskLLMProfiles(w http.ResponseWriter, r *http.Request) {
 		LLMProfileIDs      []int64 `json:"llm_profile_ids"`
 		ActiveLLMProfileID *int64  `json:"active_llm_profile_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
@@ -2034,7 +1988,7 @@ func (s *Server) taskScopeAdd(w http.ResponseWriter, r *http.Request) {
 		Value  string `json:"value"`
 		Reason string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, "invalid JSON")
 		return
 	}
@@ -2443,7 +2397,7 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		Name      *string `json:"name"`
 		VulnClass *string `json:"vulnclass"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
@@ -3360,7 +3314,7 @@ func (s *Server) deleteTrafficHosts(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Hosts []string `json:"hosts"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "invalid body")
 		return
 	}
@@ -3533,7 +3487,7 @@ func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
 }
 
 // putSettings applies a settings change. Toggling traffic_capture rebuilds the
-// agents (applyLLM) so the new proxy/traffic-tools/prompt state takes hold — when
+// agents so the new proxy/traffic-tools/prompt state takes hold — when
 // off, agents get no proxy config, no traffic tools, and no proxy prompt content.
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -3554,7 +3508,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
 		ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
 		// LLM polling (failover) switch, plus the "fall back to the polling chain even when binding configuration fails" switch. Both require
-		// the provider chain to be rebuilt before taking effect, via the changed → applyLLM path below.
+		// the provider chain to be rebuilt before taking effect, via active-profile reconciliation below.
 		LLMPoolEnabled            *bool `json:"llm_pool_enabled"`
 		LLMPoolBindFallback       *bool `json:"llm_pool_bind_fallback"`
 		LLMRefusalFallbackEnabled *bool `json:"llm_refusal_fallback_enabled"`
@@ -3569,7 +3523,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		NotifyBaseURL    *string `json:"notify_public_base_url"`
 		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -3586,7 +3540,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.NoaCompaction != nil {
-		// The parser is read on every run, so switching it takes effect immediately for runs started afterward, with no applyLLM rebuild needed.
+		// The parser is read on every run, so switching it takes effect immediately for runs started afterward.
 		if err := s.m.SetNoaCompaction(*req.NoaCompaction); err != nil {
 			writeErr(w, 500, err.Error())
 			return
@@ -3656,7 +3610,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.LLMRecord != nil {
-		// The recorder reads this flag on every call; toggling takes effect immediately, no applyLLM rebuild required.
+		// The recorder reads this flag on every call; toggling takes effect immediately.
 		if err := s.m.SetLLMRecordEnabled(*req.LLMRecord); err != nil {
 			writeErr(w, 500, err.Error())
 			return
@@ -3727,10 +3681,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if changed {
 		// rebuild agents so the new proxy/tools/prompt/web-search take hold (only if LLM configured).
 		s.cfgMu.Lock()
-		cfg, on := s.llmCfg, s.llmOn
+		on := s.llmOn
 		s.cfgMu.Unlock()
 		if on {
-			if err := s.applyLLM(cfg); err != nil {
+			if err := s.reapplyActiveProfile(); err != nil {
 				writeErr(w, 500, err.Error())
 				return
 			}
@@ -3752,7 +3706,7 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 		TavilyKey string `json:"tavily_search_api_key"`
 	}
 	// Empty body is fine — fall back entirely to the saved config below.
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+	if err := decode(r, &req); err != nil && err != io.EOF {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -3857,7 +3811,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		Attachments []chatAttachment `json:"attachments,omitempty"` // Method 1: uploaded files (paths relative to the task working directory)
 		Seg         *int             `json:"seg,omitempty"`         // Target main-session segment; default = latest segment
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -3928,10 +3882,8 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			}
 			maTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
 			resume := func() { s.reviveTask(t) } // set_goals adds new goals → move the task back to running
-			// Splice the list of uploaded attachments' absolute paths into the message sent to the agent, which uses Read/Bash to open the files accordingly.
-			// taskDir = the agent's working directory (CWD), consistent with chatUpload file persistence and ensureRunDir.
-			taskDir := filepath.Join(s.m.dir, "tasks", t.ID)
-			agentMsg := composeAgentMessage(agentMessage, req.Attachments, taskDir)
+			// Append workspace-relative attachment paths for the agent's Read/Bash tools.
+			agentMsg := composeAgentMessage(agentMessage, req.Attachments)
 			s.engine.BeginLLMCall(t.ID)
 			_, err := ma.Chat(ctx, maTaskID, mainSeg, s.m.Assets(), t.Store, t.Goal, agentMsg, emit, t.Notify, resume, t.NotifyGoal, t.NotifyHint)
 			s.engine.EndLLMCall(t.ID)

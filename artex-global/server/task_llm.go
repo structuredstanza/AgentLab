@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -85,26 +86,140 @@ func isQuotaExhaustedError(err error) bool {
 	return err != nil && agent.IsQuotaExhaustedMessage(err.Error())
 }
 
+// Consecutive-failure escalation (ouroboros cost-tier take, #99): quota
+// exhaustion already advances the chain, but a profile that keeps failing with
+// plain runtime errors (bad key, persistent 5xx, broken model output) would
+// otherwise burn the whole same-provider retry budget on every call. After
+// llmFailStreakThreshold consecutive failed calls on the same chain profile
+// the chain advances exactly like a quota exhaust, carrying the true reason.
+// Deliberately escalation-only: no auto-downgrade (a mid-task model swap-down
+// risks behavior drift and flapping; the operator can reset the chain).
+const llmFailStreakThreshold = 3
+
+var llmFailStreaks = struct {
+	sync.Mutex
+	m map[string]int
+}{m: map[string]int{}}
+
+func llmFailKey(taskID string, profileID int64) string {
+	return taskID + ":" + strconv.FormatInt(profileID, 10)
+}
+
+// noteLLMCallFailure records one failed call on (task, profile) and reports
+// whether the escalation threshold was just reached. The streak resets when it
+// fires and on every success, so the counter tracks consecutive failures only.
+func noteLLMCallFailure(taskID string, profileID int64) bool {
+	llmFailStreaks.Lock()
+	defer llmFailStreaks.Unlock()
+	k := llmFailKey(taskID, profileID)
+	llmFailStreaks.m[k]++
+	if llmFailStreaks.m[k] >= llmFailStreakThreshold {
+		delete(llmFailStreaks.m, k) // armed and consumed — next failure starts a fresh streak
+		return true
+	}
+	return false
+}
+
+// resetLLMFailStreaksForTest clears every streak; test isolation only (the
+// escalation counter is package-global in-memory state).
+func resetLLMFailStreaksForTest() {
+	llmFailStreaks.Lock()
+	llmFailStreaks.m = map[string]int{}
+	llmFailStreaks.Unlock()
+}
+
+func resetLLMFailStreak(taskID string, profileID int64) {
+	llmFailStreaks.Lock()
+	defer llmFailStreaks.Unlock()
+	delete(llmFailStreaks.m, llmFailKey(taskID, profileID))
+}
+
+// llmProfilePin carries a per-run chain-head override through the call stack
+// (#85 per-intent rotation). The engine sets it when launching a worker run;
+// resolution stays within the task's chain and never bypasses failover state.
+type llmProfilePinKey struct{}
+
+func withLLMProfilePin(ctx context.Context, profileID int64) context.Context {
+	return context.WithValue(ctx, llmProfilePinKey{}, profileID)
+}
+
+func llmProfilePinFrom(ctx context.Context) (int64, bool) {
+	if ctx == nil {
+		return 0, false
+	}
+	id, ok := ctx.Value(llmProfilePinKey{}).(int64)
+	return id, ok
+}
+
+type llmRequestMessagesKey struct{}
+
+func withLLMRequestMessages(ctx context.Context, messages []llm.Message) context.Context {
+	return context.WithValue(ctx, llmRequestMessagesKey{}, messages)
+}
+
+func llmRequestMessagesFrom(ctx context.Context) []llm.Message {
+	if ctx == nil {
+		return nil
+	}
+	msgs, _ := ctx.Value(llmRequestMessagesKey{}).([]llm.Message)
+	return msgs
+}
+
 type taskLLMSelection struct {
-	task      *Task
-	profileID int64
-	revision  int64
-	provider  llm.Provider
+	task         *Task
+	profileID    int64
+	revision     int64
+	provider     llm.Provider
+	nonStreaming bool
 	// retry is the retry parameters resolved from the configuration selected this time (profile override → global policy → built-in default).
 	// Retries within the same provider's safety window follow it, so switching to a different profile means switching to a different retry cadence.
-	retry            agent.RetryConfig
-	refusalFallback  []db.RefusalFallbackEntry
-	fallbackProvider func(entry db.RefusalFallbackEntry) (llm.Provider, agent.RetryConfig, error)
+	retry                agent.RetryConfig
+	refusalFallback      []db.RefusalFallbackEntry
+	fallbackProvider     func(entry db.RefusalFallbackEntry) (llm.Provider, agent.RetryConfig, error)
+	primaryModel         string
+	primaryEffort        string
+	currentModel         string
+	currentEffort        string
+	isNative             bool
+	initialFallbackIndex int
+}
+
+func (s taskLLMSelection) fallbackChoices() []agent.NativeModelChoice {
+	choices := make([]agent.NativeModelChoice, 0, len(s.refusalFallback)+1)
+	if s.primaryModel != "" {
+		choices = append(choices, agent.NativeModelChoice{Model: s.primaryModel, ReasoningEffort: s.primaryEffort})
+	}
+	for _, entry := range s.refusalFallback {
+		if entry.Model == "" {
+			continue
+		}
+		effort := entry.ReasoningEffort
+		if effort == "" {
+			effort = s.primaryEffort
+		}
+		choices = append(choices, agent.NativeModelChoice{Model: entry.Model, ReasoningEffort: effort})
+	}
+	return choices
 }
 
 type taskLLMStreamHooks struct {
 	current    func() (taskLLMSelection, error)
+	currentFor func(context.Context) (taskLLMSelection, error)
 	exhaust    func(taskLLMSelection, error) (db.TaskLLMTransition, error)
 	transition func(taskLLMSelection, db.TaskLLMTransition, error)
 	// refusalFallback reports the opt-in setting; nil means off.
 	refusalFallback func() bool
 }
 
+func (h taskLLMStreamHooks) resolveCurrent(ctx context.Context) (taskLLMSelection, error) {
+	if h.currentFor != nil {
+		return h.currentFor(ctx)
+	}
+	if h.current != nil {
+		return h.current()
+	}
+	return taskLLMSelection{}, errors.New("no current provider resolver configured")
+}
 func (h taskLLMStreamHooks) refusalFallbackOn() bool {
 	return h.refusalFallback != nil && h.refusalFallback()
 }
@@ -120,6 +235,14 @@ var errProviderRefused = errors.New("provider refused the request")
 // The returned profile id is non-zero only when the task chain is used; streamTaskLLM relies on this to decide whether a quota error should advance the task's failover state.
 // should advance the task's failover state (the binding/global paths do not change task chain state; the existing semantics are kept).
 func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
+	return r.currentFor(context.Background())
+}
+
+// currentFor resolves like current, honoring a per-run profile pin set by the
+// engine for per-intent rotation (#85). A pin is only a dispatch preference:
+// the chain must still be in a ready state (an exhausted chain with no active
+// head stays exhausted) and the pinned id must belong to the task's chain.
+func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, error) {
 	taskNum, err := parseTaskID(r.taskID)
 	if err != nil {
 		return taskLLMSelection{}, err
@@ -136,6 +259,7 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 	sel := taskLLMSelection{task: t, revision: pt.LLMChainRevision}
 	if prov, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		sel.provider, sel.retry = prov, cfg.Retry
+		sel.nonStreaming = !cfg.Stream || llm.RequiresComplete(prov)
 		return sel, nil
 	}
 	if len(pt.LLMProfileIDs) > 0 {
@@ -143,13 +267,90 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 			return sel, &taskLLMError{taskID: r.taskID, chainExhausted: true, cause: errors.New("all selected profiles are quota exhausted")}
 		}
 		sel.profileID = *pt.ActiveLLMProfileID
+		if pin, ok := llmProfilePinFrom(ctx); ok && pin != sel.profileID {
+			for _, id := range pt.LLMProfileIDs {
+				if id == pin {
+					sel.profileID = pin
+					break
+				}
+			}
+		}
 		prov, cfg, ok := r.s.providerForProfile(sel.profileID)
 		if !ok {
 			return sel, fmt.Errorf("LLM profile #%d is missing or invalid", sel.profileID)
 		}
-		sel.provider, sel.retry = prov, cfg.Retry
-		if p, err := r.s.m.pg.ProfileByID(sel.profileID); err == nil && p != nil {
+		p, _ := r.s.m.pg.ProfileByID(sel.profileID)
+		if p != nil {
+			sel.primaryModel = p.Model
+			sel.primaryEffort = p.ReasoningEffort
 			sel.refusalFallback = p.RefusalFallback
+		}
+		// If the context carries prior turn messages, check if a previous refusal in this session
+		// already transitioned to a valid branch model on the same profile/provider chain.
+		if p != nil && len(p.RefusalFallback) > 0 {
+			msgs := llmRequestMessagesFrom(ctx)
+			if len(msgs) > 0 {
+				allowedChainModels := make([]string, 0, len(p.RefusalFallback)+1)
+				if p.Model != "" {
+					allowedChainModels = append(allowedChainModels, p.Model)
+				}
+				for _, entry := range p.RefusalFallback {
+					if entry.Model != "" {
+						allowedChainModels = append(allowedChainModels, entry.Model)
+					}
+				}
+				nativeProv := nativeProxyProvider(p.AuthMethod)
+				pidStr := strconv.FormatInt(sel.profileID, 10)
+				if branchModel, branchEffort, ok := agent.DeriveSessionChainModel(ctx, msgs, pidStr, nativeProv, allowedChainModels); ok {
+					primaryEffort := p.ReasoningEffort
+					if branchModel == p.Model && branchEffort == primaryEffort {
+						sel.currentModel = branchModel
+						sel.currentEffort = branchEffort
+						sel.initialFallbackIndex = -1
+					} else {
+						matched := false
+						for idx, entry := range p.RefusalFallback {
+							eff := entry.ReasoningEffort
+							if eff == "" {
+								eff = p.ReasoningEffort
+							}
+							if entry.Model == branchModel && eff == branchEffort {
+								sel.currentModel = branchModel
+								sel.currentEffort = branchEffort
+								sel.initialFallbackIndex = idx
+								if bProv, bCfg, bOk := r.s.providerForProfileFallback(sel.profileID, entry.Model, entry.ReasoningEffort); bOk {
+									prov = bProv
+									cfg = bCfg
+								}
+								matched = true
+								break
+							}
+						}
+						if !matched {
+							return sel, fmt.Errorf("session active branch %s (effort %q) not found in profile #%d chain", branchModel, branchEffort, sel.profileID)
+						}
+					}
+				}
+			}
+		}
+
+		if p != nil {
+			sel.isNative = nativeProxyProvider(p.AuthMethod) != ""
+		}
+
+		sel.provider, sel.retry = prov, cfg.Retry
+		sel.nonStreaming = !cfg.Stream || llm.RequiresComplete(prov)
+		if !sel.nonStreaming {
+			for _, id := range pt.LLMProfileIDs {
+				member, err := r.s.m.pg.ProfileByID(id)
+				if err != nil {
+					return sel, err
+				}
+				if member != nil && nativeProxyProvider(member.AuthMethod) != "" {
+					sel.nonStreaming = true
+					break
+				}
+			}
 		}
 		sel.fallbackProvider = func(entry db.RefusalFallbackEntry) (llm.Provider, agent.RetryConfig, error) {
 			fProv, fCfg, fOk := r.s.providerForProfileFallback(sel.profileID, entry.Model, entry.ReasoningEffort)
@@ -165,6 +366,7 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 		return sel, fmt.Errorf("task %s has no available fallback LLM provider", r.taskID)
 	}
 	sel.provider, sel.retry = prov, cfg.Retry
+	sel.nonStreaming = !cfg.Stream || llm.RequiresComplete(prov)
 	return sel, nil
 }
 
@@ -196,11 +398,22 @@ func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 	return agent.Config{}, false
 }
 
-// nonStreaming reports whether the task's currently-active LLM source is set to
-// non-streaming. Unresolvable → streaming (false), the safe default.
+// nonStreaming includes every selected route that may receive this call.
 func (r *taskLLMRuntime) nonStreaming() bool {
-	cfg, ok := r.activeCfg()
-	return ok && !cfg.Stream
+	selection, err := r.current()
+	return err == nil && selection.nonStreaming
+}
+
+type preparedTaskLLMSelectionKey struct{ runtime *taskLLMRuntime }
+
+func (r *taskLLMRuntime) RequiresComplete() bool { return r.nonStreaming() }
+
+func (r *taskLLMRuntime) PrepareModelCall(ctx context.Context, req llm.CompletionRequest, _ bool) (context.Context, bool, error) {
+	selection, err := r.currentFor(withLLMRequestMessages(ctx, req.Messages))
+	if err != nil {
+		return ctx, false, err
+	}
+	return context.WithValue(ctx, preparedTaskLLMSelectionKey{r}, selection), selection.nonStreaming, nil
 }
 
 // maxTokens returns the currently-active source's per-reply output cap.
@@ -221,9 +434,21 @@ func parseTaskID(id string) (int64, error) {
 // streamHooks builds the failover/exhaustion callbacks shared by Stream and
 // Complete: how to read the current profile selection, how to mark it quota
 // exhausted, and how to emit a failover transition.
-func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
+func (r *taskLLMRuntime) streamHooks(ctx context.Context) taskLLMStreamHooks {
+	resolve := r.currentFor
+	if prepared, ok := ctx.Value(preparedTaskLLMSelectionKey{r}).(taskLLMSelection); ok {
+		first := true
+		resolve = func(ctx context.Context) (taskLLMSelection, error) {
+			if first {
+				first = false
+				return prepared, nil
+			}
+			return r.currentFor(ctx)
+		}
+	}
 	return taskLLMStreamHooks{
 		current:         r.current,
+		currentFor:      resolve,
 		refusalFallback: r.s.m.LLMRefusalFallbackEnabled,
 		exhaust: func(selection taskLLMSelection, cause error) (db.TaskLLMTransition, error) {
 			taskNum, _ := parseTaskID(r.taskID)
@@ -248,7 +473,8 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 
 func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	ctx = llmrec.WithTaskID(ctx, r.taskID)
-	return streamTaskLLM(ctx, r.taskID, req, r.streamHooks())
+	ctx = withLLMRequestMessages(ctx, req.Messages)
+	return streamTaskLLM(ctx, r.taskID, req, r.streamHooks(ctx))
 }
 
 // Complete is the non-streaming counterpart of Stream. A non-streaming call is
@@ -258,18 +484,27 @@ func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) 
 // streaming path needs is unnecessary here).
 func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	ctx = llmrec.WithTaskID(ctx, r.taskID)
-	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks())
+	ctx = withLLMRequestMessages(ctx, req.Messages)
+	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks(ctx))
 }
 
 func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
 	for {
-		selection, err := hooks.current()
+		selection, err := hooks.resolveCurrent(ctx)
 		if err != nil {
 			return llm.Message{}, "", llm.Usage{}, err
 		}
+		selCtx := ctx
+		if len(selection.refusalFallback) > 0 {
+			selCtx = agent.WithAllowedFallbackChoices(selCtx, selection.fallbackChoices())
+		}
+
 		currentProvider := selection.provider
 		currentRetry := selection.retry
-		fallbackIndex := -1
+		fallbackIndex := selection.initialFallbackIndex
+		if selection.currentModel == "" {
+			fallbackIndex = -1
+		}
 		for {
 			var (
 				msg     llm.Message
@@ -282,9 +517,9 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 			var callCtx context.Context
 			retries, backoffOf := sameProviderRetryPolicy(currentRetry)
 			for attempt := 0; ; attempt++ {
-				callCtx = llmrec.WithRefusalSink(ctx)
+				callCtx = llmrec.WithRefusalSink(selCtx)
 				msg, sr, usage, callErr = currentProvider.Complete(callCtx, req)
-				if callErr != nil && ctx.Err() == nil &&
+				if callErr != nil && !errors.Is(callErr, llm.ErrHistoryRejected) && ctx.Err() == nil &&
 					attempt < retries && isRetryableStreamError(callErr) {
 					backoff := backoffOf(attempt)
 					log.Printf("[task-llm] task %s non-streaming call failed; retrying with the same provider after %v (%d/%d): %v",
@@ -296,9 +531,13 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 				}
 				break
 			}
+			if errors.Is(callErr, llm.ErrHistoryRejected) {
+				return llm.Message{}, "", llm.Usage{}, callErr
+			}
 			if callErr == nil {
 				refused := sr == "refusal" || llmrec.RefusalObserved(callCtx)
 				if !refused || selection.profileID == 0 || !hooks.refusalFallbackOn() {
+					resetLLMFailStreak(taskID, selection.profileID)
 					return msg, sr, usage, nil
 				}
 				// Before advancing the task chain, try the next entry in this profile's refusal fallback chain.
@@ -306,11 +545,31 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 					fallbackIndex++
 					entry := selection.refusalFallback[fallbackIndex]
 					fbProv, fbRetry, fbErr := selection.fallbackProvider(entry)
-					if fbErr == nil && fbProv != nil {
-						currentProvider = fbProv
-						currentRetry = fbRetry
-						continue
+					if fbErr != nil {
+						return llm.Message{}, "", llm.Usage{}, fbErr
 					}
+					currentProvider = fbProv
+					currentRetry = fbRetry
+					if selection.isNative {
+						fromList := make([]string, 0, fallbackIndex+1)
+						if selection.currentModel != "" {
+							fromList = append(fromList, selection.currentModel)
+						} else if selection.primaryModel != "" {
+							fromList = append(fromList, selection.primaryModel)
+						}
+						for k := range fallbackIndex {
+							if selection.refusalFallback[k].Model != "" {
+								fromList = append(fromList, selection.refusalFallback[k].Model)
+							}
+						}
+						selCtx = llmrec.WithHandoffMetadata(selCtx, llmrec.HandoffMetadata{
+							FromModels:  fromList,
+							ToModel:     entry.Model,
+							Kind:        "readable_history",
+							PrefixCount: len(req.Messages),
+						})
+					}
+					continue
 				}
 				// Complete is atomic and nothing was delivered, so the same request can move on.
 				transition, markErr := hooks.exhaust(selection, errProviderRefused)
@@ -324,6 +583,26 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 					return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: errProviderRefused}
 				}
 				break
+			}
+			// profileID=0: the explicit chain has been cleared; non-quota error: pass through. Neither case changes the task failover state.
+			// Non-quota failures on a chain profile escalate after a consecutive
+			// streak (#99): same advance path as quota exhaust, truthful reason.
+			if selection.profileID != 0 && !isQuotaExhaustedError(callErr) && ctx.Err() == nil {
+				if noteLLMCallFailure(taskID, selection.profileID) {
+					cause := fmt.Errorf("profile #%d failed %d consecutive calls (last: %w)", selection.profileID, llmFailStreakThreshold, callErr)
+					transition, markErr := hooks.exhaust(selection, cause)
+					if markErr != nil {
+						return llm.Message{}, "", llm.Usage{}, fmt.Errorf("mark profile exhausted after %v: %w", callErr, markErr)
+					}
+					if transition.Advanced && !transition.Stale && hooks.transition != nil {
+						hooks.transition(selection, transition, callErr)
+					}
+					if !transition.Stale && transition.NextProfileID == nil {
+						return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
+					}
+					break // replay the same logical request on the next profile
+				}
+				return llm.Message{}, "", llm.Usage{}, callErr
 			}
 			// profileID=0: the explicit chain has been cleared; non-quota error: pass through. Neither case changes the task failover state.
 			if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
@@ -348,16 +627,29 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		for {
-			selection, err := hooks.current()
+			selection, err := hooks.resolveCurrent(ctx)
 			if err != nil {
 				yield(llm.StreamEvent{}, err)
 				return
 			}
+			if selection.nonStreaming || llm.RequiresComplete(selection.provider) {
+				yield(llm.StreamEvent{}, llm.ErrModelRouteChanged)
+				return
+			}
+
+			selCtx := ctx
+			if len(selection.refusalFallback) > 0 {
+				selCtx = agent.WithAllowedFallbackChoices(selCtx, selection.fallbackChoices())
+			}
+
 			currentProvider := selection.provider
 			currentRetry := selection.retry
-			fallbackIndex := -1
+			fallbackIndex := selection.initialFallbackIndex
+			if selection.currentModel == "" {
+				fallbackIndex = -1
+			}
+			var committed bool
 			for {
-				committed := false
 				var pending []llm.StreamEvent
 				var streamErr error
 				var refused bool
@@ -371,7 +663,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 					pending = nil
 					streamErr = nil
 					refused = false
-					callCtx = llmrec.WithRefusalSink(ctx)
+					callCtx = llmrec.WithRefusalSink(selCtx)
 					for event, err := range currentProvider.Stream(callCtx, req) {
 						if err != nil {
 							streamErr = err
@@ -397,7 +689,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 							return
 						}
 					}
-					if streamErr != nil && !committed && ctx.Err() == nil &&
+					if streamErr != nil && !errors.Is(streamErr, llm.ErrHistoryRejected) && !committed && ctx.Err() == nil &&
 						attempt < retries && isRetryableStreamError(streamErr) {
 						backoff := backoffOf(attempt)
 						log.Printf("[task-llm] task %s stream failed before commitment; retrying with the same provider after %v (%d/%d): %v",
@@ -409,6 +701,10 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 					}
 					break
 				}
+				if errors.Is(streamErr, llm.ErrHistoryRejected) {
+					yield(llm.StreamEvent{}, streamErr)
+					return
+				}
 				if streamErr == nil {
 					if (refused || llmrec.RefusalObserved(callCtx)) && selection.profileID != 0 && hooks.refusalFallbackOn() {
 						// Before advancing the task chain, try the next entry in this profile's refusal fallback chain (if output not committed).
@@ -416,11 +712,32 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 							fallbackIndex++
 							entry := selection.refusalFallback[fallbackIndex]
 							fbProv, fbRetry, fbErr := selection.fallbackProvider(entry)
-							if fbErr == nil && fbProv != nil {
-								currentProvider = fbProv
-								currentRetry = fbRetry
-								continue
+							if fbErr != nil {
+								yield(llm.StreamEvent{}, fbErr)
+								return
 							}
+							currentProvider = fbProv
+							currentRetry = fbRetry
+							if selection.isNative {
+								fromList := make([]string, 0, fallbackIndex+1)
+								if selection.currentModel != "" {
+									fromList = append(fromList, selection.currentModel)
+								} else if selection.primaryModel != "" {
+									fromList = append(fromList, selection.primaryModel)
+								}
+								for k := range fallbackIndex {
+									if selection.refusalFallback[k].Model != "" {
+										fromList = append(fromList, selection.refusalFallback[k].Model)
+									}
+								}
+								selCtx = llmrec.WithHandoffMetadata(selCtx, llmrec.HandoffMetadata{
+									FromModels:  fromList,
+									ToModel:     entry.Model,
+									Kind:        "readable_history",
+									PrefixCount: len(req.Messages),
+								})
+							}
+							continue
 						}
 						transition, markErr := hooks.exhaust(selection, errProviderRefused)
 						if markErr != nil {
@@ -439,12 +756,35 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 						yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: errProviderRefused})
 						return
 					}
+					resetLLMFailStreak(taskID, selection.profileID)
 					for _, buffered := range pending {
 						if !yield(buffered, nil) {
 							return
 						}
 					}
 					return
+				}
+				// Non-quota failures on a chain profile escalate after a consecutive
+				// streak (#99), mirroring completeTaskLLM. Escalation only applies to
+				// uncommitted streams: once events reached the caller, replaying on a
+				// new profile could duplicate delivered output, so the error surfaces.
+				if selection.profileID != 0 && !committed && !isQuotaExhaustedError(streamErr) && ctx.Err() == nil {
+					if noteLLMCallFailure(taskID, selection.profileID) {
+						cause := fmt.Errorf("profile #%d failed %d consecutive calls (last: %w)", selection.profileID, llmFailStreakThreshold, streamErr)
+						transition, markErr := hooks.exhaust(selection, cause)
+						if markErr != nil {
+							yield(llm.StreamEvent{}, fmt.Errorf("mark profile exhausted after %v: %w", streamErr, markErr))
+							return
+						}
+						if transition.Advanced && !transition.Stale && hooks.transition != nil {
+							hooks.transition(selection, transition, streamErr)
+						}
+						if !transition.Stale && transition.NextProfileID == nil {
+							yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: streamErr})
+							return
+						}
+						break // nothing delivered — safe to replay on the next profile
+					}
 				}
 				// profileID=0 means the explicit chain was cleared while this stable task
 				// bundle was still in use. Agent/global fallback errors follow the legacy
@@ -676,6 +1016,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetConstraintInject(s.constraintInjectWorker) // Operation-constraint injection worker (configurable, enabled by default)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
 	pl.SetFindingRecorder(s.evidenceStore())
+	pl.SetGuard(t.Guard)
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)
 	pl.SetMaxTokens(plannerRuntime.maxTokens)
@@ -689,8 +1030,12 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	// (agentsForTask), the Compactor must be wired in here. It goes through the planner provider chosen by task routing (§4: same model as the agent, resolved along the task's LLM chain), and compaction generates the body in one shot via Complete.
 	// Same model, parsed along with the task LLM chain; compression uses Complete to generate the body in one shot.
 	pl.SetCompactor(agent.NewCompactor(plannerRuntime, "task-router"))
+	// RSI shadow mode: select evidence-backed lessons for this task. Off by
+	// default; shadow logs what would be shown, inject appends the block.
+	s.wireTaskLessons(t, wk, pl)
 	main := agent.NewMainAgent(mainRuntime, "task-router", s.m.dir, tx, mainRuntime.CompactionWindow(), s.agentMaxTurns("mainagent"))
 	main.SetFindingRecorder(s.evidenceStore())
+	main.SetGuard(t.Guard)
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)
 	main.SetNonStreaming(mainRuntime.nonStreaming)
 	main.SetMaxTokens(mainRuntime.maxTokens)

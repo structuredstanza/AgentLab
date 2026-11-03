@@ -28,7 +28,7 @@ func TestPoolProfilesListsKeylessOAuthProfile(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	id := testOAuthProfile(t, d, "codex", "openai-responses")
 	profiles, err := d.PoolProfiles()

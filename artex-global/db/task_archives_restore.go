@@ -64,13 +64,13 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 	if _, err := tx.Exec(`LOCK TABLE assets, exploration_anchors IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM intercept_pending WHERE COALESCE(task_id,'')=$1`, strconv.FormatInt(taskID, 10)); err != nil {
+	if _, err := tx.Exec(`DELETE FROM intercept_pending WHERE task_id=$1`, strconv.FormatInt(taskID, 10)); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'')=$1`, strconv.FormatInt(taskID, 10)); err != nil {
+	if _, err := tx.Exec(`DELETE FROM llm_records WHERE task_id=$1`, strconv.FormatInt(taskID, 10)); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM llm_usage WHERE COALESCE(task_id,'')=$1 OR exploration_id=$2`, strconv.FormatInt(taskID, 10), expID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM llm_usage WHERE task_id=$1 OR exploration_id=$2`, strconv.FormatInt(taskID, 10), expID); err != nil {
 		return err
 	}
 	for _, table := range []string{"skill_usage", "tool_usage"} {
@@ -129,7 +129,7 @@ WHERE id=$1`, taskID); err != nil {
 	if _, err := tx.Exec(`UPDATE task_archives SET
 	 state=$2,phase='ready',progress=100,error='',archive_path=$3,sha256=$4,
 	 original_size=$5,compressed_size=$6,data_counts=$7,aggregate_stats=$8,
-	 format_version=$9,archived_at=now(),warnings='[]'
+	 format_version=$9,archived_at=now()
 WHERE id=$1`, archiveID, ArchiveReady, archivePath, sha256, originalSize, compressedSize,
 		string(countsRaw), string(statsRaw), snapshot.FormatVersion); err != nil {
 		return err

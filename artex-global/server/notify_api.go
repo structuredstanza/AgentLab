@@ -207,7 +207,7 @@ func (s *Server) notifyCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req notifyChannelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, notifyErrBadJSON+err.Error())
 		return
 	}
@@ -293,7 +293,7 @@ func (s *Server) notifyUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req notifyChannelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, notifyErrBadJSON+err.Error())
 		return
 	}

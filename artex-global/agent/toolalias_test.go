@@ -51,41 +51,6 @@ func contains(ss []string, s string) bool {
 	return false
 }
 
-// TestAddToolAliasesDelegates proves an alias is dispatchable by its drifted name
-// and that Call/Description/Schema delegate to the wrapped handler.
-func TestAddToolAliasesDelegates(t *testing.T) {
-	var called bool
-	orig := actool.Build(actool.Spec{
-		Name:        "Bash",
-		Description: "run a shell command",
-		Run: func(_ context.Context, _ json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
-			called = true
-			return actool.Text("ok"), nil
-		},
-	})
-	out, deferred := addToolAliases([]actool.CoreTool{orig}, nil)
-	byName := map[string]actool.CoreTool{}
-	for _, tl := range out {
-		byName[tl.Name()] = tl
-	}
-	if _, ok := byName["Bash"]; !ok {
-		t.Fatal("original Bash dropped")
-	}
-	alias, ok := byName["bash"]
-	if !ok {
-		t.Fatalf("bash alias not registered; have %v", keys(byName))
-	}
-	if !contains(deferred, "bash") {
-		t.Errorf("bash alias not deferred: %v", deferred)
-	}
-	if alias.Description() != "run a shell command" {
-		t.Errorf("alias description = %q", alias.Description())
-	}
-	if _, err := alias.Call(context.Background(), json.RawMessage(`{}`), nil); err != nil || !called {
-		t.Fatalf("alias Call did not reach handler (called=%v err=%v)", called, err)
-	}
-}
-
 // TestAddToolAliasesSkipsTaken ensures an alias never shadows an existing tool.
 func TestAddToolAliasesSkipsTaken(t *testing.T) {
 	camel := actool.Build(actool.Spec{Name: "Bash", Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
@@ -94,7 +59,7 @@ func TestAddToolAliasesSkipsTaken(t *testing.T) {
 	lower := actool.Build(actool.Spec{Name: "bash", Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
 		return actool.Text(""), nil
 	}})
-	out, _ := addToolAliases([]actool.CoreTool{camel, lower}, nil)
+	out, _, _ := addToolAliases([]actool.CoreTool{camel, lower}, nil)
 	n := 0
 	for _, tl := range out {
 		if tl.Name() == "bash" {

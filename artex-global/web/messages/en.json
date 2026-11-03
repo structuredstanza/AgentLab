@@ -156,12 +156,11 @@
     "remaining": "{pct}% remaining",
     "resetsAt": "Resets {time}",
     "staleData": "Stale",
-    "usageError": "Usage error"
+    "usageError": "Usage error",
+    "usageUnavailable": "Quota unavailable",
+    "noQuotaWindows": "No quota windows reported"
   },
   "header": {
-    "updateBadge": "New version {latest}",
-    "updateBadgeShort": "New version",
-    "updateTitle": "New version {latest} found. Click to go to the update.",
     "version": "Version · {version}"
   },
   "nav": {
@@ -322,7 +321,8 @@
       "assets": "Test assets",
       "coverage": "Asset coverage graph",
       "intercept": "Intercept approval",
-      "report": "Report"
+      "report": "Report",
+      "credentials": "Credentials"
     },
     "header": {
       "notFound": "Task {id} not found. It may have been deleted, archived, or never existed.",
@@ -695,6 +695,29 @@
           "cidr": "CIDR range"
         }
       }
+    }
+    ,
+    "credentials": {
+      "title": "Task test accounts",
+      "description": "Credentials declared for this task and accounts recorded by its agent. Passwords are masked until explicitly revealed.",
+      "emptyTitle": "No test accounts",
+      "emptyDescription": "Add an account below or declare it when creating the task.",
+      "agentRecorded": "Agent-recorded",
+      "declared": "Declared",
+      "agentGenerates": "Agent generates",
+      "hidePassword": "Hide password",
+      "revealPassword": "Reveal password",
+      "copyPassword": "Copy password",
+      "deleteCredential": "Delete credential",
+      "domainLabel": "Domain",
+      "domainPlaceholder": "Domain (e.g. target.example.com)",
+      "usernameLabel": "Email or username",
+      "usernamePlaceholder": "Email or username",
+      "passwordLabel": "Password",
+      "passwordPlaceholder": "Password (empty = agent generates)",
+      "noteLabel": "Note",
+      "notePlaceholder": "Note (optional)",
+      "add": "Add"
     }
   },
   "retest": {
@@ -1941,6 +1964,7 @@
     "argsLabel": "Arguments (space-separated)",
     "urlLabel": "Remote URL",
     "insecureLabel": "Skip TLS certificate verification (self-signed certificates)",
+    "timeoutLabel": "Request timeout (seconds, default 120)",
     "headersLabel": "Request headers (KEY=VALUE per line, e.g. Authorization=Bearer xxx)",
     "envLabel": "Environment variables (KEY=VALUE per line)",
     "refresh": "Refresh",
@@ -1958,7 +1982,11 @@
     "deleteFailed": "Delete failed: {msg}",
     "actionFailed": "Action failed: {msg}",
     "visibilityGranted": "Exposure allowed for “{name}”",
-    "visibilityRevoked": "Exposure revoked for “{name}”"
+    "visibilityRevoked": "Exposure revoked for “{name}”",
+    "statusDown": "down: {err}",
+    "statusOk": "ok {time}",
+    "statusNotConnected": "not connected yet",
+    "connectFailed": "connect failed"
   },
   "toolsPage": {
     "title": "Tools",
@@ -2726,6 +2754,13 @@
       "sourceHint": "You can link up to {max} tasks. The new task inherits the selected tasks' persistent blackboard, asset scope, and related traffic as live read-only, and writes to its own independent blackboard.",
       "companyLabel": "Linked company asset scope",
       "companyHint": "When you create the task, the assets the selected company currently owns are added to \"Test assets,\" and the domains, IPs, CIDRs, ICP, and company keywords are provided to the Agent as scope context. It does not auto-generate intents or override the execution goal.",
+      "credentialsLabel": "Test accounts (optional)",
+      "credentialDomain": "Domain (e.g. target.example.com)",
+      "credentialUsername": "Email or username",
+      "credentialPassword": "Password (empty = agent generates)",
+      "credentialNote": "Note (optional)",
+      "credentialAdd": "Add account",
+      "credentialRemove": "Remove test account",
       "interceptLabel": "Per-task asset block / allow rules (optional)",
       "interceptHint": "Applies only to this task and is not added to the global rules. The evaluation order is as follows. First, assets are checked against the \"block\" rules (including global ones); if a rule matches, testing is prohibited. If none match and this task has \"allow\" rules set, an asset must match one allow rule to pass; otherwise testing is likewise not allowed. If no allow rule is set, no whitelist is applied.",
       "llmLabel": "LLM profile chain",
@@ -2742,6 +2777,10 @@
       "seedHint": "When on, right after creation it dispatches \"description + goal\" as a single intent so the worker starts immediately without waiting for the first planning round; when it finishes, the planner takes over to assess and follow up. Recommended for cases usually solved by a single work, like CTF; when off, it follows the standard flow of planning first, then executing.",
       "coverageLabel": "Asset coverage feature",
       "coverageHint": "On by default. It calculates and displays test coverage, shows testing progress on the situation map, and automatically accumulates the tested scope. When off, coverage is no longer calculated or displayed, the situation map shows only assets without progress, and the agent no longer receives scope-related tools. Turning it off does not affect \"Linked company asset scope\".",
+      "quietModeLabel": "Quiet planner",
+      "quietModeHint": "Skip redundant planner iterations when open goals are unchanged and workers are in flight.",
+      "llmRotateLabel": "Rotate LLM profiles",
+      "llmRotateHint": "Rotate chain-head profile across intents rather than strict failover.",
       "cancel": "Cancel",
       "creating": "Creating",
       "create": "Create",
@@ -3196,46 +3235,6 @@
       "title": "Session input box send key",
       "desc": "The conversation page and the main agent session input box in the task details share this setting; selecting it applies immediately with no need to save.<br></br>This setting is <b>saved only in this browser</b> and is not synced to your account, so if you change browsers or clear site data you'll need to set it again.",
       "label": "Send method"
-    },
-    "update": {
-      "title": "Version and Updates",
-      "desc": "Check for and install new versions from GitHub. Updating restarts the program and interrupts running tasks.",
-      "currentVersion": "Current version",
-      "latestVersion": "Latest version",
-      "modeDocker": "Docker",
-      "modeStandalone": "Standalone program",
-      "changelog": "Changelog",
-      "connectError": "Can't connect to GitHub: {error} You can set the global proxy above and try again.",
-      "noAsset": "{latest} has no release package for {os}/{arch} ({asset} missing), so it can't be updated automatically.",
-      "willDownloadPrefix": "Will download: ",
-      "willDownloadSize": " ({size})",
-      "willDownloadSuffix": ". It is replaced only after passing SHA256 verification and a smoke test; if either fails, the current version is kept automatically.",
-      "upToDate": "You're already on the latest version.",
-      "dockerNote": "In a Docker environment, updating replaces only the program itself and does not update the image's tool chain such as playwright / nmap. Also, recreating the container with <code>docker compose up -d</code> reverts to the version bundled in the image. To upgrade the image as well, run <code>docker compose pull artex && docker compose up -d artex</code>.",
-      "restarting": "Restarting and applying the new version. Please wait (the page will refresh automatically)…",
-      "check": "Check for updates",
-      "updateToVersion": "Update to {latest}",
-      "updateNow": "Update now",
-      "rollback": "Roll back to the previous version",
-      "footer": "One-click update relies on the daemon script restarting the program. Start ARTEX with <code>start.sh</code> (<code>start.bat</code> on Windows). If you run the artex binary directly, it won't restart automatically after the program exits.",
-      "toast": {
-        "checkFailed": "Update check failed: {error}",
-        "found": "Found new version {latest}",
-        "upToDate": "You're already on the latest version",
-        "updated": "Updated to {version}. Reloading the page",
-        "restartTimeout": "Timed out waiting for the service to restart. Check the backend logs or verify that artex was started with start.sh / start.bat.",
-        "updateFailed": "Update failed: {error}",
-        "startFailed": "Failed to start the update: {error}",
-        "rollbackSwitched": "Switched to the previous version. Restarting…",
-        "rollbackFailed": "Rollback failed: {error}",
-        "preparing": "Preparing…"
-      },
-      "confirm": {
-        "title": "Update to {latest}?",
-        "restart": "Updating restarts the program and interrupts running tasks.",
-        "docker": "Note: updating inside the container replaces only the program itself and does not update the image's tool chain such as playwright / nmap. If the new version depends on new tools, switch to running it with docker compose pull.",
-        "rollback": "Roll back to the previous version?\n\nThe program will restart and running tasks will be interrupted.\nNote: the database structure is not rolled back, and the previous version may not recognize data written by the new version."
-      }
     }
   },
   "llmPage": {
@@ -3367,6 +3366,9 @@
         "hint": "Fill in a header name and this HTTP header is sent on every request, with its value automatically set to the <b>current session's session id</b> (conv-12 for chat sessions, exp3-worker-i87 for workers, etc.). It's for gateways that use a session-id header for prompt caching / sticky routing. The same session stays stable across turns, and different sessions differ from one another. Not sent if empty."
       },
       "apiKey": {
+        "label": "API Key",
+        "labelOllama": "API Key (optional for Ollama)",
+        "placeholderOllama": "optional — a local Ollama server runs keyless",
         "placeholderSet": "Set ({hint}); leave empty to keep it"
       },
       "oauth": {
@@ -3422,7 +3424,8 @@
         "openai": "Which key to send the cap under. max_tokens is the default and most compatible gateways recognize only this. OpenAI's official reasoning models (the o-series / GPT-5), on the other hand, recognize only max_completion_tokens and throw an unsupported_parameter error the moment they receive max_tokens.",
         "anthropic": "Selectable only in the openai format. Anthropic's field name is fixed to max_tokens.",
         "antigravity": "Fixed by Gemini's native API.",
-        "openai-responses": "Selectable only in the openai format. The Responses API's field name is fixed to max_output_tokens."
+        "openai-responses": "Selectable only in the openai format. The Responses API's field name is fixed to max_output_tokens.",
+        "ollama": "Selectable only in the openai format. Ollama's field name is fixed to max_tokens."
       },
       "thinkingType": {
         "label": "Thinking switch · thinking.type",
@@ -3484,9 +3487,8 @@
         "model": "Model",
         "modelPlaceholder": "e.g. claude-sonnet-4-6",
         "effort": "Reasoning effort",
-        "effortDefault": "Default",
-        "duplicateError": "Model already in fallback chain",
-        "primaryError": "Cannot add the profile's primary model to its own fallback chain",
+        "effortInherit": "Inherit profile effort",
+        "duplicateError": "Each model and effective reasoning-effort combination must be unique",
         "moveUp": "Move up",
         "moveDown": "Move down",
         "remove": "Remove"
