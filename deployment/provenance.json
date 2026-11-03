@@ -540,11 +540,11 @@
   },
   "toolchain_and_vpn_20261103": {
     "source_commit": "877ee73",
-    "sandbox": "artex-agentlab-toolchain-20261103t2125z",
-    "replaced_sandbox": "artex-agentlab-astra-reviewed-20261031t010522z (retained stopped, rootfs intact)",
+    "sandbox": "artex-agentlab-toolchain-20261103t2135z",
+    "replaced_sandbox": "artex-agentlab-toolchain-20261103t2125z (removed; shipped the base image's older guest-start.py)",
     "pre_cutover_export": "exports/20261103T211359.944713Z",
     "image": "agentlab/artex:toolchain-skills",
-    "image_id": "sha256:61177db1dbde",
+    "image_id": "sha256:afe651992d12",
     "image_layers": "Dockerfile.toolchain adds the offensive toolchain to the astra-reviewed base; a second overlay adds the binary and skills. A full Dockerfile rebuild was not possible: the Playwright Chromium CDN answers 403 'not available in your location' on this network, and the Dockerfile now tolerates that rather than failing the build.",
     "toolchain": {
       "exploit_dev": [
@@ -595,7 +595,12 @@
     "openvpn": {
       "flag": "./lab start --vpn PROFILE",
       "behaviour": "profile streamed into /run/secrets with a checksum comparison, tunnel address verified on a tun/tap interface before capture starts, supervisor stops the engagement if openvpn exits, profile deleted on stop and on any start without --vpn",
-      "tests": "5 unit tests in deployment/test_guest_start.py covering no-profile, missing openvpn, no address, tun-only address selection, and the kill switch"
+      "tests": "5 unit tests in deployment/test_guest_start.py covering no-profile, missing openvpn, no address, tun-only address selection, and the kill switch",
+      "live_proof": {
+        "staged": "198-byte profile streamed in, mode 0600, sha256 matched on both sides",
+        "fail_closed": "unreachable endpoint -> manifest state=failed, vpn=stopped, capture=not_started, artex=not_started, error 'openvpn exited during start (rc=1)'",
+        "clean_path": "profile removed -> state=running, vpn=None, capture=running, health OK"
+      }
     },
     "skills_added": [
       "exploit-dev",
@@ -607,6 +612,7 @@
     "not_verified": [
       "no OpenVPN profile was available, so the tunnel path was exercised by unit test and code review only, not against a real VPN endpoint",
       "live cloud provider OAuth login, refresh and entitlement"
-    ]
+    ],
+    "image_fix": "Dockerfile.toolchain now COPYs deployment/guest-start.py and guest-export.py. Without it the layer inherited the base image's supervisor, so a staged VPN profile was never read — found by running the real staging path, not by the unit tests."
   }
 }

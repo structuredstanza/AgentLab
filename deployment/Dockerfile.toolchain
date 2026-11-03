@@ -10,6 +10,11 @@
 FROM agentlab/artex:astra-reviewed-20261031t010522z
 ARG TARGETARCH=amd64
 
+# The supervisor gains the OpenVPN path, so it must ship with this layer;
+# leaving the base image's copy would stage a profile that nothing reads.
+COPY deployment/guest-start.py deployment/guest-export.py /opt/agentlab/
+RUN chmod 0755 /opt/agentlab/guest-start.py
+
 # ---- exploit development, debugging, reverse engineering -------------------
 # Exploit development needs a working debugger and gadget finder next to the
 # compiler; reverse engineering needs a decompiler and an APK/binary toolchain.
