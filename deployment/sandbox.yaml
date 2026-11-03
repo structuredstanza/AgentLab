@@ -1,4 +1,4 @@
-image: agentlab/artex:allocation-reset-20261031t011927z
+image: agentlab/artex:audit-fixes-20261103t172719z
 pull_policy: never
 cpus: 4
 memory: 8G

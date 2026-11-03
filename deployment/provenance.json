@@ -34,7 +34,11 @@
     "planner": "GPT Astra",
     "implementation": "GPT 6.1 Sol session",
     "findings_fixed": 20,
-    "additional_integration_fixes": ["Codex tool discovery", "native tool-loop training export", "owned SDK English-only runtime wording"],
+    "additional_integration_fixes": [
+      "Codex tool discovery",
+      "native tool-loop training export",
+      "owned SDK English-only runtime wording"
+    ],
     "plan": "reviews/astra-fixes-20261030T203817Z/astra-plan.sanitized.md",
     "verification": "reviews/astra-fixes-20261030T203817Z/verification.json",
     "owned_sdk": {
@@ -83,7 +87,9 @@
     "profiles_defaults_exclusions_fallbacks_and_capture_preserved": true,
     "guest_image_and_runtime_binaries_match": true,
     "primary_service_left_stopped": true,
-    "live_verified_providers": ["codex"],
+    "live_verified_providers": [
+      "codex"
+    ],
     "live_refresh_verified_providers": [],
     "historical_evidence": "The quiescent rollback archive and earlier integration/SDK sections describe previous deployments; the pre-cutover export is the current rollback data."
   },
@@ -136,8 +142,27 @@
     "graft": "structural graph rebuilt and checked: 644 files, 6321 nodes, 16233 edges; no deep/meaning layer",
     "reasoning": "six genuine llama.cpp explicit raw-reasoning records exported; provider summaries and opaque replay remain separately typed; opaque state is not a readable SFT target",
     "capture_smoke_export": "exports/20261030T024613.555981Z",
-    "capture_smoke": ["VM execution", "correlated stdout/stderr", "application HTTP", "guest PCAP", "syscalls", "resources", "PostgreSQL backup", "SQLite integrity", "artifact checksums"],
-    "installed_tools_observed": {"nuclei": "3.11.1", "httpx": "1.12.0", "subfinder": "2.17.0", "katana": "1.8.0", "ffuf": "2.3.0", "dalfox": "3.2.4", "sqlmap": "1.10.10.29", "bbot": "3.0.2"},
+    "capture_smoke": [
+      "VM execution",
+      "correlated stdout/stderr",
+      "application HTTP",
+      "guest PCAP",
+      "syscalls",
+      "resources",
+      "PostgreSQL backup",
+      "SQLite integrity",
+      "artifact checksums"
+    ],
+    "installed_tools_observed": {
+      "nuclei": "3.11.1",
+      "httpx": "1.12.0",
+      "subfinder": "2.17.0",
+      "katana": "1.8.0",
+      "ffuf": "2.3.0",
+      "dalfox": "3.2.4",
+      "sqlmap": "1.10.10.29",
+      "bbot": "3.0.2"
+    },
     "deployed_ui_smoke": "English task creation form; account fields, planner quiet mode and per-task profile rotation; canceled without creating a production task",
     "oauth_replacement": "planned CLIProxyAPI replacement remains gated on native reasoning/replay fidelity and privacy; current owned OAuth service retained until complete cutover passes"
   },
@@ -157,9 +182,16 @@
   "provider_chain_and_quota_cutover": {
     "sandbox": "artex-agentlab-quota",
     "previous_sandbox_retained": "artex-agentlab-allocation",
-    "earlier_sandboxes_retained_stopped": ["artex-agentlab-sdk", "artex-agentlab-english", "artex-agentlab-capture"],
+    "earlier_sandboxes_retained_stopped": [
+      "artex-agentlab-sdk",
+      "artex-agentlab-english",
+      "artex-agentlab-capture"
+    ],
     "pre_cutover_export": "exports/20261029T215217.941467Z",
-    "features": ["per-profile refusal fallback chain (llm_profiles.refusal_fallback JSONB)", "subscription 5-hour and 7-day allocation (bridge /v1/profiles/:id/usage, /api/llm/usage)"],
+    "features": [
+      "per-profile refusal fallback chain (llm_profiles.refusal_fallback JSONB)",
+      "subscription 5-hour and 7-day allocation (bridge /v1/profiles/:id/usage, /api/llm/usage)"
+    ],
     "guest_binary_matches_build": true,
     "usage_helper_files_sha256": {
       "src/usage.mjs": "4568bd2477dd2b903e02a29879af77f78e422df1e46d9209f868ccd523dd3eae",
@@ -178,7 +210,11 @@
     "sdk_package": "@oh-my-pi/pi-ai",
     "sdk_version": "18.13.3",
     "runtime_bun": "1.4.4",
-    "native_provider_fixtures": ["anthropic", "openai-codex", "google-antigravity"],
+    "native_provider_fixtures": [
+      "anthropic",
+      "openai-codex",
+      "google-antigravity"
+    ],
     "fixture_network": "independent network namespace; no external provider access",
     "real_provider_login_completed": false,
     "oauth_grants_location": "host sdk-state/profiles; not mounted into the guest or exported",
@@ -189,7 +225,10 @@
   "owned_oauth_port": {
     "upstream_sdk_version": "18.13.3",
     "owned_implementation": "deployment/sdk-bridge/src/oauth",
-    "sdk_runtime_use": ["native inference", "bundled model catalog"],
+    "sdk_runtime_use": [
+      "native inference",
+      "bundled model catalog"
+    ],
     "sdk_oauth_or_authstorage_calls": false,
     "credential_store_schema_version": 1,
     "production_grants_present_at_cutover": false,
@@ -200,9 +239,18 @@
       "test_files": 11,
       "network": "independent network namespace; external networking denied",
       "production_credentials_and_state": "hidden",
-      "providers": ["anthropic", "openai-codex", "google-antigravity"]
+      "providers": [
+        "anthropic",
+        "openai-codex",
+        "google-antigravity"
+      ]
     },
-    "deployed_http_smoke": ["health", "unauthorized request rejected", "disconnected grant status", "bundled model catalogs"],
+    "deployed_http_smoke": [
+      "health",
+      "unauthorized request rejected",
+      "disconnected grant status",
+      "bundled model catalogs"
+    ],
     "capture_smoke_export": "exports/20261029T204405.252100Z",
     "capture_smoke_model_run": false,
     "training_records_exported": 6,
@@ -229,7 +277,11 @@
   },
   "live_oauth_validation": {
     "scope": "human-approved authorization only; no inference requests",
-    "verified_providers": ["openai-codex", "anthropic", "google-antigravity"],
+    "verified_providers": [
+      "openai-codex",
+      "anthropic",
+      "google-antigravity"
+    ],
     "codex_grant_survived_helper_restart": true,
     "codex_connection_visible_in_artex": true,
     "all_verified_connections_visible_in_artex": true,
@@ -368,5 +420,49 @@
       "supports_typed_content": false
     },
     "chat_template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+  },
+  "audit_fixes_20261103": {
+    "source_commit": "e404ecbde7d5a18d46690d7a0f78ccdb090f3a2f",
+    "findings_fixed": 38,
+    "artefact": ".audit/agentlab-audit-fixes.patch",
+    "report": ".audit/AUDIT-REPORT.md",
+    "applied_to_running_vm": "artex-agentlab-astra-reviewed-20261031t010522z",
+    "deployment": "atomic binary replacement after supervisor stop; guest scripts and skills already matched the committed source, so only /opt/artex/artex changed",
+    "runtime_binary_sha256": "e2d3e39911c937021291e8ebd26bc26ba739948d01662b41aa8d9da812a365de",
+    "base_runtime_image_unchanged": true,
+    "fresh_create_image": "agentlab/artex:audit-fixes-20261103t172719z",
+    "fresh_create_image_id": "sha256:b3660a098222",
+    "fresh_create_image_note": "minimal overlay FROM agentlab/artex:astra-reviewed-20261031t010522z replacing only /opt/artex/artex; a full Dockerfile rebuild failed at the Playwright npm layer on DNS (EAI_AGAIN), which does not affect the binary",
+    "fresh_create_image_booted": false,
+    "evidence": ".upstream-work/audit-fixes-20261103T172719Z",
+    "tests": {
+      "go_build_vet": "clean",
+      "go_test_with_postgres": "15 packages ok, 0 failures",
+      "python_exporter": "116 tests OK",
+      "extension": "3/3",
+      "web_vitest": "24/24",
+      "web_tsc": "clean",
+      "docs_links": "0 broken",
+      "graft_check": "OK (8708 nodes, 21746 edges)"
+    },
+    "live_verification": [
+      "/api/health reports the new build and login succeeds",
+      "guest /state/runtime/artex sha256 equals the host build",
+      "idx_llm_records_task, idx_llm_usage_task, idx_intercept_pending_task present in guest postgres",
+      "duplicate skill create returns 409",
+      "9 MiB JSON body rejected in 58 ms by the 8 MiB cap",
+      "export produced 7 train records, 2 rejects, no secret-shaped strings",
+      "tasks, skills, mcp, logs and notify pages render"
+    ],
+    "behaviour_changes_requiring_operator_acknowledgement": [
+      "archive host compaction refuses instead of deleting when the host grew after the snapshot",
+      "a stored provider key is only sent to that profile's own base_url",
+      "the approval gate denies when its rules cannot be read",
+      "blocked, aborted and DNS-failed requests are recorded with status 0 instead of dropped"
+    ],
+    "not_verified": [
+      "the imported fresh-create image was not booted: the running VM holds the shared /state bind, so booting a second kernel against it would contend for PostgreSQL",
+      "live cloud provider OAuth login, refresh and entitlement"
+    ]
   }
 }
