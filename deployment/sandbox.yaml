@@ -1,4 +1,4 @@
-image: agentlab/artex:audit-fixes-20261103t172719z
+image: agentlab/artex:regressions-20261103t190955z
 pull_policy: never
 cpus: 4
 memory: 8G

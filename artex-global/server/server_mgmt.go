@@ -1195,17 +1195,22 @@ func (s *Server) fsCreateSkill(w http.ResponseWriter, r *http.Request) {
 	//   Markdown body:    step-by-step instructions
 	var sb strings.Builder
 	sb.WriteString("---\n")
-	fmt.Fprintf(&sb, "name: %s\n", body.Name)
-	fmt.Fprintf(&sb, "description: %s\n", body.Description)
+	fmt.Fprintf(&sb, "name: %s\n", yamlScalar(body.Name))
+	fmt.Fprintf(&sb, "description: %s\n", yamlScalar(body.Description))
 	if body.License != "" {
-		fmt.Fprintf(&sb, "license: %s\n", body.License)
+		fmt.Fprintf(&sb, "license: %s\n", yamlScalar(body.License))
 	}
 	if body.Compatibility != "" {
-		fmt.Fprintf(&sb, "compatibility: %s\n", body.Compatibility)
+		fmt.Fprintf(&sb, "compatibility: %s\n", yamlScalar(body.Compatibility))
 	}
 	// mcps: MCP servers this skill unlocks on load (skill-gated deferred tools).
-	if mcps := cleanStrs(body.MCPs); len(mcps) > 0 {
-		fmt.Fprintf(&sb, "mcps: %s\n", strings.Join(mcps, ", "))
+	cleaned := cleanStrs(body.MCPs)
+	if len(cleaned) > 0 {
+		quoted := make([]string, len(cleaned))
+		for i, m := range cleaned {
+			quoted[i] = yamlScalar(m)
+		}
+		fmt.Fprintf(&sb, "mcps: %s\n", strings.Join(quoted, ", "))
 	}
 	sb.WriteString("---\n")
 	if strings.TrimSpace(body.Instructions) != "" {
@@ -1219,6 +1224,11 @@ func (s *Server) fsCreateSkill(w http.ResponseWriter, r *http.Request) {
 	if err := os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(sb.String()), 0o644); err != nil {
 		_ = os.RemoveAll(skillPath)
 		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := verifySkillFile(skillPath, body.Name, cleaned); err != nil {
+		_ = os.RemoveAll(skillPath)
+		writeErr(w, 500, "skill written but does not parse back: "+err.Error())
 		return
 	}
 	writeJSON(w, 201, map[string]any{"name": body.Name})
@@ -1260,7 +1270,60 @@ func (s *Server) fsUpdateSkillMeta(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	wantMCPs := []string(nil)
+	if body.MCPs != nil {
+		wantMCPs = cleanStrs(*body.MCPs)
+	}
+	if err := verifySkillFile(filepath.Join(s.skillDir, name), name, wantMCPs); err != nil {
+		if restoreErr := os.WriteFile(skillMD, raw, 0o644); restoreErr != nil {
+			log.Printf("[skills] %s: rewrite did not parse (%v) and the original could not be restored: %v", name, err, restoreErr)
+		}
+		writeErr(w, 500, "skill updated but does not parse back: "+err.Error())
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// yamlScalar renders one frontmatter scalar so the emitted YAML is valid by
+// construction. A value containing a YAML metacharacter (colon, comment hash,
+// flow bracket, anchor, quote, …) or with surrounding space must be quoted, or
+// the parser stops at the metacharacter and every field after it is lost — a
+// description written as "Tests: quoting # and colons" would otherwise silently
+// vanish and the skill would load under its directory name with an empty
+// description, so a skill-gated MCP server would be skipped without a word.
+func yamlScalar(s string) string {
+	if s != "" && !strings.ContainsAny(s, ":#{}[]&*!|>'\"%@`,\n") && !strings.HasPrefix(s, " ") && !strings.HasSuffix(s, " ") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// verifySkillFile re-loads a written SKILL.md with the real skill parser and
+// asserts the name and the mcps list survived the round trip. A write that
+// produces unparseable frontmatter is worse than a rejected write: the file is
+// on disk, the UI reports success, and the only symptom is a skill the model
+// never loads.
+func verifySkillFile(skillPath, wantName string, wantMCPs []string) error {
+	reg, err := skill.LoadDir(skillPath)
+	if err != nil {
+		return fmt.Errorf("load: %w", err)
+	}
+	if reg == nil {
+		return fmt.Errorf("load: empty registry")
+	}
+	for _, s := range reg.List() {
+		if s.Dir == "" {
+			continue
+		}
+		if s.Name != wantName {
+			return fmt.Errorf("parsed name %q != written %q (frontmatter did not parse; the name fell back to the directory)", s.Name, wantName)
+		}
+		if len(wantMCPs) > 0 && len(s.MCPs) != len(wantMCPs) {
+			return fmt.Errorf("parsed mcps %v != written %v", s.MCPs, wantMCPs)
+		}
+		return nil
+	}
+	return fmt.Errorf("load: %s was not parsed (frontmatter broken?)", wantName)
 }
 
 // rewriteSkillFrontmatter parses the SKILL.md YAML frontmatter and replaces the
@@ -1298,11 +1361,11 @@ func rewriteSkillFrontmatter(content []byte, mcps *[]string, description, licens
 		}
 		for i, p := range pairs {
 			if p.k == key {
-				pairs[i].v = strings.TrimSpace(*val)
+				pairs[i].v = yamlScalar(strings.TrimSpace(*val))
 				return
 			}
 		}
-		pairs = append(pairs, kv{key, strings.TrimSpace(*val)})
+		pairs = append(pairs, kv{key, yamlScalar(strings.TrimSpace(*val))})
 	}
 	applyStr("description", description)
 	applyStr("license", license)
@@ -1318,7 +1381,11 @@ func rewriteSkillFrontmatter(content []byte, mcps *[]string, description, licens
 		}
 		pairs = filtered
 		if len(cleaned) > 0 {
-			pairs = append(pairs, kv{"mcps", strings.Join(cleaned, ", ")})
+			quoted := make([]string, len(cleaned))
+			for i, m := range cleaned {
+				quoted[i] = yamlScalar(m)
+			}
+			pairs = append(pairs, kv{"mcps", strings.Join(quoted, ", ")})
 		}
 	}
 	// Reconstruct

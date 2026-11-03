@@ -1080,26 +1080,33 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	for _, t := range list {
 		dto := taskDTO(t, s.resolvedTaskStatus(t))
 		applyTaskArchiveBlocker(&dto, archiveBlockers)
-		metric := metrics[t.ExpID]
-		dto.Tokens = tokenTotalDTO(metric.Tokens)
-		// prefer the live in-memory heartbeat (fresher) and fall back to the
-		// persisted max activity time (survives restarts) for run-duration display.
-		dto.LastActivity = metric.LastActivity
-		if live := s.engine.LastActivity(t.ID); live > dto.LastActivity {
-			dto.LastActivity = live
-		}
-		dto.GoalsTotal = metric.Goals.Total
-		dto.GoalsMet = metric.Goals.Met
-		dto.InFlight = metric.RunningIntents
-		dto.Findings = FindingSeverityDTO{
-			Critical: metric.Findings.Critical,
-			High:     metric.Findings.High,
-			Medium:   metric.Findings.Medium,
-			Low:      metric.Findings.Low,
-		}
+		s.applyTaskMetrics(&dto, t, metrics[t.ExpID])
 		dtos = append(dtos, dto)
 	}
 	writeJSON(w, 200, map[string]any{"tasks": dtos, "active": active})
+}
+
+// applyTaskMetrics fills the aggregate fields a task carries in both the list and
+// the detail response, so the two endpoints cannot drift: a detail page used to
+// render zero tokens and zero goal progress until the separate stats poll
+// resolved, while the list showed the real numbers.
+func (s *Server) applyTaskMetrics(dto *TaskDTO, t *Task, metric db.TaskListMetrics) {
+	dto.Tokens = tokenTotalDTO(metric.Tokens)
+	// prefer the live in-memory heartbeat (fresher) and fall back to the
+	// persisted max activity time (survives restarts) for run-duration display.
+	dto.LastActivity = metric.LastActivity
+	if live := s.engine.LastActivity(t.ID); live > dto.LastActivity {
+		dto.LastActivity = live
+	}
+	dto.GoalsTotal = metric.Goals.Total
+	dto.GoalsMet = metric.Goals.Met
+	dto.InFlight = metric.RunningIntents
+	dto.Findings = FindingSeverityDTO{
+		Critical: metric.Findings.Critical,
+		High:     metric.Findings.High,
+		Medium:   metric.Findings.Medium,
+		Low:      metric.Findings.Low,
+	}
 }
 
 func (s *Server) resolvedTaskStatus(t *Task) string {
@@ -1479,6 +1486,13 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// endpoint is still possible, but only with a key supplied for it.
 	if authProfile != nil && strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(authProfile.BaseURL) != "" {
 		cfg.BaseURL = strings.TrimRight(strings.TrimSpace(authProfile.BaseURL), "/")
+	}
+	// An omitted streaming flag follows the profile's saved choice, as the field
+	// comment above promises: testing a non-streaming profile from the list view
+	// (empty form) used to send a streaming request and report "no reply content"
+	// for a provider that had answered correctly.
+	if req.Streaming == nil && authProfile != nil {
+		cfg.Stream = authProfile.Streaming
 	}
 	if cfg.AuthMethod == "" {
 		cfg.AuthMethod = strings.TrimSpace(req.AuthMethod)
@@ -1862,6 +1876,11 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dto := taskDTO(t, s.resolvedTaskStatus(t))
+	metrics, err := s.m.PG().TaskListMetricsAll()
+	if err != nil {
+		log.Printf("[tasks] detail metrics query failed for %s — metrics zeroed: %v", t.ID, err)
+	}
+	s.applyTaskMetrics(&dto, t, metrics[t.ExpID])
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
 	applyTaskArchiveBlocker(&dto, archiveBlockers)
 	writeJSON(w, 200, dto)

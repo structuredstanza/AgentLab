@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	actool "github.com/Autumn-27/norma/tool"
@@ -23,6 +24,7 @@ func (s *Server) platformTools() []actool.CoreTool {
 		s.toolUpdateCustomTool(),
 		s.toolCreateMCP(),
 		s.toolUpdateMCP(),
+		s.toolMCPStatus(),
 		s.toolDeleteAssetsByHost(),
 	}
 }
@@ -31,7 +33,7 @@ func (s *Server) platformTools() []actool.CoreTool {
 var platformToolKeys = []string{
 	"create_skill", "update_skill_file",
 	"create_custom_tool", "update_custom_tool",
-	"create_mcp", "update_mcp",
+	"create_mcp", "update_mcp", "mcp_status",
 	"delete_assets_by_host",
 }
 
@@ -322,5 +324,56 @@ func (s *Server) toolUpdateMCP() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			return actool.Text(fmt.Sprintf("mcp updated: id=%d", a.ID)), nil
+		})
+}
+
+// ---- MCP health ----
+
+// coalesceStr returns *p when it holds a non-blank string, else fallback.
+func coalesceStr(p *string, fallback string) string {
+	if p != nil && strings.TrimSpace(*p) != "" {
+		return *p
+	}
+	return fallback
+}
+
+func enabledWord(b bool) string {
+	if b {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+// toolMCPStatus reports each MCP server's last connect outcome so a worker can
+// tell a broken server from a server it simply never needed, instead of working
+// around missing tools blindly. The health columns are already recorded by the
+// connect path (UpdateMCPHealth); this only surfaces them to the model.
+func (s *Server) toolMCPStatus() actool.CoreTool {
+	return wrTool("mcp_status",
+		"Report the health of every configured MCP server: name, transport, enabled, cached tool count, and the outcome of the last connect attempt (time, ok/error). Use this when tools you expect are missing or before relying on a skill-gated server.",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(_ context.Context, _ json.RawMessage) (actool.Result, error) {
+			servers, err := s.m.pg.ListMCP()
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
+			var b strings.Builder
+			fmt.Fprintf(&b, "%d MCP server(s):\n", len(servers))
+			for _, m := range servers {
+				status := "never connected"
+				switch {
+				case m.LastConnectOK != nil && *m.LastConnectOK:
+					status = "connected ok"
+				case m.LastConnectOK != nil && !*m.LastConnectOK:
+					status = "DOWN: " + strings.TrimSpace(coalesceStr(m.LastConnectErr, "connect failed"))
+				}
+				fmt.Fprintf(&b, "- %s [%s, %s, %d cached tools]: %s", m.Name, m.Transport, enabledWord(m.Enabled), len(m.Tools), status)
+				if m.LastConnectAt != nil {
+					fmt.Fprintf(&b, " (last attempt %s)", m.LastConnectAt.UTC().Format(time.RFC3339))
+				}
+				b.WriteByte('\n')
+			}
+			b.WriteString("If a server you need is DOWN, tell the operator in your final report instead of working around it.")
+			return actool.Text(b.String()), nil
 		})
 }

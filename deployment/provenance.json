@@ -464,5 +464,42 @@
       "the imported fresh-create image was not booted: the running VM holds the shared /state bind, so booting a second kernel against it would contend for PostgreSQL",
       "live cloud provider OAuth login, refresh and entitlement"
     ]
+  },
+  "regressions_restored_20261103": {
+    "source_commit": "7b72ca3",
+    "scope": "four behaviours lost relative to the fork's own base commit 7f8c7cb",
+    "findings": [
+      "skill frontmatter emitted unquoted, so a description with a YAML metacharacter was silently dropped and skill-gated MCP servers were skipped",
+      "GET /api/tasks/{id} returned zeroed token and goal aggregates while GET /api/tasks reported them",
+      "the mcp_status platform tool was absent, so an agent could not report why an MCP server was down",
+      "llm/test ignored the stored profile's stream mode when the form omitted it, so a non-streaming profile reported 'no reply content'"
+    ],
+    "runtime_binary_sha256": "ca5e81866647406124c49fb26b131082375284bb16e45ee2972a90cbe1527f45",
+    "deployment": "atomic binary replacement after graceful supervisor stop; guest scripts and skills unchanged",
+    "applied_to_running_vm": "artex-agentlab-astra-reviewed-20261031t010522z",
+    "base_runtime_image_unchanged": true,
+    "fresh_create_image": "agentlab/artex:regressions-20261103t190955z",
+    "fresh_create_image_id": "sha256:49f282922db9",
+    "fresh_create_image_note": "minimal overlay FROM agentlab/artex:astra-reviewed-20261031t010522z replacing only /opt/artex/artex; a full Dockerfile rebuild still fails at the Playwright npm layer on host DNS",
+    "fresh_create_image_booted": false,
+    "tests": {
+      "go_build_vet": "clean",
+      "go_test_with_postgres": "15 packages ok, 0 failures",
+      "restored_tests": "TestYamlScalar, TestSkillFrontmatterRoundTrip, TestShippedSkillsParseCleanly, TestTaskDetailReturnsListMetrics, TestLLMTestStoredKeyFallbackIsTrimmed, TestLLMTestFallbackMatchesRuntimeNormalization, TestLLMTestStoredProfileUsesProfileEndpoint all pass",
+      "python_exporter": "116 tests OK",
+      "extension": "3/3",
+      "web_vitest": "24/24",
+      "web_tsc": "clean",
+      "docs_links": "0 broken"
+    },
+    "live_before_after": {
+      "skill_frontmatter": "before: create 201, read-back description None. after: create 201, read-back \"Tests: quoting # and colons, it's tricky\"",
+      "task_detail_metrics": "before: detail 0/0/0/0 and goals 0/0 while list reported 11/7/3/2 and 1/2. after: detail and list both 11/7/3/2 and 1/3",
+      "mcp_status": "before: absent from /api/tools. after: present, enabled, bound to ['auto']"
+    },
+    "not_verified": [
+      "the fresh-create image was not booted; the running VM holds the shared /state bind",
+      "live cloud provider OAuth login, refresh and entitlement"
+    ]
   }
 }

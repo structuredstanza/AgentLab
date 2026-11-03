@@ -89,6 +89,15 @@ The upstream ARTEX project's per-version release history (0.3.x and earlier) and
 - Provider error bodies are bounded and scrubbed of credential shapes before reaching `llm_health.last_error` and `llm_records.error`, both of which are displayed in the UI.
 - The worker conclusion read by the planner and `get_worker_output` reads newest-first, so a long tool-heavy run no longer reports that its worker produced no output.
 
+#### Regressions restored from the upstream base
+
+Four behaviours that this fork had lost relative to its own base commit (`7f8c7cb`), each with the test that guards it:
+
+- **Behaviour change.** `POST /api/skills` and `PUT /api/skills/{name}` emit YAML-quoted frontmatter values and re-parse the written file before answering. A description containing a colon, `#`, flow bracket, quote or comma used to produce unparseable YAML: every field after the metacharacter was dropped, the skill loaded under its directory name with an empty description, and a skill-gated MCP server was skipped without a word. A write that does not round-trip now returns 500 and is rolled back instead of landing silently. (`server/skill_frontmatter_test.go`, `server/shipped_skills_test.go`)
+- **Behaviour change.** `GET /api/tasks/{id}` returns the same token and goal aggregates as `GET /api/tasks`. The detail response previously carried zeros, so a task page showed no spend and no goal progress until the separate stats poll resolved. (`server/task_detail_metrics_test.go`)
+- **Behaviour change.** The `mcp_status` platform tool reports each MCP server's transport, enabled state, cached tool count and last connect outcome, so an agent can tell a broken server from one it never needed. It seeds on the next start and defaults to the Auto agent, like the other platform tools. (`server/platform_tools.go`)
+- **Behaviour change.** Testing a saved LLM profile with the form's `streaming` field omitted now uses the profile's stored stream mode. A non-streaming profile tested from the list view was sent a streaming request and reported "no return text" for a provider that had answered correctly. (`server/llm_test_fallback_test.go`)
+
 ## [0.3.15-global.1] · 2026-10-14 · ARTEX-global transition release
 
 The release that turns the Korean edition (`0.3.15-ko.1`) into ARTEX-global, a multilingual edition for defenders and researchers worldwide. Based on upstream ARTEX 0.3.15; no agent features were changed.
