@@ -42,8 +42,8 @@ func nativeProxyProvider(authMethod string) string {
 		return "codex"
 	case "antigravity":
 		return "antigravity"
-	case "local":
-		return "local"
+	case "custom":
+		return "custom"
 	}
 	return ""
 }

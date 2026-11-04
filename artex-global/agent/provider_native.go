@@ -217,11 +217,11 @@ func (s *nativeAntigravityState) validTerminal() bool {
 }
 
 func (p *nativeProvider) requestBody(ctx context.Context, req llm.CompletionRequest) ([]byte, []nativeReplay, error) {
-	// A locally hosted model keeps no provider-side state, so there is nothing for a
+	// An operator-configured endpoint keeps no provider-side state, so there is nothing for a
 	// replay receipt to prove: the transcript's own messages are the whole history. The
 	// proof mechanism exists to detect a proxy tampering with opaque subscription state,
 	// which a stateless endpoint does not have.
-	if p.provider == "local" {
+	if p.provider == "custom" {
 		sessionID := transcript.SessionIDFrom(ctx)
 		if sessionID == "" {
 			return nil, nil, errors.New("native inference requires a session id")
@@ -399,6 +399,41 @@ func jsonOrNull(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
+// toolInput returns a tool call's arguments as valid JSON.
+//
+// A model can emit several JSON objects back to back in one arguments field, most
+// often when it decides to call a tool more than once in a single turn. The result is
+// not valid JSON, and sending it back makes the upstream reject every later turn of the
+// conversation. Only the first object is kept: it is the call the model started with,
+// and the remaining ones are re-issued on the next turn at the cost of one round trip.
+//
+// Invalid input is repaired rather than rejected because a local endpoint holds no
+// provider state that a rejected turn would protect, and a task that cannot send its
+// history stays wedged until its process is restarted.
+func toolInput(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return json.RawMessage("{}")
+	}
+	if json.Valid(raw) {
+		return raw
+	}
+	if first, ok := firstJSONValue(raw); ok && json.Valid(first) {
+		return first
+	}
+	return json.RawMessage("{}")
+}
+
+// firstJSONValue returns the leading complete JSON value of b, ignoring whatever
+// follows it.
+func firstJSONValue(b []byte) (json.RawMessage, bool) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	var v json.RawMessage
+	if err := dec.Decode(&v); err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
 // nativeSystemBlocks renders the system prompt for the Claude native API, putting a
 // cache breakpoint on the static prefix named by DynamicBoundary. A zero boundary
 // means no static prefix was declared, so the prompt is sent as one plain block and
@@ -499,8 +534,8 @@ func (p *nativeProvider) encodeInput(req llm.CompletionRequest) (json.RawMessage
 			body["output_config"] = map[string]any{"effort": p.effort}
 		}
 		return json.Marshal(body)
-	case "local":
-		// A locally hosted model speaks the [OI] chat-completions format. Tool use is
+	case "custom":
+		// An operator-configured endpoint speaks the [OI] chat-completions format. Tool use is
 		// expressed as assistant tool_calls plus role:tool results, which is what a
 		// local server's template expects; there is no provider envelope to preserve.
 		messages := make([]any, 0, len(req.Messages)+1)
@@ -535,14 +570,11 @@ func (p *nativeProvider) encodeInput(req llm.CompletionRequest) (json.RawMessage
 					case llm.BlockToolUse:
 						// A tool call's arguments must be a JSON object on the wire. An empty
 						// input is common for no-argument tools, and a local server's chat
-						// template rejects an empty string, so send the empty object instead.
-						args := "{}"
-						if trimmed := strings.TrimSpace(string(b.Input)); trimmed != "" && trimmed != "null" {
-							args = trimmed
-						}
+						// template rejects an empty string, so the empty object is sent instead.
+						// toolInput also repairs a model that emitted several objects at once.
 						calls = append(calls, map[string]any{
 							"id": b.ID, "type": "function",
-							"function": map[string]any{"name": b.Name, "arguments": args},
+							"function": map[string]any{"name": b.Name, "arguments": string(toolInput(b.Input))},
 						})
 					}
 				}
@@ -809,7 +841,7 @@ func projectNative(provider string, raw json.RawMessage) ([]llm.ContentBlock, st
 			}
 		}
 		return out, state.ID, nil
-	case "local":
+	case "custom":
 		var state struct {
 			Content   string `json:"content"`
 			ToolCalls []struct {
@@ -829,7 +861,11 @@ func projectNative(provider string, raw json.RawMessage) ([]llm.ContentBlock, st
 		for _, call := range state.ToolCalls {
 			out = append(out, llm.ContentBlock{
 				Type: llm.BlockToolUse, ID: call.ID, Name: call.Function.Name,
-				Input: jsonOrNull(json.RawMessage(call.Function.Arguments)),
+				// Repaired here as well as on the way out: this is where a bad call
+				// enters the conversation, and an invalid block cannot be serialized to
+				// the transcript, so it would live only in memory and be replayed from
+				// there for the rest of the task.
+				Input: toolInput(json.RawMessage(call.Function.Arguments)),
 			})
 		}
 		return out, "", nil

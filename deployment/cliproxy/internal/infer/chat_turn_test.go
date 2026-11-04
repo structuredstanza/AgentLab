@@ -10,7 +10,7 @@ import (
 // would emit one call per character, and the upstream then rejects the malformed
 // arguments on the next turn. This is that exact frame sequence.
 func TestChatTurnMergesStreamedToolCallFragments(t *testing.T) {
-	turn := newAccumulator("local")
+	turn := newAccumulator("custom")
 	frames := []map[string]any{
 		{"choices": []any{map[string]any{"index": json.Number("0"), "delta": map[string]any{
 			"tool_calls": []any{map[string]any{
@@ -75,7 +75,7 @@ func TestChatTurnMergesStreamedToolCallFragments(t *testing.T) {
 
 // Two calls interleaved in one stream must stay separate and keep their own arguments.
 func TestChatTurnKeepsDistinctToolCallsApart(t *testing.T) {
-	turn := newAccumulator("local")
+	turn := newAccumulator("custom")
 	for _, f := range []map[string]any{
 		{"choices": []any{map[string]any{"index": json.Number("0"), "delta": map[string]any{
 			"tool_calls": []any{
@@ -115,7 +115,7 @@ func TestChatTurnKeepsDistinctToolCallsApart(t *testing.T) {
 // A no-argument tool must still carry a JSON object, or the server's template fails
 // parsing it before the model runs.
 func TestChatTurnGivesEmptyToolArgumentsAnObject(t *testing.T) {
-	turn := newAccumulator("local")
+	turn := newAccumulator("custom")
 	if err := turn.feed(map[string]any{"choices": []any{map[string]any{
 		"index": json.Number("0"),
 		"message": map[string]any{
@@ -149,7 +149,7 @@ func TestChatTurnGivesEmptyToolArgumentsAnObject(t *testing.T) {
 
 // A complete non-streaming message carries whole arguments; they must not be lost.
 func TestChatTurnReadsAWholeMessage(t *testing.T) {
-	turn := newAccumulator("local")
+	turn := newAccumulator("custom")
 	if err := turn.feed(map[string]any{"choices": []any{map[string]any{
 		"index": json.Number("0"),
 		"message": map[string]any{
@@ -193,7 +193,7 @@ func TestChatTurnReadsAWholeMessage(t *testing.T) {
 // into one whose arguments are several JSON objects concatenated, and the upstream
 // rejects that on the following turn.
 func TestChatTurnSplitsCallsThatShareAPosition(t *testing.T) {
-	turn := newAccumulator("local")
+	turn := newAccumulator("custom")
 	for _, f := range []map[string]any{
 		{"choices": []any{map[string]any{"index": json.Number("0"), "delta": map[string]any{
 			"tool_calls": []any{map[string]any{
@@ -248,7 +248,7 @@ func TestChatTurnSplitsCallsThatShareAPosition(t *testing.T) {
 // The decoder reads numbers as json.Number, so a counter reported as a number would
 // otherwise be dropped and every turn would report zero tokens.
 func TestChatTurnReadsNumericUsage(t *testing.T) {
-	turn := newAccumulator("local")
+	turn := newAccumulator("custom")
 	if err := turn.feed(map[string]any{
 		"choices": []any{map[string]any{
 			"index":         json.Number("0"),

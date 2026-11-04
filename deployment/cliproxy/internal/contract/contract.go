@@ -11,31 +11,31 @@ import (
 )
 
 // Provider is one of the enabled providers. Claude, Codex and Antigravity are
-// subscription providers backed by OAuth grants. Local is a model hosted on the
-// operator's own machine: it has no grant to refresh, but routing it through the
-// host keeps every outbound model request under one policy, one capture and one
-// cache decision instead of leaving a second, uncontrolled egress.
+// subscription providers backed by OAuth grants. Custom is an operator-configured
+// endpoint: it has no grant to refresh, but routing it through the host keeps every
+// outbound model request under one policy, one capture and one cache decision instead
+// of leaving a second, uncontrolled egress.
 type Provider string
 
 const (
 	ProviderClaude      Provider = "claude"
 	ProviderCodex       Provider = "codex"
 	ProviderAntigravity Provider = "antigravity"
-	ProviderLocal       Provider = "local"
+	ProviderCustom      Provider = "custom"
 )
 
 // ParseProvider accepts only the canonical lowercase names.
 func ParseProvider(s string) (Provider, bool) {
 	switch Provider(s) {
-	case ProviderClaude, ProviderCodex, ProviderAntigravity, ProviderLocal:
+	case ProviderClaude, ProviderCodex, ProviderAntigravity, ProviderCustom:
 		return Provider(s), true
 	}
 	return "", false
 }
 
 // RequiresGrant reports whether the provider authenticates with a stored grant.
-// A local provider does not: it is configured by the host, not logged in to.
-func RequiresGrant(p Provider) bool { return p != ProviderLocal }
+// A custom endpoint does not: it is configured by the host, not logged in to.
+func RequiresGrant(p Provider) bool { return p != ProviderCustom }
 
 // ProfileID is a canonical positive decimal of at most 19 digits, no leading zero.
 type ProfileID string

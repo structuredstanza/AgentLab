@@ -68,7 +68,7 @@ func (t *policyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// the product's own prompts name the product. Withholding the canaries disables the
 	// search while shape validation, capture and receipts still apply.
 	canaries := t.p.canaries
-	if rt.provider == contract.ProviderLocal {
+	if rt.provider == contract.ProviderCustom {
 		canaries = nil
 	}
 	s := &scanner{canaries: canaries, budget: maxScanBudget}

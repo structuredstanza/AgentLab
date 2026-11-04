@@ -321,7 +321,7 @@ var nativeProviders = map[string]struct {
 	"antigravity": {"antigravity", FormatAntigravity},
 	// A locally hosted model has no grant to refresh, but it is reached through the
 	// same proxy so that every model request leaves by one egress under one policy.
-	"local": {"local", llm.Format("openai")},
+	"custom": {"custom", llm.Format("openai")},
 }
 
 // NativeProviderName returns the canonical subscription executor, or empty for API-key providers.

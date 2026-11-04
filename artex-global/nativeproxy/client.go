@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -105,9 +106,12 @@ func New(rawURL, token string) (*Client, error) {
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	tr := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-		ResponseHeaderTimeout: 60 * time.Second,
+		Proxy:       nil,
+		DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		// A hosted provider returns response headers almost immediately. A local model
+		// does not: it prefills the whole prompt before the first frame, which on a long
+		// conversation takes minutes. Aborting at 60s failed turns that were progressing.
+		ResponseHeaderTimeout: headerTimeout(),
 		MaxIdleConns:          4,
 		IdleConnTimeout:       90 * time.Second,
 	}
@@ -116,6 +120,22 @@ func New(rawURL, token string) (*Client, error) {
 
 // NewFromEnv returns nil and no error when ARTEX_NATIVE_PROXY_URL is unset: the proxy is unavailable.
 // It reads only ARTEX_NATIVE_PROXY_URL and the token file named by ARTEX_NATIVE_PROXY_TOKEN_FILE.
+// headerTimeout bounds how long the proxy may take to start a stream. A local model
+// prefills before its first token, so this has to accommodate the whole prompt, not
+// just the connection; ARTEX_NATIVE_PROXY_HEADER_TIMEOUT_SECONDS overrides it.
+func headerTimeout() time.Duration {
+	const fallback = 300 * time.Second
+	raw := strings.TrimSpace(os.Getenv("ARTEX_NATIVE_PROXY_HEADER_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return fallback
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs <= 0 {
+		return fallback
+	}
+	return time.Duration(secs) * time.Second
+}
+
 func NewFromEnv() (*Client, error) {
 	rawURL := os.Getenv(envURL)
 	if rawURL == "" {
@@ -215,7 +235,7 @@ func (c *Client) Infer(ctx context.Context, profileID string, body json.RawMessa
 	req.Header.Set("Accept", "application/x-ndjson")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, errors.New("native proxy request failed")
+		return nil, fmt.Errorf("native proxy request failed: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		defer resp.Body.Close()
@@ -251,7 +271,7 @@ func (c *Client) doJSON(ctx context.Context, op, method, path string, in, out an
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return errors.New("native proxy request failed")
+		return fmt.Errorf("native proxy request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {

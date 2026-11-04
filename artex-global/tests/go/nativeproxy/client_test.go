@@ -1,4 +1,4 @@
-package nativeproxy
+package nativeproxy_test
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/artex/nativeproxy"
 )
 
 func proxyServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
@@ -21,7 +23,7 @@ func proxyServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
 
 func TestNewFromEnvUnsetIsUnavailable(t *testing.T) {
 	t.Setenv("ARTEX_NATIVE_PROXY_URL", "")
-	c, err := NewFromEnv()
+	c, err := nativeproxy.NewFromEnv()
 	if c != nil || err != nil {
 		t.Fatalf("NewFromEnv() = %v, %v; want nil, nil", c, err)
 	}
@@ -40,7 +42,7 @@ func TestNewFromEnvReadsTokenFile(t *testing.T) {
 	})
 	t.Setenv("ARTEX_NATIVE_PROXY_URL", srv.URL)
 	t.Setenv("ARTEX_NATIVE_PROXY_TOKEN_FILE", path)
-	c, err := NewFromEnv()
+	c, err := nativeproxy.NewFromEnv()
 	if err != nil || c == nil {
 		t.Fatalf("NewFromEnv() = %v, %v", c, err)
 	}
@@ -52,7 +54,7 @@ func TestNewFromEnvReadsTokenFile(t *testing.T) {
 func TestNewFromEnvRequiresTokenFileWhenURLSet(t *testing.T) {
 	t.Setenv("ARTEX_NATIVE_PROXY_URL", "http://127.0.0.1:1")
 	t.Setenv("ARTEX_NATIVE_PROXY_TOKEN_FILE", "")
-	if _, err := NewFromEnv(); err == nil {
+	if _, err := nativeproxy.NewFromEnv(); err == nil {
 		t.Fatal("NewFromEnv() with URL but no token file: want error")
 	}
 }
@@ -65,7 +67,7 @@ func TestNewRejectsUnsafeInputs(t *testing.T) {
 		"empty token": {"http://127.0.0.1:1", ""},
 	}
 	for name, c := range cases {
-		if _, err := New(c[0], c[1]); err == nil {
+		if _, err := nativeproxy.New(c[0], c[1]); err == nil {
 			t.Errorf("%s: New(%q) succeeded; want error", name, c[0])
 		}
 	}
@@ -77,7 +79,7 @@ func TestPollDecodesStructuredLoginPrompt(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"status":"pending","prompt":{"message":"Enter the verification code"}}`)
 	})
-	c, err := New(srv.URL, "tok")
+	c, err := nativeproxy.New(srv.URL, "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +106,7 @@ func TestInferPostsBodyToProfileInferPath(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		_, _ = w.Write(b)
 	})
-	c, err := New(srv.URL, "tok")
+	c, err := nativeproxy.New(srv.URL, "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,12 +126,12 @@ func TestInferNon2xxReturnsSafeCodeOnly(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = io.WriteString(w, `{"error":{"code":"upstream_failed","message":"upstream service failed"},"detail":"secret provider prose"}`)
 	})
-	c, err := New(srv.URL, "tok")
+	c, err := nativeproxy.New(srv.URL, "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = c.Infer(context.Background(), "7", []byte(`{}`))
-	var be *Error
+	var be *nativeproxy.Error
 	if !errors.As(err, &be) {
 		t.Fatalf("err = %v; want *Error", err)
 	}
@@ -145,12 +147,12 @@ func TestInferNon2xxRejectsUnsafeErrorCodeProse(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = io.WriteString(w, `{"error":{"code":"bad raw upstream token with spaces and prose"}}`)
 	})
-	c, err := New(srv.URL, "tok")
+	c, err := nativeproxy.New(srv.URL, "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = c.Infer(context.Background(), "7", []byte(`{}`))
-	var be *Error
+	var be *nativeproxy.Error
 	if !errors.As(err, &be) {
 		t.Fatalf("err = %v; want *Error", err)
 	}
@@ -165,7 +167,7 @@ func TestProfileIDIsEscapedAsOneSegment(t *testing.T) {
 			t.Errorf("escaped path = %q; want one escaped profile segment", got)
 		}
 	})
-	c, err := New(srv.URL, "tok")
+	c, err := nativeproxy.New(srv.URL, "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +185,7 @@ func TestModelsUsesRootLocalCatalogRoute(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"models":[{"id":"m","name":"Model","context_window":1234,"supported_efforts":["high"]}]}`)
 	})
-	c, err := New(srv.URL, "tok")
+	c, err := nativeproxy.New(srv.URL, "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,11 +196,11 @@ func TestModelsUsesRootLocalCatalogRoute(t *testing.T) {
 }
 
 func TestInferRejectsBodiesAboveHostLimit(t *testing.T) {
-	c, err := New("http://127.0.0.1:1", "tok")
+	c, err := nativeproxy.New("http://127.0.0.1:1", "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.Infer(context.Background(), "7", make([]byte, MaxInferenceBodyBytes+1))
+	_, err = c.Infer(context.Background(), "7", make([]byte, nativeproxy.MaxInferenceBodyBytes+1))
 	if err == nil || !strings.Contains(err.Error(), "8 MiB") {
 		t.Fatalf("oversized inference body error = %v", err)
 	}

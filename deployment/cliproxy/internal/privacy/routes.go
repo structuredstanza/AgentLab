@@ -1,9 +1,9 @@
 package privacy
 
 import (
-	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/artex/cliproxyhost/internal/contract"
 )
@@ -67,12 +67,13 @@ func buildRoutes() map[routeKey]route {
 	return m
 }
 
-// localInferencePaths are the only paths an operator-hosted endpoint may be called on.
-var localInferencePaths = map[string]bool{"/v1/chat/completions": true}
+// customInferencePaths are the only paths the configured endpoint may be called on.
+var customInferencePaths = map[string]bool{"/v1/chat/completions": true}
 
-// lookupRoute admits only https requests whose host has no port and whose method and
-// escaped path match an allowlist entry exactly. Plaintext is admitted solely for a
-// loopback-hosted local model, by lookupLoopbackRoute.
+// lookupRoute admits a request by one of two rules: an https request matching a pinned
+// provider entry exactly, or a request to the operator-configured origin. The custom
+// origin is checked for both schemes, because an operator may host the endpoint
+// themselves over plaintext or point at a remote service over TLS.
 func lookupRoute(req *http.Request) (route, bool) {
 	if req.URL == nil || req.URL.User != nil || req.URL.Fragment != "" || req.URL.Opaque != "" {
 		return route{}, false
@@ -81,40 +82,44 @@ func lookupRoute(req *http.Request) (route, bool) {
 	if method == "" {
 		method = http.MethodGet
 	}
-	if req.URL.Scheme != "https" {
-		return lookupLoopbackRoute(req, method)
+	if req.URL.Scheme == "https" {
+		if rt, ok := allowedRoutes[routeKey{host: strings.ToLower(req.URL.Host), method: method, path: req.URL.EscapedPath()}]; ok {
+			return rt, true
+		}
 	}
-	rt, ok := allowedRoutes[routeKey{host: strings.ToLower(req.URL.Host), method: method, path: req.URL.EscapedPath()}]
-	return rt, ok
+	return lookupCustomRoute(req, method)
 }
 
-// lookupLoopbackRoute admits the operator-hosted model endpoint. It is the one upstream
-// that is neither a pinned public provider nor reachable over TLS: the endpoint is
-// configured locally and called over plaintext loopback, which never leaves the machine,
-// so the disguise rationale behind the https-only rule does not apply to it. The
-// admission is kept deliberately narrow — loopback host with an explicit port, POST, the
-// single completion path, and only for the local provider — so it cannot be reused as a
-// general plaintext escape hatch.
-func lookupLoopbackRoute(req *http.Request, method string) (route, bool) {
-	if req.URL.Scheme != "http" || method != http.MethodPost {
-		return route{}, false
-	}
-	if !localInferencePaths[req.URL.EscapedPath()] || !isLoopbackHost(req.URL.Host) {
-		return route{}, false
-	}
-	return route{provider: contract.ProviderLocal, kind: kindInference}, true
-}
+// customOrigin is the host:port the operator configured for the custom provider. It is
+// set once at startup from the same configuration that carries the endpoint, so the
+// allowlist and the credential can never disagree about where traffic goes.
+var customOrigin atomic.Value // string
 
-// isLoopbackHost accepts a loopback address only when a port is spelled out, so the
-// admission is always to one explicit endpoint rather than to a whole host.
-func isLoopbackHost(hostport string) bool {
-	host, port, err := net.SplitHostPort(hostport)
-	if err != nil || port == "" {
-		return false
+// SetCustomOrigin pins the single origin the custom provider may reach.
+func SetCustomOrigin(origin string) { customOrigin.Store(strings.ToLower(origin)) }
+
+// lookupCustomRoute admits the operator-configured model endpoint. It is the one
+// upstream that is not a pinned public provider: the operator chooses it, so the
+// allowlist cannot name it in advance. Admission is to that one origin, on the single
+// completion path, for POST only — the endpoint cannot be used to reach anything else,
+// and an unset origin admits nothing.
+//
+// Plaintext is allowed here because the endpoint may be a model server the operator
+// runs locally, which has no certificate. It is not an escape hatch: the host and port
+// must match the configured origin exactly.
+func lookupCustomRoute(req *http.Request, method string) (route, bool) {
+	if method != http.MethodPost {
+		return route{}, false
 	}
-	if strings.EqualFold(host, "localhost") {
-		return true
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return route{}, false
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	want, _ := customOrigin.Load().(string)
+	if want == "" || !strings.EqualFold(req.URL.Host, want) {
+		return route{}, false
+	}
+	if !customInferencePaths[req.URL.EscapedPath()] {
+		return route{}, false
+	}
+	return route{provider: contract.ProviderCustom, kind: kindInference}, true
 }

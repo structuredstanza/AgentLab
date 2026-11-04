@@ -271,11 +271,11 @@ func (s *Service) admit(ctx context.Context, req InferRequest) (admittedTurn, er
 	return admittedTurn{ctx: ctx, release: release, binding: binding, input: resolvedInput, replay: replays}, nil
 }
 
-// streamPayloadForLocal aligns a local turn with the streaming transport the host
+// streamPayloadForCustom aligns a local turn with the streaming transport the host
 // always uses. The [OI] wire format defaults to a single whole response unless the
 // payload asks to stream, and the compat executor expects frames, so an unset flag
 // turns a successful completion into a transport error.
-func streamPayloadForLocal(input json.RawMessage) json.RawMessage {
+func streamPayloadForCustom(input json.RawMessage) json.RawMessage {
 	var body map[string]any
 	if json.Unmarshal(input, &body) != nil {
 		return input
@@ -296,8 +296,8 @@ func (s *Service) stream(ctx context.Context, b contract.Binding, input json.Raw
 	defer cancel()
 	format := formatOf(b.Provider)
 	sourceFormat := format
-	if b.Provider == contract.ProviderLocal {
-		input = streamPayloadForLocal(input)
+	if b.Provider == contract.ProviderCustom {
+		input = streamPayloadForCustom(input)
 	}
 	if b.Provider == contract.ProviderCodex {
 		// Normalize Responses-shaped requests while retaining native Codex output.
@@ -467,7 +467,7 @@ func formatOf(p contract.Provider) sdktranslator.Format {
 		return sdktranslator.FormatClaude
 	case contract.ProviderCodex:
 		return sdktranslator.FormatCodex
-	case contract.ProviderLocal:
+	case contract.ProviderCustom:
 		// A local model speaks the OpenAI-compatible wire format.
 		return sdktranslator.Format("openai")
 	default:

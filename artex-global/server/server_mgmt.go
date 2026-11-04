@@ -2012,12 +2012,12 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "Antigravity authentication requires the Antigravity format")
 			return
 		}
-	case "local":
-		// A locally hosted model is reached through the proxy like any other native
+	case "custom":
+		// An operator-configured endpoint is reached through the proxy like any other native
 		// provider, so it speaks the [OI] chat-completions format and sets no endpoint
 		// of its own: the proxy owns where the model actually lives.
 		if p.Format != "openai" {
-			writeErr(w, 400, "Local authentication requires the [OI] format")
+			writeErr(w, 400, "Custom authentication requires the [OI] format")
 			return
 		}
 	default:

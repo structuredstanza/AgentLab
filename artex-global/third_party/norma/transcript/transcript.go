@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -209,6 +210,11 @@ func (w *Writer) write(r Record) {
 	if err := w.store.Append(w.path, r); err != nil {
 		if w.err == nil {
 			w.err = err
+			// Nothing drains Err, so a message that cannot be persisted otherwise
+			// disappears without trace: the conversation keeps it in memory and the
+			// transcript silently omits it, which makes a later failure look like a
+			// corruption of a file that is in fact missing a record.
+			log.Printf("[transcript] could not append %s to %s: %v", r.Type, w.path, err)
 		}
 		return
 	}

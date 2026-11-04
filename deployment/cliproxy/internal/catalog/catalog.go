@@ -46,11 +46,11 @@ func New() (*Catalog, error) {
 
 // Models returns a deep copy of the catalog entries for provider, so callers
 // cannot mutate the embedded data.
-// AddLocal registers the operator-hosted models. They cannot come from the embedded
+// AddCustom registers the operator-hosted models. They cannot come from the embedded
 // native registry because nothing is known about them statically, so the host supplies
 // them from its own configuration.
-func (c *Catalog) AddLocal(models []contract.Model) {
-	c.models[contract.ProviderLocal] = models
+func (c *Catalog) AddCustom(models []contract.Model) {
+	c.models[contract.ProviderCustom] = models
 }
 
 func (c *Catalog) Models(provider contract.Provider) ([]contract.Model, error) {

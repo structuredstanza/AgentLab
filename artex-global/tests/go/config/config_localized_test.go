@@ -1,10 +1,12 @@
-package config
+package config_test
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/artex/config"
 )
 
 // TestPostgresDSNErrorKeepsIdentifiers pins that the missing-config startup error
@@ -14,7 +16,7 @@ func TestPostgresDSNErrorKeepsIdentifiers(t *testing.T) {
 	t.Setenv("ARTEX_PG_DSN", "")
 	t.Setenv("ARTEX_CONFIG", filepath.Join(dir, "nope.json"))
 
-	_, _, err := PostgresDSN()
+	_, _, err := config.PostgresDSN()
 	if err == nil {
 		t.Fatal("missing config should error")
 	}
@@ -33,7 +35,7 @@ func TestPostgresDSNSourceNamesWinner(t *testing.T) {
 
 	t.Setenv("ARTEX_CONFIG", filepath.Join(dir, "nope.json"))
 	t.Setenv("ARTEX_PG_DSN", "postgres://envwins/x")
-	if _, source, err := PostgresDSN(); err != nil {
+	if _, source, err := config.PostgresDSN(); err != nil {
 		t.Fatalf("env source: %v", err)
 	} else if !strings.Contains(source, "ARTEX_PG_DSN") {
 		t.Errorf("env source label should name ARTEX_PG_DSN: %q", source)
@@ -44,7 +46,7 @@ func TestPostgresDSNSourceNamesWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("ARTEX_CONFIG", cfgPath)
-	if _, source, err := PostgresDSN(); err != nil {
+	if _, source, err := config.PostgresDSN(); err != nil {
 		t.Fatalf("dsn source: %v", err)
 	} else if !strings.Contains(source, "database.dsn") {
 		t.Errorf("dsn source label should name database.dsn: %q", source)
@@ -53,7 +55,7 @@ func TestPostgresDSNSourceNamesWinner(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(`{"database":{"host":"10.1.2.3","dbname":"d","user":"u"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, source, err := PostgresDSN(); err != nil {
+	if _, source, err := config.PostgresDSN(); err != nil {
 		t.Fatalf("fields source: %v", err)
 	} else if !strings.Contains(source, "database") {
 		t.Errorf("fields source label should name the database fields: %q", source)

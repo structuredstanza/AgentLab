@@ -31,7 +31,7 @@ func newAccumulator(p contract.Provider) accumulator {
 		return &claudeTurn{usage: map[string]any{}, buffers: map[int]map[string]*strings.Builder{}}
 	case contract.ProviderCodex:
 		return &codexTurn{}
-	case contract.ProviderLocal:
+	case contract.ProviderCustom:
 		// A local model answers in the [OI] chat-completions shape.
 		return &chatTurn{toolCalls: map[int]*pendingCall{}}
 	default:
@@ -639,7 +639,7 @@ func (c *chatTurn) result() (turnResult, bool, error) {
 	// The replay state is the assistant message itself: a stateless local model has
 	// nothing else to carry between turns, and keeping it lets a retried turn replay
 	// exactly what the model said.
-	return turnResult{response: response, state: response, usage: c.usage, stop: localStop(c.finish)}, true, nil
+	return turnResult{response: response, state: response, usage: c.usage, stop: customStop(c.finish)}, true, nil
 }
 
 // intOf reads a JSON number in any representation the decoders produce.
@@ -670,10 +670,10 @@ func intValue(v any) (int, bool) {
 	return 0, false
 }
 
-// localStop maps a chat-completion finish_reason onto the native terminal vocabulary
+// customStop maps a chat-completion finish_reason onto the native terminal vocabulary
 // the host contract uses. Sending the raw value would fail admission downstream, since
 // "stop" is not one of the four terminal reasons the native protocol defines.
-func localStop(finish string) string {
+func customStop(finish string) string {
 	switch strings.ToLower(strings.TrimSpace(finish)) {
 	case "tool_calls", "function_call":
 		return "tool"
