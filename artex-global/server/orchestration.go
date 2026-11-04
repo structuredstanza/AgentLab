@@ -493,7 +493,6 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 		schema, _ := json.Marshal(t.InputSchema())
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, autoAgents)
 	}
-	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
 	s.seedPlannerListAssetsBinding()
@@ -522,38 +521,6 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 // SeedTool is first-insert-only, so a new param (e.g. spawn_task's llm_profile) never
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
-func (s *Server) refreshBuiltinToolSchemas() {
-	const flag = "tool_schema_refresh_v7_list_facts_paging"
-	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
-		return
-	}
-	tools := append(s.orchestrationTools(), s.platformTools()...)
-	for _, t := range tools {
-		schema, _ := json.Marshal(t.InputSchema())
-		if err := s.m.pg.RefreshToolDefaults(t.Name(), t.Description(), schema); err != nil {
-			log.Printf("[tools] refresh %s schema failed: %v", t.Name(), err)
-		}
-	}
-	// simultaneously refreshes some built-in agent tools to the code defaults:
-	//   - goal_met: The description in the old library seed carries a misleading "end this planning round" phrasing, which would cause the planner to treat it as
-	//     ("end an empty round") and mistakenly judge the entire task finished.
-	//   - insert_assets: adds a new related parameter (marks whether an asset is relevant to the current task, and determines whether it counts toward coverage),
-	//     SeedTool first-insert only; for old databases that have already seeded the schema, otherwise this new parameter will not be received.
-	//   - list_facts: changed to paginated, added limit/before/q input parameters; otherwise the empty schema already seeded in old databases
-	//     which shows "no parameters" on the tool management page, and the model would not receive the descriptions of these parameters.
-	refreshBuiltin := map[string]bool{"goal_met": true, "insert_assets": true, "list_facts": true}
-	for _, sd := range agent.BuiltinToolSeeds() {
-		if !refreshBuiltin[sd.Key] {
-			continue
-		}
-		schema, _ := json.Marshal(sd.Schema)
-		if err := s.m.pg.RefreshToolDefaults(sd.Key, sd.Desc, schema); err != nil {
-			log.Printf("[tools] refresh %s desc failed: %v", sd.Key, err)
-		}
-	}
-	_ = s.m.pg.SetSetting(flag, "true")
-	log.Print("[tools] refreshed orchestration/platform tool schemas to code defaults (one-time)")
-}
 
 // unbindGoalMetDefault removes goal_met's default "planner" binding ONCE (guarded by
 // a settings flag), so existing DBs match the new default of NO agent. goal_met bypasses

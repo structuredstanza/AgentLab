@@ -869,5 +869,44 @@
     "not_verified": [
       "no agent conversation was driven end to end because no LLM profile is configured in this VM, so list_tools guidance is proven by its unit test and by the deployed binary, not by a model reading it"
     ]
+  },
+  "tool_seed_tracking_20261104": {
+    "source_commit": "6f2f3f1fe56b992f63403b04195fc4b6f0137099",
+    "sandbox": "artex-agentlab-seed-20261104t0600z",
+    "image": "agentlab/artex:seed-tracking-v1",
+    "image_id": "sha256:872c83c8feb4",
+    "runtime_binary_sha256": "b29e285c3870ab534f9f5b3f119676e5a7b18faf860cd0945e46f40de393cbac",
+    "defect": "SeedTool inserted code-defined descriptions and schemas with ON CONFLICT DO NOTHING. /state is a host mount, so the row outlived the image and a description changed in code never reached an existing database. The DO NOTHING was deliberate: it stopped a restart wiping operator edits. Neither intent was recorded, so the two cases were indistinguishable.",
+    "fix": {
+      "columns": [
+        "seeded_description TEXT",
+        "seeded_schema JSONB"
+      ],
+      "semantics": "a non-NULL baseline means the value is still the code's; NULL means operator-owned and never overwritten",
+      "SeedTool": "overwrites a field only while the live value equals its baseline, then advances the baseline",
+      "UpdateTool": "clears the baseline only for a field the operator actually changed, so a no-op save does not orphan the row",
+      "UpsertToolForce": "restores the baseline, returning the row to code management (the reset action)",
+      "BackfillToolSeedBaseline": "one-time, flag-guarded; adopts the current value for rows that predate the tracking so a later code change can reach them"
+    },
+    "removed": [
+      "migrateLegacyToolText plus its 60-entry legacyToolRows digest table and legacySchemaDigest: a hand-maintained, frozen copy of the same idea, superseded by the baseline",
+      "refreshBuiltinToolSchemas: a flag-gated one-shot with a hardcoded three-tool map, needed only because SeedTool could not propagate",
+      "RefreshToolDefaults: the unconditional overwrite those migrations used"
+    ],
+    "net": "-123 lines",
+    "live_verification": [
+      "the list_tools description was changed in code, rebuilt, and deployed onto the same /state that held the old text; GET /api/tools returned the new text (the exact scenario that used to fail)",
+      "an operator edit via PUT /api/tools/list_tools survived a full supervisor restart",
+      "POST /api/tools/list_tools/reset restored the code default and the baseline",
+      "tools table: 57 system rows tracked, 0 untracked; backfill flag set"
+    ],
+    "tests": {
+      "db/tool_seed_test.go": "8 cases: propagation, edit preservation, independent description/schema tracking, no-op save keeps baseline, reset restores management, backfill adopts then tracks, reverted edit is not overwritten, custom tools untouched",
+      "full_suite": "20 packages, 0 failures"
+    },
+    "tradeoff": "a description hand-edited before this version is adopted as a baseline, so a later code change may replace it. Chosen because the alternative leaves the defect unfixed for every existing install. Reset and version control are the recovery path.",
+    "not_verified": [
+      "no agent conversation was driven end to end; the propagation was verified through the API and the database, not by a model reading the new text"
+    ]
   }
 }

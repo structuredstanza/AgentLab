@@ -24,10 +24,17 @@ type Tool struct {
 
 const toolCols = `key, system, description, schema, agents, enabled, kind, exec, deferred`
 
-// SeedTool inserts a built-in tool's code-defined defaults ONCE. ON CONFLICT DO
-// NOTHING: an existing row (possibly edited in the UI) is never overwritten on
-// startup — that's what keeps page edits from being wiped every restart. Use
-// UpsertToolForce for an explicit "reset to code default".
+// SeedTool writes a built-in tool's code-defined description and schema, keeping
+// any operator edit.
+//
+// A row records what the seed last wrote (seeded_description / seeded_schema). The
+// seed overwrites a field only while the live value still equals its baseline, so a
+// description or schema changed in code reaches an existing database on the next
+// start, and a field the operator edited is left alone because UpdateTool clears its
+// baseline. A NULL baseline means operator-owned and is never overwritten;
+// UpsertToolForce restores it when the operator asks to reset to the code default.
+//
+// enabled and agents are operator state, not code defaults, and are never touched.
 func (d *DB) SeedTool(key, desc string, schema, agents json.RawMessage) error {
 	if len(schema) == 0 {
 		schema = json.RawMessage("{}")
@@ -36,10 +43,45 @@ func (d *DB) SeedTool(key, desc string, schema, agents json.RawMessage) error {
 		agents = json.RawMessage("[]")
 	}
 	_, err := d.Exec(`
-INSERT INTO tools(key, system, description, schema, agents, enabled)
-VALUES ($1, true, $2, $3, $4, true)
-ON CONFLICT (key) DO NOTHING`, key, desc, schema, agents)
+INSERT INTO tools(key, system, description, schema, agents, enabled, seeded_description, seeded_schema)
+VALUES ($1, true, $2, $3, $4, true, $2, $3)
+ON CONFLICT (key) DO UPDATE SET
+  description        = CASE WHEN tools.seeded_description IS NOT NULL
+                              AND tools.description = tools.seeded_description
+                             THEN EXCLUDED.description ELSE tools.description END,
+  seeded_description = CASE WHEN tools.seeded_description IS NOT NULL
+                              AND tools.description = tools.seeded_description
+                             THEN EXCLUDED.seeded_description ELSE tools.seeded_description END,
+  schema             = CASE WHEN tools.seeded_schema IS NOT NULL
+                              AND tools.schema = tools.seeded_schema
+                             THEN EXCLUDED.schema ELSE tools.schema END,
+  seeded_schema      = CASE WHEN tools.seeded_schema IS NOT NULL
+                              AND tools.schema = tools.seeded_schema
+                             THEN EXCLUDED.seeded_schema ELSE tools.seeded_schema END
+WHERE tools.system`, key, desc, schema, agents)
 	return err
+}
+
+// BackfillToolSeedBaseline gives every system tool row that predates seed tracking a
+// baseline equal to its current description and schema, once.
+//
+// Without it, a row seeded before these columns existed would have a NULL baseline,
+// read as operator-owned, and no code change would ever reach it again — the defect
+// this tracking exists to fix. Adopting the current value changes nothing on this
+// start and makes the next code change land. A description hand-edited before this
+// version therefore becomes trackable, and a later code change may replace it; the
+// reset action and version control are the recovery path.
+func (d *DB) BackfillToolSeedBaseline() error {
+	const flag = "tool_seed_baseline_backfilled_v1"
+	if v, _, err := d.GetSetting(flag); err == nil && v == "true" {
+		return nil
+	}
+	if _, err := d.Exec(`
+UPDATE tools SET seeded_description = description, seeded_schema = schema
+WHERE system AND seeded_description IS NULL AND seeded_schema IS NULL`); err != nil {
+		return err
+	}
+	return d.SetSetting(flag, "true")
 }
 
 // AddAgentToToolBinding adds an agent key to the given tools' `agents` arrays if
@@ -81,26 +123,15 @@ func (d *DB) UpsertToolForce(key, desc string, schema, agents json.RawMessage) e
 		agents = json.RawMessage("[]")
 	}
 	_, err := d.Exec(`
-INSERT INTO tools(key, system, description, schema, agents, enabled)
-VALUES ($1, true, $2, $3, $4, true)
+INSERT INTO tools(key, system, description, schema, agents, enabled, seeded_description, seeded_schema)
+VALUES ($1, true, $2, $3, $4, true, $2, $3)
 ON CONFLICT (key) DO UPDATE
-  SET description = EXCLUDED.description,
-      schema      = EXCLUDED.schema,
-      agents      = EXCLUDED.agents,
-      enabled     = true`, key, desc, schema, agents)
-	return err
-}
-
-// RefreshToolDefaults updates a system tool's model-facing description + schema to the
-// code defaults, PRESERVING the user's agent binding + enabled flag. Used by one-time
-// migrations to propagate a code schema change (SeedTool is first-insert-only, so a new
-// parameter added in code otherwise never reaches an already-seeded row). No-op for
-// custom tools or unknown keys.
-func (d *DB) RefreshToolDefaults(key, desc string, schema json.RawMessage) error {
-	if len(schema) == 0 {
-		schema = json.RawMessage("{}")
-	}
-	_, err := d.Exec(`UPDATE tools SET description=$2, schema=$3, updated_at=now() WHERE key=$1 AND system`, key, desc, schema)
+  SET description        = EXCLUDED.description,
+      schema             = EXCLUDED.schema,
+      agents             = EXCLUDED.agents,
+      enabled            = true,
+      seeded_description = EXCLUDED.seeded_description,
+      seeded_schema      = EXCLUDED.seeded_schema`, key, desc, schema, agents)
 	return err
 }
 
@@ -218,6 +249,10 @@ func (d *DB) ListCustomTools() ([]*Tool, error) {
 // UpdateTool saves the page-editable fields. key is never changed (it is welded to
 // the Go handler). system tools: the caller must keep the schema structure — only
 // per-param description/default and the agent binding are meant to move.
+//
+// A field the operator actually changed loses its seed baseline, so the next SeedTool
+// leaves it alone; a field saved back unchanged keeps its baseline and stays under
+// code management. Saving the form without editing must not orphan the row.
 func (d *DB) UpdateTool(key, desc string, schema, agents json.RawMessage, enabled bool) error {
 	if len(schema) == 0 {
 		schema = json.RawMessage("{}")
@@ -226,7 +261,10 @@ func (d *DB) UpdateTool(key, desc string, schema, agents json.RawMessage, enable
 		agents = json.RawMessage("[]")
 	}
 	_, err := d.Exec(`
-UPDATE tools SET description=$2, schema=$3, agents=$4, enabled=$5 WHERE key=$1`,
+UPDATE tools SET description=$2, schema=$3, agents=$4, enabled=$5,
+  seeded_description = CASE WHEN description IS DISTINCT FROM $2 THEN NULL ELSE seeded_description END,
+  seeded_schema      = CASE WHEN schema      IS DISTINCT FROM $3 THEN NULL ELSE seeded_schema END
+WHERE key=$1`,
 		key, desc, schema, agents, enabled)
 	return err
 }

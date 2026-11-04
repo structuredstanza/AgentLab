@@ -986,6 +986,12 @@ CREATE TABLE IF NOT EXISTS tools (
     deferred    BOOLEAN NOT NULL DEFAULT false,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- What SeedTool last wrote from code. SeedTool overwrites description/schema only
+-- while the live value still equals its baseline, so a code change reaches an
+-- existing row without ever discarding an operator edit. NULL means operator-owned:
+-- the row was edited, or predates this tracking, and is never overwritten.
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS seeded_description TEXT;
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS seeded_schema JSONB;
 DROP TRIGGER IF EXISTS trg_tools_upd ON tools;
 CREATE TRIGGER trg_tools_upd BEFORE UPDATE ON tools
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

@@ -301,12 +301,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		wireTools(m.pg, domainReg) // Built-in tool table: filter by agent, override descriptions/schema, and inject default values
 		seedPrompts(m.pg)          // Seed the built-in agent default prompt bodies into agent_prompts (only when empty)
 		// P2 cross-task orchestration tools, seeded into the tools table (bindable per agent).
-		orchSeeded := s.seedOrchestrationTools()
+		s.seedOrchestrationTools()
 		if err := s.seedFindingRetester(); err != nil {
 			log.Printf("[retester] seed: %v", err)
 		}
-		// Legacy Chinese tool text is refreshed only after every built-in and server tool row exists.
-		migrateLegacyToolText(m.pg, append(orchSeeded, s.findingRetestTools()...))
 		go s.evidenceStore().RunGC(s.ctx)
 		s.seedPythonInterpreter()     // Custom script tool: on startup, detect the python interpreter and store it (only when empty)
 		go newScheduler(s).Run(s.ctx) // P3 trigger scheduling (timed / finding / target events), custom agents only

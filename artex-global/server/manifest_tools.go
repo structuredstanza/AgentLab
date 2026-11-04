@@ -200,7 +200,7 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 // parameters without the operator pasting a man page into the prompt.
 func (s *Server) toolListManifests() actool.CoreTool {
 	return wrTool("list_tools",
-		"List the reconnaissance and scanning tools available in this environment, with the parameters each accepts and whether its binary is installed.",
+		"List the reconnaissance and scanning tools available in this environment, with the parameters each accepts and whether its binary is installed. It also states the engagement's rate guidance, so read it before choosing a rate.",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(ctx context.Context, _ json.RawMessage) (actool.Result, error) {
 			var b strings.Builder
