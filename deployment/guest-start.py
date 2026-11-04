@@ -603,11 +603,15 @@ def start_tcpdump(sess):
     cmd = [tcpdump, "-i", "any", "-s0", "-U", "-Z", "root", "-C", str(SEGMENT_MB),
            "-W", str(segments), "-w", pcap]
     # Record what was actually used, so the manifest never claims a larger ring
-    # than the disk allowed.
+    # than the disk allowed — in the declared limits as well as the live values.
     cap = sess.m["capture"]
     cap["rotation"] = f"-C {SEGMENT_MB} (~{SEGMENT_MB} million bytes per segment) -W {segments}"
     cap["max_segments"] = segments
     cap["approx_max_bytes"] = SEGMENT_MB * 1_000_000 * segments
+    cap["limits"] = dict(cap.get("limits") or CAPTURE_LIMITS,
+                         rotation=cap["rotation"],
+                         max_segments=segments,
+                         approx_max_bytes=cap["approx_max_bytes"])
     with open(err_path, "wb") as errf:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=errf, stderr=errf, start_new_session=True)
     try:
