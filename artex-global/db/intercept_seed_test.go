@@ -45,19 +45,22 @@ func TestDeleteEndpointPathPattern(t *testing.T) {
 	}
 }
 
-// The critical-path rule must judge only rm's own arguments. The shipped pattern
-// used a bare `/` alternative, so any absolute path within 60 characters of `rm`
-// was read as rm's target — the case below is a real denial from a live run, where
-// the path belonged to curl.
+// The critical-path rule must judge only rm's own arguments. The rule is matched
+// against the JSON-encoded tool input, so a line break there is the two characters
+// `\` and `n` — not a newline. Both shipped versions failed on that: v3/v4 denied
+// any absolute path within 60 characters of rm, and v5 walked across the `\n`
+// escape. The first case is the command that was actually denied in a live run,
+// where /dev/null belonged to curl.
 func TestCriticalPathDeletePattern(t *testing.T) {
 	re := regexp.MustCompile(criticalPathDeletePattern)
 
 	miss := []string{
-		`{"command":"cd /state/artex/tasks/9/i46; rm -f cj2.txt; curl -sk -D /dev/null https://[IP]/web/?logon"}`,
-		`{"command":"rm -f cj2.txt; curl -sk -o /dev/null https://[IP]/"}`,
-		`{"command":"rm -f notes.txt && curl http://t[IP]/etc/x"}`,
+		`{"command": "cd /state/artex/tasks/9/i76; CJ=/state/artex/tasks/9/i76/cj.txt; rm -f $CJ\ncurl -s -k -c $CJ -b $CJ -o /dev/null -w \"logon:%{http_code}\\n\" -d \"username=x\" \"https://h/web/index.php?logon\"\ncat $CJ"}`,
+		`{"command":"rm -f cj2.txt; curl -sk -D /dev/null https://h/"}`,
+		`{"command":"rm -f a.txt && curl http://h/etc/x"}`,
 		`{"command":"rm /home/minerva/tmp.txt"}`,
 		`{"command":"rm -f /tmp/scan.txt"}`,
+		`{"command":"cd /x; rm -f f; cat /etc/passwd"}`,
 	}
 	for _, s := range miss {
 		if re.MatchString(s) {
@@ -74,6 +77,10 @@ func TestCriticalPathDeletePattern(t *testing.T) {
 		`{"command":"rm -f \"/etc/hosts\""}`,
 		`{"command":"rm -rf /dev/sda"}`,
 		`{"command":"rm -f /var/lib/dpkg/status"}`,
+		`{"command":"rm -f /root/.bashrc"}`,
+		`{"command":"rm -rf /boot"}`,
+		`{"command":"rm -f /sys/x"}`,
+		`{"command":"rm -f /proc/self/environ"}`,
 	}
 	for _, s := range hit {
 		if !re.MatchString(s) {

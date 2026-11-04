@@ -283,7 +283,7 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.migrateBuiltinSeedLabelsEN(); err != nil {
 		return fmt.Errorf("relabel builtin seeds: %w", err)
 	}
-	if err := d.migrateCriticalPathRuleV5(); err != nil {
+	if err := d.migrateCriticalPathRuleV6(); err != nil {
 		return fmt.Errorf("rewrite critical-path rule: %w", err)
 	}
 	if err := d.seedDefaultAssetInterceptRules(); err != nil {
@@ -605,33 +605,43 @@ ON CONFLICT DO NOTHING`,
 // Exported as a package const only so the seeded regex is unit-testable without a DB.
 const deleteEndpointPathPattern = `(?i)/(?:(?:delete|remove|unlink|erase|destroy)[-\w]*|del)(?:[/?#"'\s]|$)`
 
-// criticalPathDeletePattern denies `rm` aimed at system directories. The shipped
-// pattern used a bare `/` alternative, so it denied any command where `rm` was
-// followed within 60 characters by any absolute path — `rm -f jar.txt; curl -D
-// /dev/null …` is exactly that shape, and the path belonged to curl, not rm. It
-// also denied plain deletes of user files (`rm ~/notes.txt`, `rm /home/x/y`).
+// criticalPathDeletePattern denies `rm` aimed at system directories.
 //
-// Two changes: the gap excludes `; & |` so the path must belong to rm's own simple
-// command, and root matches only as a whole token (`/` then whitespace, end, or
-// quote) rather than any leading slash.
+// Two shipped versions were wrong, both found in a live engagement:
+//
+// v3/v4 used a bare `/` alternative, so any absolute path within 60 characters of
+// `rm` read as rm's target — and plain deletes of user files were denied too.
+//
+// v5 narrowed the gap to `[^;&|\n]` and made root a whole token, but the rule is
+// matched against the JSON-encoded tool input, where a line break is the two
+// characters `\` and `n`, not a newline. The gap walked straight across `\n` and
+// still denied `rm -f $CJ\ncurl … -o /dev/null`.
+//
+// The gap is now an alternation: any character except `; & |` and backslash, or a
+// backslash followed by anything but n/r. That stops at a JSON line break while
+// still allowing escaped quotes, and the optional `\?` before the separator keeps
+// `rm -f \"/etc/hosts\"` covered.
 //
 // Exported as a package const only so the seeded regex is unit-testable without a DB.
-const criticalPathDeletePattern = `\brm\b[^;&|\n]{0,80}["'\s](?:/(?:\s|$|["'])|/(?:etc|bin|sbin|usr|boot|lib|sys|proc|dev|root|var)(?:/|\s|$|["']))`
+const criticalPathDeletePattern = `\brm\b(?:[^;&|\\]|\\[^nr]){0,80}\\?["'\s](?:/(?:\s|$|["'])|/(?:etc|bin|sbin|usr|boot|lib|sys|proc|dev|root|var)(?:/|\s|$|["']))`
 
-// oldCriticalPathDeletePattern is the pattern v3/v4 shipped. It is kept only so
-// the migration can find rows that still hold it verbatim.
+// criticalPathDeletePatternV5 is what the v5 migration installed; a database may
+// still hold it. oldCriticalPathDeletePattern is the original v3/v4 pattern.
+const criticalPathDeletePatternV5 = `\brm\b[^;&|\n]{0,80}["'\s](?:/(?:\s|$|["'])|/(?:etc|bin|sbin|usr|boot|lib|sys|proc|dev|root|var)(?:/|\s|$|["']))`
+
 const oldCriticalPathDeletePattern = `\brm\b[^"'\n]{0,60}["'\s](/|/etc|/bin|/usr|/boot|/var|/lib|/sys|/proc|/dev|/sbin|/root)`
 
-// migrateCriticalPathRuleV5 rewrites the seeded critical-path rule on databases
-// that predate the fix. Only a row still holding the shipped bytes is touched, so
-// a rule the operator edited is left alone.
-func (d *DB) migrateCriticalPathRuleV5() error {
-	const flag = "intercept_critical_path_rule_v5"
+// migrateCriticalPathRuleV6 rewrites the seeded critical-path rule on databases
+// that still hold either shipped version. Only a row holding one of those byte
+// strings verbatim is touched, so a rule the operator edited is left alone.
+func (d *DB) migrateCriticalPathRuleV6() error {
+	const flag = "intercept_critical_path_rule_v6"
 	if v, _, _ := d.GetSetting(flag); v == "done" {
 		return nil
 	}
-	if _, err := d.Exec(`UPDATE intercept_rules SET pattern=$2 WHERE name=$1 AND pattern=$3`,
-		"[Built-in] Delete critical system directories", criticalPathDeletePattern, oldCriticalPathDeletePattern,
+	if _, err := d.Exec(`UPDATE intercept_rules SET pattern=$2 WHERE name=$1 AND pattern IN ($3,$4)`,
+		"[Built-in] Delete critical system directories", criticalPathDeletePattern,
+		criticalPathDeletePatternV5, oldCriticalPathDeletePattern,
 	); err != nil {
 		return fmt.Errorf("rewrite critical-path rule: %w", err)
 	}
