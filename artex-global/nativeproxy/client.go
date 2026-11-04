@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Autumn-27/artex/useragent"
 	"io"
 	"net"
 	"net/http"
@@ -281,6 +282,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 		return nil, errors.New("native proxy request is invalid")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	return req, nil
 }
 

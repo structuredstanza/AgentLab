@@ -14,6 +14,10 @@ program = "dnsx"
 args = ["-d", "{{ target.value }}", "-json", "-silent", "-a", "-aaaa", "-cname", "-mx", "-ns", "-txt", "-t", "{{ params.threads }}"]
 timeout_seconds = 900
 
+[limits]
+param = "threads"
+unit = "threads"
+
 [emit]
 parser = "jsonl"
 fields = ["host", "a", "aaaa", "cname", "mx", "ns", "txt"]

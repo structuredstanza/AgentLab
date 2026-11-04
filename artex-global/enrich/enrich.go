@@ -8,6 +8,7 @@ package enrich
 
 import (
 	"crypto/tls"
+	"github.com/Autumn-27/artex/useragent"
 	"html"
 	"io"
 	"log"
@@ -230,7 +231,7 @@ func (e *Engine) doHTTP(id int64, rawURL string) {
 	if err != nil {
 		return
 	}
-	req.Header.Set("User-Agent", "artex-enrich/1.0")
+	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return

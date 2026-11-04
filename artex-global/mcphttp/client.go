@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Autumn-27/artex/useragent"
 	"io"
 	"net/http"
 	"net/url"
@@ -148,6 +149,7 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		return nil, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	for k, v := range cleanHeaders {
 		req.Header.Set(k, v)
 	}
@@ -408,6 +410,7 @@ func (c *Client) Close() error {
 		return nil
 	}
 	req.Header.Set("Mcp-Session-Id", sid)
+	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}
@@ -459,6 +462,7 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	version := c.protocol
 	if version == "" {
 		version = protocolVersion
@@ -535,6 +539,7 @@ func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectRes
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}

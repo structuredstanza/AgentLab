@@ -20,7 +20,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 MSB = ROOT / '.venv/bin/msb'
-NAME = 'artex-agentlab-scope-20261103t2320z'
+NAME = 'artex-agentlab-egress-20261104t0030z'
 URL = 'http://127.0.0.1:8787'
 PRIMARY_URL = 'http://host.microsandbox.internal:8080/v1'
 PRIMARY_NAME = 'AgentLab Bonsai Thinking'

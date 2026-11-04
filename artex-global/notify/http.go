@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Autumn-27/artex/useragent"
 	"io"
 	"net"
 	"net/http"
@@ -148,6 +149,7 @@ func doJSON(ctx context.Context, method, url string, headers map[string]string, 
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	}
+	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

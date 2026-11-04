@@ -16,6 +16,10 @@ program = "feroxbuster"
 args = ["-u", "{{ target.value }}", "-w", "{{ params.wordlist }}", "--json", "--silent", "--depth", "{{ params.depth }}", "-s", "{{ params.status_codes }}", "--rate-limit", "{{ params.rate_limit }}"]
 timeout_seconds = 1800
 
+[limits]
+param = "rate_limit"
+unit = "rps"
+
 [emit]
 parser = "jsonl"
 fields = ["url", "status", "content_length", "content_type"]

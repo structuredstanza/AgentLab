@@ -46,8 +46,11 @@ func main() {
 }
 
 func run() int {
+	if len(os.Args) > 1 && os.Args[1] == "egress-proxy" {
+		return runEgressProxy(os.Args[2:])
+	}
 	var (
-		addr    = flag.String("addr", "127.0.0.1:8787", "HTTP listen address (default accepts local connections only; use :8787 to serve other hosts)")
+		addr    = flag.String("addr", "[IP]:8787", "HTTP listen address (default accepts local connections only; use :8787 to serve other hosts)")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
 	)

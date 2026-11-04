@@ -199,7 +199,9 @@ class SupervisorCleanupTests(unittest.TestCase):
                          mock.patch.object(supervisor, 'install_binary', return_value=('/fixture/app', 'fixture')), \
                          mock.patch.object(supervisor, 'app_env', return_value={}), \
                          mock.patch.object(supervisor, 'admin_password', return_value='fixture'), \
-                         mock.patch.object(supervisor, 'start_tcpdump', return_value=tcpd), \
+                         mock.patch.object(supervisor, 'start_egress', return_value=mock.Mock(**{'poll.return_value': None})), \
+                         mock.patch.object(supervisor, 'start_egress', return_value=mock.Mock(**{'poll.return_value': None})), \
+             mock.patch.object(supervisor, 'start_tcpdump', return_value=tcpd), \
                          mock.patch.object(supervisor, 'start_app', return_value=app), \
                          mock.patch.object(supervisor, 'write_file', side_effect=write), \
                          mock.patch.object(supervisor, 'log', side_effect=log):
@@ -277,8 +279,10 @@ class VpnSupervisionTests(unittest.TestCase):
         tcpd = mock.Mock()
         tcpd.poll.return_value = None
         sess = mock.Mock()
-        sess.m = {'capture': {'status': 'running'}, 'artex': {}, 'postgres': {'status': 'not_started'}}
+        sess.m = {'capture': {'status': 'running'}, 'artex': {}, 'postgres': {'status': 'not_started'},
+                  'egress': {'status': 'starting'}}
         with mock.patch.object(supervisor, 'start_vpn', return_value=vpn), \
+             mock.patch.object(supervisor, 'start_egress', return_value=mock.Mock(**{'poll.return_value': None})), \
              mock.patch.object(supervisor, 'start_tcpdump', return_value=tcpd), \
              mock.patch.object(supervisor, 'start_app', return_value=app), \
              mock.patch.object(supervisor, 'pg_bindir', return_value='/nonexistent'), \
@@ -299,6 +303,31 @@ class VpnSupervisionTests(unittest.TestCase):
         errors = [call.args[0] for call in sess.error.call_args_list]
         self.assertTrue(any('openvpn exited' in str(e) for e in errors), errors)
         self.assertTrue(shutdown.called, 'cleanup must still run after the kill switch fires')
+
+class AppEnvTests(unittest.TestCase):
+    """The tool environment is what makes the identity proxy binding.
+
+    A tool that does not inherit http_proxy reaches the target directly and
+    presents its own User-Agent, which is the leak this whole mechanism exists to
+    close. So the variables are asserted here rather than trusted.
+    """
+
+    def test_target_http_is_routed_through_the_identity_proxy(self):
+        env = supervisor.app_env('postgresql://fixture', 'pw')
+        proxy = 'http://' + supervisor.EGRESS_ADDR
+        for key in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+            self.assertEqual(env.get(key), proxy, f'{key} missing: target HTTP would bypass the proxy')
+
+    def test_the_host_native_proxy_is_excluded(self):
+        env = supervisor.app_env('postgresql://fixture', 'pw')
+        bypass = env.get('no_proxy', '') + env.get('NO_PROXY', '')
+        self.assertIn('host.microsandbox.internal', bypass,
+                      'model calls would be rewritten as if they were target traffic')
+
+    def test_the_proxy_ca_is_trusted_by_every_client_stack(self):
+        env = supervisor.app_env('postgresql://fixture', 'pw')
+        for key in ('SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
+            self.assertEqual(env.get(key), supervisor.EGRESS_CA, f'{key} missing: TLS interception fails')
 
 if __name__ == '__main__':
     unittest.main()

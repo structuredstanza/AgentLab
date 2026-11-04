@@ -14,6 +14,10 @@ program = "masscan"
 args = ["{{ target.value }}", "-p", "{{ params.ports }}", "--rate", "{{ params.rate }}", "-oJ", "-"]
 timeout_seconds = 1800
 
+[limits]
+param = "rate"
+unit = "pps"
+
 [emit]
 parser = "json"
 

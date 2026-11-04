@@ -14,6 +14,10 @@ program = "naabu"
 args = ["-host", "{{ target.value }}", "-json", "-silent", "{{ params.top_ports | -top-ports }}", "{{ params.rate | -rate }}"]
 timeout_seconds = 1800
 
+[limits]
+param = "rate"
+unit = "pps"
+
 [emit]
 parser = "jsonl"
 fields = ["host", "ip", "port"]

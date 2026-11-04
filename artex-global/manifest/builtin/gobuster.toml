@@ -12,8 +12,12 @@ threads = { type = "number", label = "Threads", default = "10" }
 
 [command]
 program = "gobuster"
-args = ["{{ params.mode }}", "-u", "{{ target.value }}", "-w", "{{ params.wordlist }}", "-t", "{{ params.threads }}", "--no-progress", "--no-error"]
+args = ["{{ params.mode }}", "-u", "{{ target.value }}", "-w", "{{ params.wordlist }}", "-t", "{{ params.threads }}", "--no-progress", "--no-error", "--useragent", "{{ useragent }}"]
 timeout_seconds = 1800
+
+[limits]
+param = "threads"
+unit = "threads"
 
 [emit]
 parser = "regex"

@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/Autumn-27/norma v0.4.4
+	github.com/BurntSushi/toml v1.4.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
@@ -11,6 +12,7 @@ require (
 	github.com/lqqyt2423/go-mitmproxy v1.9.2
 	github.com/miekg/dns v1.1.72
 	github.com/projectdiscovery/dnsx v1.2.3
+	github.com/refraction-networking/utls v1.8.2
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
 	golang.org/x/text v0.41.0
@@ -18,7 +20,6 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.4.0 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect

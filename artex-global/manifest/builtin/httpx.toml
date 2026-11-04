@@ -15,6 +15,10 @@ program = "httpx"
 args = ["-u", "{{ target.value }}", "-json", "-silent", "-nc", "-threads", "{{ params.threads }}", "-mc", "{{ params.status_codes }}", "{{ params.tech_detect | -td }}"]
 timeout_seconds = 900
 
+[limits]
+param = "threads"
+unit = "threads"
+
 [emit]
 parser = "jsonl"
 fields = ["url", "input", "status_code", "title", "tech", "webserver", "content_type", "host"]

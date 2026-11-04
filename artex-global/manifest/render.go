@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"github.com/Autumn-27/artex/useragent"
 	"strconv"
 	"strings"
 )
@@ -145,6 +146,11 @@ func lookup(expr, targetValue string, values map[string]string) (string, error) 
 	switch expr {
 	case "target.value":
 		return targetValue, nil
+	case "useragent":
+		// The engagement's outbound identity. A tool with its own User-Agent flag
+		// is given the same string the proxy would have set, so a run that
+		// bypasses the proxy still does not announce itself.
+		return useragent.Get(), nil
 	case "":
 		return "", fmt.Errorf("empty placeholder")
 	}
@@ -157,7 +163,7 @@ func lookup(expr, targetValue string, values map[string]string) (string, error) 
 		}
 		return v, nil
 	}
-	return "", fmt.Errorf("unknown placeholder %q (expected target.value or params.<name>)", expr)
+	return "", fmt.Errorf("unknown placeholder %q (expected target.value, useragent, or params.<name>)", expr)
 }
 
 // ParseParam converts a manifest parameter's string value to its declared type.

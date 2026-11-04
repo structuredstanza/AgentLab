@@ -16,6 +16,10 @@ program = "ffuf"
 args = ["-u", "{{ target.value }}/FUZZ", "-w", "{{ params.wordlist }}", "-of", "json", "-o", "/dev/stdout", "-mc", "{{ params.match_codes }}", "-rate", "{{ params.rate }}", "{{ params.extensions | -e }}"]
 timeout_seconds = 1800
 
+[limits]
+param = "rate"
+unit = "rps"
+
 [emit]
 parser = "json"
 records = "$.results"

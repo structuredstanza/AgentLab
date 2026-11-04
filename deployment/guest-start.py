@@ -20,6 +20,7 @@ import pwd
 import re
 import secrets
 import shutil
+import socket
 import signal
 import subprocess
 import sys
@@ -60,6 +61,18 @@ MAX_SEGMENTS = 32  # tcpdump -W ring size
 VPN_PROFILE = "/run/secrets/openvpn-profile.ovpn"
 VPN_LOG = f"{RUNTIME}/logs/openvpn.log"
 VPN_TIMEOUT = 90  # seconds to reach an address on the tunnel interface
+# Outbound HTTP proxy. Every tool that honours proxy environment variables is
+# routed through it, so the identity the target sees is the engagement's, not the
+# tool's. Raw TCP (SMB, SSH, port scans) bypasses it by design.
+EGRESS_ADDR = "127.0.0.1:8888"
+EGRESS_DIR = f"{RUNTIME}/egress"
+EGRESS_CA = f"{EGRESS_DIR}/ca.pem"
+EGRESS_LOG = f"{RUNTIME}/logs/egress.log"
+EGRESS_TIMEOUT = 20
+# The operator's hard rule for shared labs: never exceed 100 requests a minute
+# against one target. Enforced per target so a backlog does not make each box
+# wait behind the others.
+EGRESS_RPM = 100
 CAPTURE_LIMITS = {
     "tool": "tcpdump",
     "interface": "any",
@@ -360,6 +373,19 @@ def app_env(dsn, admin_pw):
         "ARTEX_NATIVE_PROXY_URL": "http://host.microsandbox.internal:8788",
         "ARTEX_NATIVE_PROXY_TOKEN_FILE": "/run/secrets/agentlab-native-proxy",
     }
+    # Route target-bound HTTP through the identity proxy. The host native proxy
+    # is excluded from it, or model calls would be rewritten as target traffic.
+    proxy = f"http://{EGRESS_ADDR}"
+    env.update({
+        "http_proxy": proxy, "https_proxy": proxy,
+        "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy,
+        "no_proxy": "localhost,127.0.0.1,::1,host.microsandbox.internal",
+        "NO_PROXY": "localhost,127.0.0.1,::1,host.microsandbox.internal",
+        "SSL_CERT_FILE": EGRESS_CA,
+        "CURL_CA_BUNDLE": EGRESS_CA,
+        "REQUESTS_CA_BUNDLE": EGRESS_CA,
+        "NODE_EXTRA_CA_CERTS": EGRESS_CA,
+    })
     if admin_pw is not None:
         env["ARTEX_ADMIN_PASSWORD"] = admin_pw
     return env
@@ -400,6 +426,56 @@ def list_segments(d):
                      "mtime": dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).isoformat(timespec="seconds")})
     return segs
 
+
+def start_egress(sess, binary):
+    """Start the outbound proxy that presents one browser identity to targets.
+
+    It runs as its own process so a proxy crash cannot take the backend with it,
+    and so the supervisor can report it the way it reports the tunnel.
+    """
+    os.makedirs(os.path.dirname(EGRESS_LOG), exist_ok=True)
+    cmd = [binary, "egress-proxy", "-addr", EGRESS_ADDR, "-dir", EGRESS_DIR,
+           "-rpm", str(EGRESS_RPM)]
+    with open(EGRESS_LOG, "ab") as logf:
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
+                             start_new_session=True)
+    sess.m["egress"] = {"status": "starting", "pid": p.pid, "addr": EGRESS_ADDR,
+                        "dir": EGRESS_DIR, "ca": EGRESS_CA, "log": EGRESS_LOG,
+                        "started_at": now_iso()}
+    sess.save()
+    host, port = EGRESS_ADDR.rsplit(":", 1)
+    deadline = time.monotonic() + EGRESS_TIMEOUT
+    while True:
+        if p.poll() is not None:
+            raise Fatal(f"egress proxy exited during start (rc={p.returncode}); see {EGRESS_LOG}")
+        try:
+            with socket.create_connection((host, int(port)), timeout=1):
+                break
+        except OSError:
+            pass
+        if time.monotonic() > deadline:
+            raise Fatal(f"egress proxy did not listen on {EGRESS_ADDR} within {EGRESS_TIMEOUT}s")
+        time.sleep(0.2)
+    if not os.path.exists(EGRESS_CA):
+        raise Fatal(f"egress proxy did not write a CA to {EGRESS_CA}")
+    sess.m["egress"].update(status="running", process=proc_info(p.pid),
+                            ca_sha256=hashlib.sha256(open(EGRESS_CA, "rb").read()).hexdigest())
+    sess.save()
+    log(f"egress proxy up on {EGRESS_ADDR}")
+    return p
+
+def stop_egress(sess, p):
+    if p is None:
+        return
+    try:
+        p.terminate()
+        p.wait(timeout=10)
+    except Exception as error:
+        sess.error(f"egress proxy did not stop cleanly: {error}")
+        try:
+            p.kill()
+        except Exception:
+            pass
 
 def start_vpn(sess):
     """Bring up the OpenVPN tunnel an operator supplied, and prove it carries traffic.
@@ -598,13 +674,13 @@ def stop_app(sess, p):
 
 # ---------- lifecycle ----------
 
-def shutdown(sess, app, tcpd, bindir, vpn=None):
+def shutdown(sess, app, tcpd, bindir, vpn=None, egress=None):
     try:
         sess.set_state("stopping")
     except Exception as error:
         sess.error(f"could not persist stopping state: {error}")
     for name, process, stop in (("artex", app, stop_app), ("capture", tcpd, stop_tcpdump),
-                                ("vpn", vpn, stop_vpn)):
+                                ("vpn", vpn, stop_vpn), ("egress", egress, stop_egress)):
         if process is not None:
             try:
                 stop(sess, process)
@@ -638,6 +714,7 @@ def main():
     tcpd = None
     app = None
     vpn = None
+    egress = None
     rc = 0
     try:
         log(f"session {sess.id} -> {sess.dir}")
@@ -656,6 +733,7 @@ def main():
         sess.m["artex"]["sha256"] = digest
         env = app_env(dsn, admin_password())
         vpn = start_vpn(sess)
+        egress = start_egress(sess, binary)
         tcpd = start_tcpdump(sess)
         if STOP["signal"] is None:
             app = start_app(sess, binary, env)
@@ -666,6 +744,8 @@ def main():
                 raise Fatal(f"tcpdump exited while ARTEX was running (rc={tcpd.returncode}); ARTEX stopped to avoid uncaptured runs")
             # Kill switch: a dropped tunnel must stop the engagement, not silently
             # resume egress over the host's own address.
+            if egress.poll() is not None:
+                raise Fatal(f"egress proxy exited while ARTEX was running (rc={egress.returncode}); ARTEX stopped so no request leaves with the wrong identity")
             if vpn is not None and vpn.poll() is not None:
                 raise Fatal(f"openvpn exited while ARTEX was running (rc={vpn.returncode}); ARTEX stopped to avoid traffic leaving outside the tunnel")
             if time.monotonic() - last_sample >= 1:
@@ -682,7 +762,7 @@ def main():
             sess.m["capture"]["status"] = "failed"
     finally:
         owned_pg = bindir if sess.m["postgres"]["status"] in ("starting", "running") else None
-        shutdown(sess, app, tcpd, owned_pg, vpn)
+        shutdown(sess, app, tcpd, owned_pg, vpn, egress)
         try:
             with open(SUPERVISOR_PID) as stream:
                 owned_pid = stream.read().strip() == str(os.getpid())

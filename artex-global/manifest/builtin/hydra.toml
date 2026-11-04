@@ -17,6 +17,10 @@ program = "hydra"
 args = ["-t", "{{ params.threads }}", "-f", "{{ params.username | -l }}", "{{ params.userlist | -L }}", "-P", "{{ params.passwordlist }}", "{{ target.value }}", "{{ params.service }}"]
 timeout_seconds = 3600
 
+[limits]
+param = "threads"
+unit = "threads"
+
 [emit]
 parser = "regex"
 pattern = '^\[\d+\]\[\w+\]\s+host:\s+(?P<host>\S+)\s+login:\s+(?P<login>\S+)\s+password:\s+(?P<password>\S+)'

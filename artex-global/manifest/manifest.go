@@ -130,6 +130,32 @@ type Manifest struct {
 	Params  map[string]Param `toml:"params"`
 	Command Command          `toml:"command"`
 	Emit    Emit             `toml:"emit"`
+	// Limits declares which parameter carries this tool's throughput, so the
+	// engagement policy can cap it. A tool that declares nothing is treated as
+	// an unbounded requester and is refused under a closed-world policy.
+	Limits Limits `toml:"limits"`
+}
+
+// RateUnit is what a tool's throughput parameter counts.
+type RateUnit string
+
+const (
+	// RateRPS counts HTTP requests per second.
+	RateRPS RateUnit = "rps"
+	// RatePPS counts packets per second, for raw scanners.
+	RatePPS RateUnit = "pps"
+	// RateThreads counts parallel workers, for credential tools.
+	RateThreads RateUnit = "threads"
+	// RateNone means the tool takes no throughput parameter at all.
+	RateNone RateUnit = ""
+)
+
+// Limits names the parameter that controls throughput.
+type Limits struct {
+	// Param is the parameter name holding the rate. Empty with Unit set means
+	// the tool has a rate but no flag to set it, which the policy refuses.
+	Param string   `toml:"param"`
+	Unit  RateUnit `toml:"unit"`
 }
 
 // Set is a loaded collection of manifests, indexed by id.

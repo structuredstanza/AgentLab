@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Autumn-27/artex/manifest"
+	"github.com/Autumn-27/artex/useragent"
 )
 
 // Every shipped manifest must load and validate. A manifest that parses but
@@ -88,4 +89,80 @@ func defaultsFor(m *manifest.Manifest) map[string]string {
 		}
 	}
 	return out
+}
+
+// A [limits] block naming a parameter that does not exist would silently cap
+// nothing, leaving the tool at its own default rate.
+func TestLimitsNameAnExistingParameter(t *testing.T) {
+	set := manifest.LoadBuiltin()
+	declared := 0
+	for _, m := range set.All() {
+		if m.Limits.Unit == manifest.RateNone {
+			continue
+		}
+		declared++
+		if m.Limits.Param == "" {
+			t.Errorf("%s declares unit %q with no param", m.ID, m.Limits.Unit)
+			continue
+		}
+		if _, ok := m.Params[m.Limits.Param]; !ok {
+			t.Errorf("%s limits.param %q is not one of its parameters", m.ID, m.Limits.Param)
+		}
+	}
+	if declared == 0 {
+		t.Fatal("no manifest declares a rate; the policy would cap nothing")
+	}
+}
+
+// Every HTTP tool the policy cannot clamp must still be capped by the proxy, so
+// the set of unclamped HTTP tools is a deliberate list, not an accident.
+func TestHTTPToolsWithoutLimitsAreKnown(t *testing.T) {
+	unclamped := map[string]bool{}
+	for _, m := range manifest.LoadBuiltin().All() {
+		if m.Category == manifest.CategoryWeb && m.Limits.Unit == manifest.RateNone {
+			unclamped[m.ID] = true
+		}
+	}
+	want := []string{"dalfox", "gowitness", "sqlmap", "whatweb", "wpscan"}
+	for _, id := range want {
+		if !unclamped[id] {
+			t.Errorf("%s no longer needs the proxy ceiling, so remove it from this list", id)
+		}
+		delete(unclamped, id)
+	}
+	for id := range unclamped {
+		t.Errorf("%s is a web tool with no rate limit; add [limits] or accept the proxy ceiling deliberately", id)
+	}
+}
+
+// A tool with a native User-Agent flag must be given the engagement identity,
+// or a run that bypasses the proxy announces the tool instead.
+func TestUserAgentFlagCarriesTheEngagementIdentity(t *testing.T) {
+	t.Setenv("ARTEX_USER_AGENT", "Mozilla/5.0 (X11; Linux x86_64) EngagementIdentity/9.9")
+	useragent.Set("Mozilla/5.0 (X11; Linux x86_64) EngagementIdentity/9.9")
+
+	set := manifest.LoadBuiltin()
+	checked := 0
+	for _, id := range []string{"whatweb", "gobuster", "wpscan", "sqlmap", "dalfox"} {
+		m := set.Get(id)
+		if m == nil {
+			t.Fatalf("%s manifest missing", id)
+		}
+		params, err := m.Effective(nil)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		args, err := m.Resolve("10.129.14.7", params)
+		if err != nil {
+			t.Fatalf("%s resolve: %v", id, err)
+		}
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "EngagementIdentity/9.9") {
+			t.Errorf("%s does not pass the engagement identity: %s", id, joined)
+		}
+		checked++
+	}
+	if checked != 5 {
+		t.Fatalf("checked %d manifests, want 5", checked)
+	}
 }

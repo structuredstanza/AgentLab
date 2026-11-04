@@ -9,12 +9,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/limits"
 	"github.com/Autumn-27/artex/manifest"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
 // manifestTools is the shipped tool manifest set, loaded once.
 var manifestTools = manifest.LoadBuiltin()
+
+// engagementLimits caps throughput for manifest-backed tools.
+//
+// The proxy caps HTTP requests, but it cannot see a raw packet scan, and a
+// manifest default is only a suggestion: the caller can pass any rate it likes.
+// This is where a declared rate becomes a binding one.
+var engagementLimits = limits.New(limits.DefaultLabPolicy())
 
 // toolManifest is the DTO the tool list and the run form both render, so the UI
 // and the executor read the same declaration.
@@ -111,6 +119,14 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("%v", err)), nil
 			}
+			// Clamp before resolving, so the argv carries the ceiling rather than
+			// the number the caller asked for.
+			effective, clampNote := engagementLimits.Clamp(m, effective)
+			release, err := engagementLimits.Acquire(ctx, in.Target, m, effective)
+			if err != nil {
+				return actool.Errorf(fmt.Sprintf("%s not started: %v", in.Tool, err)), nil
+			}
+			defer release()
 			args, err := m.Resolve(in.Target, effective)
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("%v", err)), nil
@@ -137,6 +153,9 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 
 			var b strings.Builder
 			fmt.Fprintf(&b, "%s against %s: %d assets, %d facts", in.Tool, in.Target, len(result.Targets), len(result.Facts))
+			if clampNote != "" {
+				fmt.Fprintf(&b, "\nNote: %s, to stay inside the engagement's rate policy.", clampNote)
+			}
 			if result.Skipped > 0 {
 				fmt.Fprintf(&b, " (%d emit rules skipped: the manifest may need widening)", result.Skipped)
 			}

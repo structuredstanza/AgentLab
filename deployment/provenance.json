@@ -690,5 +690,81 @@
       "evidence": "content addressing, escape rejection, and a DB-backed spill test proving large bodies leave the row",
       "full_suite": "17 packages, 0 failures, with PostgreSQL"
     }
+  },
+  "egress_identity_20261104": {
+    "source_commit": "72f3502279787506c425554f830a3a2611d147f5",
+    "sandbox": "artex-agentlab-egress-20261104t0200z",
+    "image": "agentlab/artex:egress-identity-v5",
+    "image_id": "sha256:91f021f363f2",
+    "runtime_binary_sha256": "7cf78567d4797c4ee8fb1273b12b4b75b543a78e779f7bceeddb435e54783b1c",
+    "problem": "Every tool named itself to the target: curl/7.88.1, Wget/1.21.3, Python-urllib/3.11, WhatWeb/0.5.5, gobuster/3.5, and sqlmap and dalfox sent no User-Agent at all. The backend added artex-enrich/1.0 and Go-http-client/1.1 on its own requests.",
+    "measured_before": {
+      "curl": "curl/7.88.1",
+      "wget": "Wget/1.21.3",
+      "python-urllib": "Python-urllib/3.11",
+      "whatweb": "WhatWeb/0.5.5",
+      "gobuster": "gobuster/3.5",
+      "sqlmap": "absent",
+      "dalfox": "absent",
+      "nuclei": "29 distinct randomized browser strings in one scan",
+      "ja4_direct_curl": "t13d3112h2_e8f1e7e78f70_b26ce05bbdd6"
+    },
+    "design": "A User-Agent flag is the smallest tell. curl sends three headers and a curl-shaped ClientHello, so -A on curl is a Chrome UA on a non-browser handshake. egress/ terminates the tool's TLS with an engagement CA, re-dials the origin with a uTLS Chrome ClientHello, and forwards a canonical Chrome header set in Chrome's order.",
+    "components": {
+      "egress/ca.go": "engagement CA, persisted so a reboot does not invalidate installed trust",
+      "egress/fingerprint.go": "uTLS HelloChrome_Auto dialer",
+      "egress/headers.go": "one identity per engagement; canonical header set and order",
+      "egress/proxy.go": "CONNECT-MITM, plaintext forwarding, gate, size caps",
+      "useragent/": "one identity for the backend's own requests; leak guard test",
+      "limits/": "sliding-window rate gate and per-target concurrency"
+    },
+    "measured_after": {
+      "ja4_through_proxy": "t13d1516h2_8daaf6152771_d8a2da3f94cd",
+      "note": "ciphers=209 ext=81 alpn=6h2, i.e. a browser-shaped ClientHello, versus curl's ciphers=211 ext=17 alpn=2h2",
+      "header_order": [
+        "Host",
+        "Connection",
+        "sec-ch-ua",
+        "sec-ch-ua-mobile",
+        "sec-ch-ua-platform",
+        "Upgrade-Insecure-Requests",
+        "User-Agent",
+        "Accept",
+        "Sec-Fetch-Site",
+        "Sec-Fetch-Mode",
+        "Sec-Fetch-User",
+        "Sec-Fetch-Dest",
+        "Accept-Encoding",
+        "Accept-Language"
+      ],
+      "tools_presenting_one_identity": [
+        "curl",
+        "wget",
+        "python-urllib",
+        "whatweb",
+        "gobuster",
+        "sqlmap"
+      ]
+    },
+    "rate_policy": {
+      "rule": "never exceed 100 requests a minute; never more than 3 scans at once against one target",
+      "enforcement": "limits.RateGate is a sliding window on the proxy, per target; limits.Limiter caps concurrency and clamps each manifest's declared rate",
+      "why_sliding_window": "a token bucket of capacity 100 admits 100 requests in the first second, which breaches the rule. Measured before the fix: 150 requests in 70s = 128/min. After: max 100 in any 60s window.",
+      "measured_after": "150 requests admitted over 61s; maximum requests in any 60-second window = 100"
+    },
+    "tests": {
+      "egress": "6 (UA replacement, header order on the wire, TLS termination, gate refusal, leaf covers DNS and IP, CA survives reload)",
+      "useragent": "4 (identity from env, never the language default, caller choice respected, source leak guard)",
+      "limits": "13 (clamping per unit, concurrency, per-target isolation, spelling normalisation, idempotent release, cancellation, sliding-window property, burst rejection)",
+      "manifest": "UA flag carries the identity; limits name an existing parameter; unclamped web tools are a known list",
+      "guest_start": "15 including the app_env proxy/CA assertions",
+      "full_suite": "20 packages, 0 failures"
+    },
+    "not_verified": [
+      "no live HTB machine was touched; all target traffic was against a local listener",
+      "raw TCP (SMB, SSH, port scans) bypasses the proxy by design and keeps its own fingerprint",
+      "a browser-driven engagement would need its own profile; the proxy only covers tools that honour proxy environment variables",
+      "the uTLS profile is Chrome; presenting a Chrome handshake from a non-Chrome binary is coherent only because the proxy also sends Chrome's headers"
+    ]
   }
 }

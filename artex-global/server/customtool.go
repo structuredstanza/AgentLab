@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/Autumn-27/artex/useragent"
 	"io"
 	"log"
 	"net/http"
@@ -455,6 +456,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	for k, v := range spec.Headers {
 		req.Header.Set(k, renderTemplate(v, params, identity))
 	}
+	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000)}
 	if tr := s.httpProxyTransport(spec); tr != nil {
 		client.Transport = tr

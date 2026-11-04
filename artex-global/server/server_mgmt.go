@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Autumn-27/artex/useragent"
 	"io"
 	"log"
 	"net/http"
@@ -2467,6 +2468,7 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		httpReq.Header = c.hdr
+		useragent.SetIfAbsent(httpReq.Header.Set, httpReq.Header.Get("User-Agent"))
 		resp, err := client.Do(httpReq)
 		if err != nil {
 			lastErr = errMgmtReqFail + err.Error()

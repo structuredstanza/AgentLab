@@ -12,7 +12,7 @@ worker = { type = "number", label = "Concurrency", default = "10" }
 
 [command]
 program = "dalfox"
-args = ["url", "{{ target.value }}", "--format", "json", "--silence", "--worker", "{{ params.worker }}", "{{ params.deep | --deep-domxss }}", "{{ params.blind | -b }}"]
+args = ["url", "{{ target.value }}", "--format", "json", "--silence", "--worker", "{{ params.worker }}", "{{ params.deep | --deep-domxss }}", "{{ params.blind | -b }}", "--user-agent", "{{ useragent }}"]
 timeout_seconds = 1800
 
 [emit]
