@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"slices"
 
@@ -270,11 +271,34 @@ func (s *Service) admit(ctx context.Context, req InferRequest) (admittedTurn, er
 	return admittedTurn{ctx: ctx, release: release, binding: binding, input: resolvedInput, replay: replays}, nil
 }
 
+// streamPayloadForLocal aligns a local turn with the streaming transport the host
+// always uses. The [OI] wire format defaults to a single whole response unless the
+// payload asks to stream, and the compat executor expects frames, so an unset flag
+// turns a successful completion into a transport error.
+func streamPayloadForLocal(input json.RawMessage) json.RawMessage {
+	var body map[string]any
+	if json.Unmarshal(input, &body) != nil {
+		return input
+	}
+	body["stream"] = true
+	// Ask for the trailing usage frame: a local model reports its cache counters there,
+	// and without it the turn's token accounting would be lost.
+	body["stream_options"] = map[string]any{"include_usage": true}
+	normalized, err := json.Marshal(body)
+	if err != nil {
+		return input
+	}
+	return normalized
+}
+
 func (s *Service) stream(ctx context.Context, b contract.Binding, input json.RawMessage, coreAuthID string, sink Sink) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	format := formatOf(b.Provider)
 	sourceFormat := format
+	if b.Provider == contract.ProviderLocal {
+		input = streamPayloadForLocal(input)
+	}
 	if b.Provider == contract.ProviderCodex {
 		// Normalize Responses-shaped requests while retaining native Codex output.
 		sourceFormat = sdktranslator.FormatOpenAIResponse
@@ -420,6 +444,9 @@ func streamErr(ctx context.Context, err error) error {
 	case errors.As(err, &trunc) && trunc.IsStreamTruncated():
 		return fail(CodeTruncated)
 	}
+	// The client sees only a bounded code, so record the cause where the operator can
+	// read it. This is host-local logging and never reaches the caller.
+	log.Printf("[infer] turn failed: %v", err)
 	var statusErr interface{ StatusCode() int }
 	if errors.As(err, &statusErr) && statusErr != nil {
 		switch statusErr.StatusCode() {
@@ -440,6 +467,9 @@ func formatOf(p contract.Provider) sdktranslator.Format {
 		return sdktranslator.FormatClaude
 	case contract.ProviderCodex:
 		return sdktranslator.FormatCodex
+	case contract.ProviderLocal:
+		// A local model speaks the OpenAI-compatible wire format.
+		return sdktranslator.Format("openai")
 	default:
 		return sdktranslator.FormatAntigravity
 	}

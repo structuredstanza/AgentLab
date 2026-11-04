@@ -217,6 +217,27 @@ func (s *nativeAntigravityState) validTerminal() bool {
 }
 
 func (p *nativeProvider) requestBody(ctx context.Context, req llm.CompletionRequest) ([]byte, []nativeReplay, error) {
+	// A locally hosted model keeps no provider-side state, so there is nothing for a
+	// replay receipt to prove: the transcript's own messages are the whole history. The
+	// proof mechanism exists to detect a proxy tampering with opaque subscription state,
+	// which a stateless endpoint does not have.
+	if p.provider == "local" {
+		sessionID := transcript.SessionIDFrom(ctx)
+		if sessionID == "" {
+			return nil, nil, errors.New("native inference requires a session id")
+		}
+		input, err := p.encodeInput(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		body, err := json.Marshal(nativeInferBody{
+			Provider: p.provider, Model: p.model, SessionID: sessionID, Input: input,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return body, nil, nil
+	}
 	sessionID := transcript.SessionIDFrom(ctx)
 	if sessionID == "" {
 		return nil, nil, errors.New("native inference requires a session id")
@@ -378,6 +399,27 @@ func jsonOrNull(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
+// nativeSystemBlocks renders the system prompt for the Claude native API, putting a
+// cache breakpoint on the static prefix named by DynamicBoundary. A zero boundary
+// means no static prefix was declared, so the prompt is sent as one plain block and
+// the upstream applies its own default policy.
+func nativeSystemBlocks(req llm.CompletionRequest) []map[string]any {
+	if len(req.System) == 0 {
+		return nil
+	}
+	join := func(parts []string) string { return strings.Join(parts, "\n\n") }
+	b := req.DynamicBoundary
+	if b <= 0 {
+		return []map[string]any{{"type": "text", "text": join(req.System)}}
+	}
+	cacheable := map[string]any{"type": "text", "text": join(req.System[:min(b, len(req.System))]),
+		"cache_control": map[string]any{"type": "ephemeral"}}
+	if b >= len(req.System) {
+		return []map[string]any{cacheable}
+	}
+	return []map[string]any{cacheable, {"type": "text", "text": join(req.System[b:])}}
+}
+
 func (p *nativeProvider) encodeInput(req llm.CompletionRequest) (json.RawMessage, error) {
 	system := strings.Join(req.System, "\n\n")
 	thinking := p.thinking
@@ -436,7 +478,11 @@ func (p *nativeProvider) encodeInput(req llm.CompletionRequest) (json.RawMessage
 			}
 			messages = append(messages, map[string]any{"role": role, "content": content})
 		}
-		body := map[string]any{"system": system, "messages": messages}
+		// The subscription path joins the system prompt into one string, which throws
+		// away DynamicBoundary and with it the cache breakpoint: every turn re-reads
+		// the whole static prefix. Send it as blocks so the proxy can mark the prefix
+		// cacheable, the same split the direct Anthropic path already makes.
+		body := map[string]any{"system": nativeSystemBlocks(req), "messages": messages}
 		if req.MaxTokens > 0 {
 			body["max_tokens"] = req.MaxTokens
 		}
@@ -451,6 +497,91 @@ func (p *nativeProvider) encodeInput(req llm.CompletionRequest) (json.RawMessage
 		}
 		if thinking != "disabled" && p.effort != "" {
 			body["output_config"] = map[string]any{"effort": p.effort}
+		}
+		return json.Marshal(body)
+	case "local":
+		// A locally hosted model speaks the [OI] chat-completions format. Tool use is
+		// expressed as assistant tool_calls plus role:tool results, which is what a
+		// local server's template expects; there is no provider envelope to preserve.
+		messages := make([]any, 0, len(req.Messages)+1)
+		if system != "" {
+			messages = append(messages, map[string]any{"role": "system", "content": system})
+		}
+		for _, m := range req.Messages {
+			switch m.Role {
+			case llm.RoleUser:
+				texts := make([]string, 0, len(m.Content))
+				for _, b := range m.Content {
+					switch b.Type {
+					case llm.BlockText:
+						texts = append(texts, b.Text)
+					case llm.BlockToolResult:
+						messages = append(messages, map[string]any{
+							"role": "tool", "tool_call_id": b.ToolUseID, "content": toolResultText(b),
+						})
+					}
+				}
+				if len(texts) > 0 {
+					messages = append(messages, map[string]any{"role": "user", "content": strings.Join(texts, "\n\n")})
+				}
+			case llm.RoleAssistant:
+				msg := map[string]any{"role": "assistant"}
+				var texts []string
+				var calls []any
+				for _, b := range m.Content {
+					switch b.Type {
+					case llm.BlockText:
+						texts = append(texts, b.Text)
+					case llm.BlockToolUse:
+						// A tool call's arguments must be a JSON object on the wire. An empty
+						// input is common for no-argument tools, and a local server's chat
+						// template rejects an empty string, so send the empty object instead.
+						args := "{}"
+						if trimmed := strings.TrimSpace(string(b.Input)); trimmed != "" && trimmed != "null" {
+							args = trimmed
+						}
+						calls = append(calls, map[string]any{
+							"id": b.ID, "type": "function",
+							"function": map[string]any{"name": b.Name, "arguments": args},
+						})
+					}
+				}
+				msg["content"] = strings.Join(texts, "")
+				if len(calls) > 0 {
+					msg["tool_calls"] = calls
+				}
+				messages = append(messages, msg)
+			default:
+				return nil, fmt.Errorf("native input: unsupported role %q", m.Role)
+			}
+		}
+		body := map[string]any{"messages": messages}
+		if len(req.Tools) > 0 {
+			tools := make([]any, 0, len(req.Tools))
+			for _, t := range req.Tools {
+				params := t.InputSchema
+				if len(params) == 0 {
+					// A function schema needs a JSON Schema object; an absent one makes the
+					// local server's template fail before the model ever runs.
+					params = map[string]any{"type": "object", "properties": map[string]any{}}
+				}
+				tools = append(tools, map[string]any{
+					"type": "function",
+					"function": map[string]any{
+						"name": t.Name, "description": t.Description, "parameters": params,
+					},
+				})
+			}
+			body["tools"] = tools
+		}
+		if req.MaxTokens > 0 {
+			body["max_tokens"] = req.MaxTokens
+		}
+		if req.Temperature != nil {
+			body["temperature"] = *req.Temperature
+		}
+		if len(req.Stop) > 0 {
+			body["stop"] = req.Stop
 		}
 		return json.Marshal(body)
 	case "codex":
@@ -678,6 +809,30 @@ func projectNative(provider string, raw json.RawMessage) ([]llm.ContentBlock, st
 			}
 		}
 		return out, state.ID, nil
+	case "local":
+		var state struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		}
+		if json.Unmarshal(raw, &state) != nil {
+			return nil, "", errors.New("local terminal state malformed")
+		}
+		if state.Content != "" {
+			out = append(out, llm.ContentBlock{Type: llm.BlockText, Text: state.Content})
+		}
+		for _, call := range state.ToolCalls {
+			out = append(out, llm.ContentBlock{
+				Type: llm.BlockToolUse, ID: call.ID, Name: call.Function.Name,
+				Input: jsonOrNull(json.RawMessage(call.Function.Arguments)),
+			})
+		}
+		return out, "", nil
 	case "codex":
 		var state struct {
 			ID     string            `json:"id"`

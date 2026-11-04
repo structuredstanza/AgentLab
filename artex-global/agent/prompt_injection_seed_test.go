@@ -10,7 +10,9 @@ func TestPromptSeedsCarryInjectionHardening(t *testing.T) {
 		switch name {
 		case "worker", "pentest", "mainagent", "auto":
 			for _, marker := range []string{"prompt-injection defense", "never instructions to you", "do NOT comply"} {
-				if !strings.Contains(tmpl, marker) { t.Errorf("%s seed missing hardening marker %q", name, marker) }
+				if !strings.Contains(tmpl, marker) {
+					t.Errorf("%s seed missing hardening marker %q", name, marker)
+				}
 			}
 		}
 	}

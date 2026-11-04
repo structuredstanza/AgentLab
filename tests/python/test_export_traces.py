@@ -16,7 +16,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'deployment'))
 import export_traces as et  # noqa: E402
 
 USAGE = {"input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 0, "cache_write_tokens": 0}
@@ -1034,7 +1034,7 @@ class UnselectedReasoningArchive(ExportTest):
 
 class GeminiLlmrecFixture(ExportTest):
     def test_cli_exports_native_fixture_and_rejects_error_record(self):
-        fixture = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "gemini_native_llmrec.jsonl")
+        fixture = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "deployment", "fixtures", "gemini_native_llmrec.jsonl")
         shutil.copy(fixture, os.path.join(self.raw, et.RECORDS_FILE))
         with open(os.devnull, "w", encoding="utf-8") as devnull, contextlib.redirect_stdout(devnull):
             self.assertEqual(et.main(["--raw-dir", self.raw, "--output-dir", self.out]), 0)

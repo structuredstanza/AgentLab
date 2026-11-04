@@ -108,12 +108,25 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request, parts []string) {
 	}
 	rest := parts[3:]
 	switch {
-	case len(rest) == 2 && rest[0] == "login" && rest[1] == "start":
-		s.startLogin(w, r, profile)
-	case len(rest) == 2 && rest[0] == "login":
-		s.loginSession(w, r, profile, rest[1])
-	case len(rest) == 3 && rest[0] == "login" && rest[2] == "input":
-		s.loginInput(w, r, profile, rest[1])
+	case len(rest) >= 2 && rest[0] == "login":
+		// A local upstream is configuration, not a credential: there is nothing to log
+		// in to, and accepting a login would imply it can be replaced. The check reads
+		// the query without validating it, so a request that never names a provider
+		// still reaches the handler and its own error handling unchanged.
+		if p, ok := contract.ParseProvider(r.URL.Query().Get("provider")); ok && !contract.RequiresGrant(p) {
+			writeError(w, http.StatusBadRequest, "no_login_required")
+			return
+		}
+		switch {
+		case len(rest) == 2 && rest[1] == "start":
+			s.startLogin(w, r, profile)
+		case len(rest) == 2:
+			s.loginSession(w, r, profile, rest[1])
+		case len(rest) == 3 && rest[2] == "input":
+			s.loginInput(w, r, profile, rest[1])
+		default:
+			writeError(w, http.StatusNotFound, "not_found")
+		}
 	case len(rest) == 1 && rest[0] == "grant":
 		s.disconnect(w, r, profile)
 	case len(rest) == 1 && rest[0] == "status":

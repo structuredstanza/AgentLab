@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-loader = importlib.machinery.SourceFileLoader('guest_supervisor', str(Path(__file__).with_name('guest-start.py')))
+loader = importlib.machinery.SourceFileLoader('guest_supervisor', str(Path(__file__).resolve().parents[2] / 'deployment' / 'guest-start.py'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 supervisor = importlib.util.module_from_spec(spec)
 loader.exec_module(supervisor)

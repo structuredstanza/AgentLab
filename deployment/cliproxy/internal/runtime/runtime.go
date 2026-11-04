@@ -29,17 +29,101 @@ import (
 )
 
 type Runtime struct {
-	store     *store.Store
-	lifecycle *lifecycle.Lifecycle
-	catalog   contract.Catalog
-	receipts  contract.Receipts
-	captures  *captureStore
-	usage     *usage.Service
-	infer     *infer.Service
-	server    *server.Server
-	cfg       *sdkconfig.Config
-	locksMu   sync.Mutex
-	locks     map[contract.ProfileID]chan struct{}
+	store       contract.Store
+	lifecycle   *lifecycle.Lifecycle
+	catalog     contract.Catalog
+	receipts    contract.Receipts
+	captures    *captureStore
+	local       *localUpstream
+	localModels int
+	usage       *usage.Service
+	infer       *infer.Service
+	server      *server.Server
+	cfg         *sdkconfig.Config
+	locksMu     sync.Mutex
+	locks       map[contract.ProfileID]chan struct{}
+}
+
+// openAICompatProvider is the executor key an operator-hosted model is served under.
+// A local model speaks the [OI]-compatible wire format, so it reuses that executor
+// rather than a fourth implementation.
+const openAICompatProvider = "openai-compatibility"
+
+// localCoreAuthID is the single, stable credential identity of the local upstream.
+// It is not a secret and never rotates, so replay bindings stay verifiable.
+const localCoreAuthID = "local-upstream"
+
+// localUpstream is the operator-hosted model endpoint. It carries no grant: the host
+// is configured, not logged in to, which is why it is read from disk instead of the
+// credential store.
+type localUpstream struct {
+	BaseURL string           `json:"base_url"`
+	APIKey  string           `json:"api_key"`
+	Models  []contract.Model `json:"models"`
+}
+
+// loadLocalUpstream reads the local endpoint configuration. A missing file simply
+// means no local provider is configured, which is not an error.
+func loadLocalUpstream(dataRoot string) (*localUpstream, error) {
+	raw, err := os.ReadFile(filepath.Join(dataRoot, "local.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.New("could not read local upstream configuration")
+	}
+	var cfg localUpstream
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, errors.New("local upstream configuration is invalid")
+	}
+	if strings.TrimSpace(cfg.BaseURL) == "" || len(cfg.Models) == 0 {
+		return nil, errors.New("local upstream configuration needs a base_url and at least one model")
+	}
+	return &cfg, nil
+}
+
+// localStore serves the configured local upstream in the shape of a grant, so a local
+// turn travels the same admission, capture and receipt path as a subscription turn
+// instead of bypassing them. Only Load is special: the local endpoint is configuration,
+// so a login cannot replace it and a disconnect cannot remove it.
+type localStore struct {
+	contract.Store
+	cfg *localUpstream
+}
+
+// Generation forwards to the underlying store: a local upstream has no generation
+// because it never persists, but a subscription grant still needs one.
+func (s localStore) Generation(profile contract.ProfileID, provider contract.Provider) (uint64, error) {
+	if g, ok := s.Store.(interface {
+		Generation(contract.ProfileID, contract.Provider) (uint64, error)
+	}); ok {
+		return g.Generation(profile, provider)
+	}
+	return 0, nil
+}
+
+func (s localStore) Load(ctx context.Context, profile contract.ProfileID, provider contract.Provider) (*contract.Record, error) {
+	if provider != contract.ProviderLocal {
+		return s.Store.Load(ctx, profile, provider)
+	}
+	if s.cfg == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(map[string]string{
+		"base_url": s.cfg.BaseURL,
+		"api_key":  s.cfg.APIKey,
+	})
+	if err != nil {
+		return nil, errors.New("could not encode local upstream configuration")
+	}
+	return &contract.Record{CoreAuthID: localCoreAuthID, Raw: raw}, nil
+}
+
+func localModelCount(cfg *localUpstream) int {
+	if cfg == nil {
+		return 0
+	}
+	return len(cfg.Models)
 }
 
 func New(dataRoot string, token []byte) (*Runtime, error) {
@@ -82,18 +166,30 @@ func New(dataRoot string, token []byte) (*Runtime, error) {
 		return nil, err
 	}
 
+	local, err := loadLocalUpstream(dataRoot)
+	if err != nil {
+		captures.file.Close()
+		return nil, err
+	}
+
 	cfg := &sdkconfig.Config{}
 	cfg.DisableClaudeCloakMode = false
 	cfg.ClaudeCode.DisableCloakingModelList = false
 	cfg.Codex.DisableCodexCloaking = false
+	wrapped := localStore{Store: st, cfg: local}
 	r := &Runtime{
-		store:     st,
-		lifecycle: lifecycle.New(st, loginRunner{cfg: cfg}),
-		catalog:   cat,
-		receipts:  receipts,
-		captures:  captures,
-		cfg:       cfg,
-		locks:     make(map[contract.ProfileID]chan struct{}),
+		store:       wrapped,
+		local:       local,
+		localModels: localModelCount(local),
+		lifecycle:   lifecycle.New(st, loginRunner{cfg: cfg}),
+		catalog:     cat,
+		receipts:    receipts,
+		captures:    captures,
+		cfg:         cfg,
+		locks:       make(map[contract.ProfileID]chan struct{}),
+	}
+	if local != nil {
+		cat.AddLocal(local.Models)
 	}
 	usageClient, err := usage.New(httptransport.ApplyOutboundPolicy(&http.Client{Timeout: 45 * time.Second}), usageCredential{host: r})
 	if err != nil {
@@ -102,7 +198,7 @@ func New(dataRoot string, token []byte) (*Runtime, error) {
 	}
 	r.usage = usageClient
 	inference, err := infer.New(infer.Deps{
-		Store:    st,
+		Store:    wrapped,
 		Catalog:  cat,
 		Receipts: receipts,
 		Streamer: nativeStreamer{host: r},
@@ -118,7 +214,7 @@ func New(dataRoot string, token []byte) (*Runtime, error) {
 	svc, err := server.New(server.Deps{
 		Token:     token,
 		Lifecycle: r.lifecycle,
-		Store:     st,
+		Store:     wrapped,
 		Catalog:   cat,
 		Usage:     usageAdapter{host: r},
 		Inferer:   inferAdapter{service: inference},
@@ -274,7 +370,17 @@ func (s nativeStreamer) ExecuteStream(ctx context.Context, providers []string, r
 		return nil, err
 	}
 	turn, ok := ctx.Value(turnKey{}).(turnIdentity)
-	if !ok || len(providers) != 1 || providers[0] != string(turn.binding.Provider) || req.Model != turn.binding.Model {
+	if !ok || len(providers) != 1 || req.Model != turn.binding.Model {
+		return nil, errors.New("native request binding mismatch")
+	}
+	// A local model is executed by the [OI]-compatible executor, so the provider
+	// key it is dispatched under differs from the profile's provider name.
+	expected := string(turn.binding.Provider)
+	if turn.binding.Provider == contract.ProviderLocal {
+		expected = openAICompatProvider
+		providers = []string{openAICompatProvider}
+	}
+	if providers[0] != expected {
 		return nil, errors.New("native request binding mismatch")
 	}
 	pinned, _ := opts.Metadata[cliproxyexecutor.PinnedAuthMetadataKey].(string)
@@ -329,7 +435,23 @@ func (s nativeStreamer) ExecuteStream(ctx context.Context, providers []string, r
 }
 
 func (r *Runtime) nativeManager(ctx context.Context, profile contract.ProfileID, provider contract.Provider, rec *contract.Record) (*coreauth.Manager, func(), error) {
-	if err := core.RegisterNativeAuthModels(rec.CoreAuthID, string(provider)); err != nil {
+	registryKey := string(provider)
+	if provider == contract.ProviderLocal {
+		registryKey = openAICompatProvider
+	}
+	if provider == contract.ProviderLocal {
+		// A local upstream has no embedded catalog, so its models come from the host.
+		models := make([]core.NativeModel, 0, len(r.local.Models))
+		for _, m := range r.local.Models {
+			models = append(models, core.NativeModel{
+				ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow,
+				SupportedEfforts: m.SupportedEfforts,
+			})
+		}
+		if err := core.RegisterCompatAuthModels(rec.CoreAuthID, registryKey, models); err != nil {
+			return nil, nil, err
+		}
+	} else if err := core.RegisterNativeAuthModels(rec.CoreAuthID, registryKey); err != nil {
 		return nil, nil, err
 	}
 	manager := coreauth.NewManager(refreshStore{host: r, profile: profile, provider: provider, coreAuthID: rec.CoreAuthID}, nil, nil)
@@ -340,6 +462,12 @@ func (r *Runtime) nativeManager(ctx context.Context, profile contract.ProfileID,
 	if err := core.RegisterNativeHTTPExecutors(manager, r.cfg); err != nil {
 		cleanup()
 		return nil, nil, err
+	}
+	if provider == contract.ProviderLocal {
+		if err := core.RegisterCompatExecutor(manager, openAICompatProvider, r.cfg); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
 	}
 	auth, err := coreAuthFromRecord(provider, rec)
 	if err != nil {
@@ -357,6 +485,21 @@ func coreAuthFromRecord(provider contract.Provider, rec *contract.Record) (*core
 	meta, err := decodeMetadata(rec.Raw)
 	if err != nil || rec.CoreAuthID == "" {
 		return nil, errors.New("stored native credential is invalid")
+	}
+	// The local branch reads its endpoint before the override strip below, because
+	// base_url is exactly what a local upstream is. The strip exists to stop a stored
+	// OAuth grant from redirecting traffic; a configured endpoint is not that.
+	if provider == contract.ProviderLocal {
+		baseURL, _ := meta["base_url"].(string)
+		apiKey, _ := meta["api_key"].(string)
+		if strings.TrimSpace(baseURL) == "" {
+			return nil, errors.New("stored local upstream has no endpoint")
+		}
+		return &coreauth.Auth{
+			ID: rec.CoreAuthID, Provider: openAICompatProvider,
+			Attributes: map[string]string{"base_url": baseURL, "api_key": apiKey},
+			Status:     coreauth.StatusActive, Label: openAICompatProvider,
+		}, nil
 	}
 	for key := range meta {
 		if runtimeOverrideMetadataKey(key) {

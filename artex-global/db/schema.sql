@@ -363,7 +363,7 @@ CREATE TABLE IF NOT EXISTS llm_profiles (
     id               BIGSERIAL PRIMARY KEY,
     name             TEXT NOT NULL UNIQUE,
     format           TEXT NOT NULL CHECK (format IN ('openai','anthropic','openai-responses','antigravity','ollama')),
-    auth_method      TEXT NOT NULL DEFAULT 'api_key' CHECK (auth_method IN ('api_key','claude_code','codex','antigravity')),
+    auth_method      TEXT NOT NULL DEFAULT 'api_key' CHECK (auth_method IN ('api_key','claude_code','codex','antigravity','local')),
     base_url         TEXT,
     proxy            TEXT,
     model            TEXT NOT NULL,
@@ -438,7 +438,7 @@ ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_format_check
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS auth_method TEXT NOT NULL DEFAULT 'api_key';
 ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_auth_method_check;
 ALTER TABLE llm_profiles ADD CONSTRAINT llm_profiles_auth_method_check
-    CHECK (auth_method IN ('api_key','claude_code','codex','antigravity'));
+    CHECK (auth_method IN ('api_key','claude_code','codex','antigravity','local'));
 
 -- Output token cap and its field name; backfill the legacy database. Default 0 / '' = do not send the cap, keep the max_tokens field name,
 -- Legacy configuration behavior remains completely unchanged.

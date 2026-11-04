@@ -10,23 +10,32 @@ import (
 	"time"
 )
 
-// Provider is one of the three enabled native providers.
+// Provider is one of the enabled providers. Claude, Codex and Antigravity are
+// subscription providers backed by OAuth grants. Local is a model hosted on the
+// operator's own machine: it has no grant to refresh, but routing it through the
+// host keeps every outbound model request under one policy, one capture and one
+// cache decision instead of leaving a second, uncontrolled egress.
 type Provider string
 
 const (
 	ProviderClaude      Provider = "claude"
 	ProviderCodex       Provider = "codex"
 	ProviderAntigravity Provider = "antigravity"
+	ProviderLocal       Provider = "local"
 )
 
-// ParseProvider accepts only the three canonical lowercase names.
+// ParseProvider accepts only the canonical lowercase names.
 func ParseProvider(s string) (Provider, bool) {
 	switch Provider(s) {
-	case ProviderClaude, ProviderCodex, ProviderAntigravity:
+	case ProviderClaude, ProviderCodex, ProviderAntigravity, ProviderLocal:
 		return Provider(s), true
 	}
 	return "", false
 }
+
+// RequiresGrant reports whether the provider authenticates with a stored grant.
+// A local provider does not: it is configured by the host, not logged in to.
+func RequiresGrant(p Provider) bool { return p != ProviderLocal }
 
 // ProfileID is a canonical positive decimal of at most 19 digits, no leading zero.
 type ProfileID string
@@ -62,6 +71,9 @@ type Store interface {
 	Save(ctx context.Context, profile ProfileID, provider Provider, expectedGen uint64, rec *Record) (uint64, error)
 	// DeleteAll removes every provider grant for the profile.
 	DeleteAll(ctx context.Context, profile ProfileID) error
+	// Generation reports the stored generation of one grant, used to reject a
+	// refresh that would overwrite a grant saved by someone else.
+	Generation(profile ProfileID, provider Provider) (uint64, error)
 }
 
 // Lifecycle serializes per-profile login, cancel, refresh and disconnect.

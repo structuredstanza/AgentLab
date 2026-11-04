@@ -62,7 +62,16 @@ func (t *policyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return deny(req)
 	}
-	s := &scanner{canaries: t.p.canaries, budget: maxScanBudget}
+	// The canary gate keeps this host's identity out of a THIRD PARTY's hands. A local
+	// upstream is reached over loopback and run by the same operator, so naming the host
+	// in its prompt discloses nothing; scanning it would deny every real request, since
+	// the product's own prompts name the product. Withholding the canaries disables the
+	// search while shape validation, capture and receipts still apply.
+	canaries := t.p.canaries
+	if rt.provider == contract.ProviderLocal {
+		canaries = nil
+	}
+	s := &scanner{canaries: canaries, budget: maxScanBudget}
 	if err := s.scanHeaders(req.Header); err != nil {
 		return deny(req)
 	}

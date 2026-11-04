@@ -21,10 +21,10 @@ func (t *ToolSet) saveTaskCredential() actool.CoreTool {
 		}, "domain", "username", "password"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				Domain string `json:"domain"`
+				Domain   string `json:"domain"`
 				Username string `json:"username"`
 				Password string `json:"password"`
-				Note string `json:"note"`
+				Note     string `json:"note"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("invalid input: " + err.Error()), nil

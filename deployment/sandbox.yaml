@@ -1,4 +1,4 @@
-image: agentlab/artex:seed-tracking-v1
+image: agentlab/artex:local-tools-v1
 pull_policy: never
 cpus: 4
 memory: 8G

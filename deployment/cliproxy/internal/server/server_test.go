@@ -47,6 +47,9 @@ func (fakeStore) Save(context.Context, contract.ProfileID, contract.Provider, ui
 	return 0, nil
 }
 func (fakeStore) DeleteAll(context.Context, contract.ProfileID) error { return nil }
+func (fakeStore) Generation(contract.ProfileID, contract.Provider) (uint64, error) {
+	return 0, nil
+}
 
 type fakeCatalog struct{}
 

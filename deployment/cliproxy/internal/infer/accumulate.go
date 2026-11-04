@@ -31,6 +31,9 @@ func newAccumulator(p contract.Provider) accumulator {
 		return &claudeTurn{usage: map[string]any{}, buffers: map[int]map[string]*strings.Builder{}}
 	case contract.ProviderCodex:
 		return &codexTurn{}
+	case contract.ProviderLocal:
+		// A local model answers in the [OI] chat-completions shape.
+		return &chatTurn{toolCalls: map[int]*pendingCall{}}
 	default:
 		return &geminiTurn{parts: map[int][]any{}, finish: map[int]string{}, role: "model"}
 	}
@@ -485,4 +488,200 @@ func hasFunctionCall(parts []any) bool {
 		}
 	}
 	return false
+}
+
+// chatTurn folds [OI] chat-completion frames. A local upstream may answer with one
+// whole object or with SSE deltas, so both carry the text in a nested object that
+// this reads the same way: "message" for a complete response, "delta" for a chunk.
+type chatTurn struct {
+	content   strings.Builder
+	reasoning strings.Builder
+	// toolCalls are keyed by the call's index: a streaming server sends one call's id
+	// and name once and then its arguments as successive fragments under the same
+	// index, so each fragment must extend the existing call rather than start a new
+	// one. Appending per fragment would emit one tool call per character.
+	toolCalls map[int]*pendingCall
+	order     []int
+	finish    string
+	usage     Usage
+	seen      bool
+}
+
+// pendingCall is one tool call being assembled from its fragments.
+type pendingCall struct {
+	id      string
+	name    string
+	args    strings.Builder
+	hasArgs bool
+}
+
+func (c *chatTurn) feed(ev map[string]any) error {
+	if e := obj(ev, "error"); e != nil {
+		return fail(CodeUnavailable)
+	}
+	// A local server may report its counters as "timings" instead of an [OI] usage
+	// object: prompt_n are the tokens it had to read, cache_n the ones it reused from
+	// the prefix cache. Reading both keeps the turn's accounting honest either way.
+	if t := obj(ev, "timings"); t != nil {
+		cached, read, predicted := intOf(t["cache_n"]), intOf(t["prompt_n"]), intOf(t["predicted_n"])
+		if read+cached+predicted > 0 {
+			c.usage.CacheReadTokens = cached
+			c.usage.InputTokens = read + cached
+			c.usage.OutputTokens = predicted
+		}
+	}
+	if u := obj(ev, "usage"); u != nil {
+		c.usage.InputTokens = intOf(u["prompt_tokens"])
+		c.usage.OutputTokens = intOf(u["completion_tokens"])
+		if details := obj(u, "prompt_tokens_details"); details != nil {
+			c.usage.CacheReadTokens = intOf(details["cached_tokens"])
+		}
+		if details := obj(u, "completion_tokens_details"); details != nil {
+			c.usage.ReasoningTokens = intOf(details["reasoning_tokens"])
+		}
+	}
+	for _, raw := range arr(ev, "choices") {
+		choice, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		c.seen = true
+		part := obj(choice, "delta")
+		if part == nil {
+			part = obj(choice, "message")
+		}
+		if part != nil {
+			c.content.WriteString(str(part, "content"))
+			c.reasoning.WriteString(str(part, "reasoning_content"))
+			for pos, raw := range arr(part, "tool_calls") {
+				call, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				// The index decides which call a fragment belongs to. Decoded numbers are
+				// json.Number (the decoder disables float64 coercion), so both forms are
+				// read here; missing one would silently merge every call into slot 0.
+				idx, indexed := intValue(call["index"])
+				if !indexed {
+					idx = pos
+				}
+				id := str(call, "id")
+				pending, exists := c.toolCalls[idx]
+				// Only when the server sends no index at all: a fresh id on an occupied
+				// slot starts a new call, rather than concatenating several calls'
+				// arguments into one entry the server cannot parse.
+				if !indexed && exists && id != "" && pending.id != "" && id != pending.id {
+					idx = len(c.order)
+					pending, exists = c.toolCalls[idx]
+				}
+				if !exists {
+					pending = &pendingCall{}
+					c.toolCalls[idx] = pending
+					c.order = append(c.order, idx)
+				}
+				if id != "" {
+					pending.id = id
+				}
+				if fn := obj(call, "function"); fn != nil {
+					if name := str(fn, "name"); name != "" {
+						pending.name = name
+					}
+					// Arguments arrive split across fragments, in order.
+					if frag := str(fn, "arguments"); frag != "" {
+						pending.args.WriteString(frag)
+						pending.hasArgs = true
+					}
+				}
+			}
+		}
+		if finish := str(choice, "finish_reason"); finish != "" {
+			c.finish = finish
+		}
+	}
+	return nil
+}
+
+func (c *chatTurn) result() (turnResult, bool, error) {
+	if !c.seen {
+		return turnResult{}, false, nil
+	}
+	message := map[string]any{"role": "assistant", "content": c.content.String()}
+	if c.reasoning.Len() > 0 {
+		message["reasoning_content"] = c.reasoning.String()
+	}
+	if len(c.order) > 0 {
+		calls := make([]any, 0, len(c.order))
+		for _, idx := range c.order {
+			pending := c.toolCalls[idx]
+			if pending == nil || pending.name == "" {
+				// A fragment without a name never became a usable call; dropping it is
+				// better than sending a call the server cannot dispatch.
+				continue
+			}
+			args := pending.args.String()
+			if !pending.hasArgs || strings.TrimSpace(args) == "" {
+				// A no-argument tool still needs a JSON object on the wire.
+				args = "{}"
+			}
+			calls = append(calls, map[string]any{
+				"id": pending.id, "type": "function",
+				"function": map[string]any{"name": pending.name, "arguments": args},
+			})
+		}
+		if len(calls) > 0 {
+			message["tool_calls"] = calls
+		}
+	}
+	response, err := json.Marshal(message)
+	if err != nil {
+		return turnResult{}, false, fail(CodeUnavailable)
+	}
+	// The replay state is the assistant message itself: a stateless local model has
+	// nothing else to carry between turns, and keeping it lets a retried turn replay
+	// exactly what the model said.
+	return turnResult{response: response, state: response, usage: c.usage, stop: localStop(c.finish)}, true, nil
+}
+
+// intOf reads a JSON number in any representation the decoders produce.
+func intOf(v any) int {
+	n, ok := intValue(v)
+	if !ok {
+		return 0
+	}
+	return n
+}
+
+// intValue reports a whole number as an int, accepting the json.Number the
+// use-number decoder produces as well as a plain float or int.
+func intValue(v any) (int, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i), true
+		}
+		if f, err := n.Float64(); err == nil {
+			return int(f), true
+		}
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	}
+	return 0, false
+}
+
+// localStop maps a chat-completion finish_reason onto the native terminal vocabulary
+// the host contract uses. Sending the raw value would fail admission downstream, since
+// "stop" is not one of the four terminal reasons the native protocol defines.
+func localStop(finish string) string {
+	switch strings.ToLower(strings.TrimSpace(finish)) {
+	case "tool_calls", "function_call":
+		return "tool"
+	case "length":
+		return "length"
+	case "content_filter":
+		return "refusal"
+	default:
+		return "end"
+	}
 }

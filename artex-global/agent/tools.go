@@ -521,7 +521,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	}
 	if stale := detectStagnation(recentDone, vulnNodes); len(stale) > 0 {
 		out["stagnation_warning"] = map[string]any{
-			"directions": stale,
+			"directions":  stale,
 			"instruction": "these directions were dispatched repeatedly with zero findings produced since their first attempt — do NOT re-dispatch the same approach again; open a materially different direction, or judge the goal on the existing evidence instead of grinding",
 		}
 	}

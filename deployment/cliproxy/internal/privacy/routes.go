@@ -1,6 +1,7 @@
 package privacy
 
 import (
+	"net"
 	"net/http"
 	"strings"
 
@@ -66,16 +67,54 @@ func buildRoutes() map[routeKey]route {
 	return m
 }
 
-// lookupRoute admits only https requests whose host has no port and whose
-// method and escaped path match an allowlist entry exactly.
+// localInferencePaths are the only paths an operator-hosted endpoint may be called on.
+var localInferencePaths = map[string]bool{"/v1/chat/completions": true}
+
+// lookupRoute admits only https requests whose host has no port and whose method and
+// escaped path match an allowlist entry exactly. Plaintext is admitted solely for a
+// loopback-hosted local model, by lookupLoopbackRoute.
 func lookupRoute(req *http.Request) (route, bool) {
-	if req.URL == nil || req.URL.Scheme != "https" || req.URL.User != nil || req.URL.Fragment != "" || req.URL.Opaque != "" {
+	if req.URL == nil || req.URL.User != nil || req.URL.Fragment != "" || req.URL.Opaque != "" {
 		return route{}, false
 	}
 	method := req.Method
 	if method == "" {
 		method = http.MethodGet
 	}
+	if req.URL.Scheme != "https" {
+		return lookupLoopbackRoute(req, method)
+	}
 	rt, ok := allowedRoutes[routeKey{host: strings.ToLower(req.URL.Host), method: method, path: req.URL.EscapedPath()}]
 	return rt, ok
+}
+
+// lookupLoopbackRoute admits the operator-hosted model endpoint. It is the one upstream
+// that is neither a pinned public provider nor reachable over TLS: the endpoint is
+// configured locally and called over plaintext loopback, which never leaves the machine,
+// so the disguise rationale behind the https-only rule does not apply to it. The
+// admission is kept deliberately narrow — loopback host with an explicit port, POST, the
+// single completion path, and only for the local provider — so it cannot be reused as a
+// general plaintext escape hatch.
+func lookupLoopbackRoute(req *http.Request, method string) (route, bool) {
+	if req.URL.Scheme != "http" || method != http.MethodPost {
+		return route{}, false
+	}
+	if !localInferencePaths[req.URL.EscapedPath()] || !isLoopbackHost(req.URL.Host) {
+		return route{}, false
+	}
+	return route{provider: contract.ProviderLocal, kind: kindInference}, true
+}
+
+// isLoopbackHost accepts a loopback address only when a port is spelled out, so the
+// admission is always to one explicit endpoint rather than to a whole host.
+func isLoopbackHost(hostport string) bool {
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil || port == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

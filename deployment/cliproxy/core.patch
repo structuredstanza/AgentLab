@@ -1720,3 +1720,80 @@ index 0000000..502fef4
 +	enabled, _ := ctx.Value(strictReplayKey{}).(bool)
 +	return enabled
 +}
+diff --git a/sdk/cliproxy/compat_registration.go b/sdk/cliproxy/compat_registration.go
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/sdk/cliproxy/compat_registration.go
+@@ -0,0 +1,55 @@
++package cliproxy
++
++import (
++	"fmt"
++	"strings"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++)
++
++// RegisterCompatExecutor installs an [OI]-compatible HTTP executor under providerKey,
++// so a host can route an operator-hosted model through the same managed egress as the
++// native providers. It fails when no outbound policy is installed, matching
++// RegisterNativeHTTPExecutors: traffic is never dispatched unpoliced.
++func RegisterCompatExecutor(manager *coreauth.Manager, providerKey string, cfg *config.Config) error {
++	if manager == nil {
++		return fmt.Errorf("cliproxy: compat executor registration requires a manager")
++	}
++	if strings.TrimSpace(providerKey) == "" {
++		return fmt.Errorf("cliproxy: compat executor registration requires a provider key")
++	}
++	if !httptransport.OutboundPolicyInstalled() {
++		return fmt.Errorf("cliproxy: compat executor registration requires an installed outbound policy")
++	}
++	manager.RegisterExecutor(executor.NewOpenAICompatExecutor(providerKey, cfg))
++	return nil
++}
++
++// RegisterCompatAuthModels registers an explicit model list for an [OI]-compatible
++// credential. Unlike a native provider it has no embedded catalog, so the models it
++// serves are declared by the host rather than looked up.
++func RegisterCompatAuthModels(authID, provider string, models []NativeModel) error {
++	if strings.TrimSpace(authID) == "" {
++		return fmt.Errorf("cliproxy: compat model registration requires an auth ID")
++	}
++	if len(models) == 0 {
++		return fmt.Errorf("cliproxy: compat model registration requires at least one model")
++	}
++	infos := make([]*registry.ModelInfo, 0, len(models))
++	for _, m := range models {
++		if strings.TrimSpace(m.ID) == "" {
++			return fmt.Errorf("cliproxy: compat model registration requires a model ID")
++		}
++		info := &registry.ModelInfo{ID: m.ID, DisplayName: m.Name, ContextLength: m.ContextWindow}
++		if len(m.SupportedEfforts) > 0 {
++			info.Thinking = &registry.ThinkingSupport{Levels: append([]string(nil), m.SupportedEfforts...)}
++		}
++		infos = append(infos, info)
++	}
++	registry.GetGlobalRegistry().RegisterClient(authID, provider, infos)
++	return nil
++}
+diff --git a/sdk/cliproxy/compat_diagnostics.go b/sdk/cliproxy/compat_diagnostics.go
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/sdk/cliproxy/compat_diagnostics.go
+@@ -0,0 +1,10 @@
++package cliproxy
++
++import "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++
++// CompatClientSupportsModel reports whether the registry knows a model for an
++// [OI]-compatible credential. It exists so the host can diagnose a compat auth that
++// registers successfully yet is never selected for a turn.
++func CompatClientSupportsModel(authID, model string) bool {
++	return registry.GetGlobalRegistry().ClientSupportsModel(authID, model)
++}

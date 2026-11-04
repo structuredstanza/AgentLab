@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -78,6 +80,10 @@ type oaReq struct {
 	ReasoningEffort     string        `json:"reasoning_effort,omitempty"`
 	Stream              bool          `json:"stream"`
 	StreamOptions       *oaStreamOpts `json:"stream_options,omitempty"`
+	// PromptCacheKey lets an upstream route repeat turns of one conversation to the
+	// same cache shard. Keyed on the static system prefix: that is what stays
+	// byte-identical across turns, so it is the only safe stable input here.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 }
 
 type oaStreamOpts struct {
@@ -245,6 +251,22 @@ func flattenText(blocks []ContentBlock) string {
 	return s.String()
 }
 
+// promptCacheKey derives the cache key for a request from its static system prefix.
+// Only the prefix is used: it is identical across the turns of one conversation, so
+// the key stays stable while the conversation grows, which is what lets an upstream
+// reuse the cached prefix. Returns "" when no static prefix was declared.
+func promptCacheKey(req CompletionRequest) string {
+	b := req.DynamicBoundary
+	if b <= 0 || len(req.System) == 0 {
+		return ""
+	}
+	if b > len(req.System) {
+		b = len(req.System)
+	}
+	sum := sha256.Sum256([]byte(joinSystem(req.System[:b])))
+	return hex.EncodeToString(sum[:16])
+}
+
 func (p *openaiProvider) buildBody(req CompletionRequest, stream bool) ([]byte, error) {
 	// A non-empty per-request override (req.Thinking) wins over Config.ThinkingType.
 	thinkingType := p.cfg.ThinkingType
@@ -260,11 +282,12 @@ func (p *openaiProvider) buildBody(req CompletionRequest, stream bool) ([]byte, 
 	msgs = sanitizeOpenAIMessages(msgs, thinking)
 
 	body := oaReq{
-		Model:       p.cfg.Model,
-		Messages:    msgs,
-		Temperature: req.Temperature,
-		Stop:        req.Stop,
-		Stream:      stream,
+		Model:          p.cfg.Model,
+		Messages:       msgs,
+		Temperature:    req.Temperature,
+		Stop:           req.Stop,
+		Stream:         stream,
+		PromptCacheKey: promptCacheKey(req),
 	}
 	// The output cap goes into exactly one key. Reasoning models accept only
 	// "max_completion_tokens"; everything else still takes "max_tokens", which

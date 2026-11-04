@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-loader = importlib.machinery.SourceFileLoader('agentlab', str(Path(__file__).resolve().parents[1] / 'lab'))
+loader = importlib.machinery.SourceFileLoader('agentlab', str(Path(__file__).resolve().parents[2] / 'lab'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 lab = importlib.util.module_from_spec(spec)
 loader.exec_module(lab)
