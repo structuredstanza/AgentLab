@@ -329,5 +329,12 @@ class AppEnvTests(unittest.TestCase):
         for key in ('SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
             self.assertEqual(env.get(key), supervisor.EGRESS_CA, f'{key} missing: TLS interception fails')
 
+    def test_scan_ceilings_reach_the_agent(self):
+        env = supervisor.app_env('postgresql://fixture', 'pw')
+        for key in ('ARTEX_MAX_CONCURRENT_SCANS', 'ARTEX_MAX_SCANS_PER_TARGET',
+                    'ARTEX_MAX_REQUESTS_PER_MINUTE'):
+            self.assertIn(key, env, f'{key} missing: the agent cannot be told the ceiling')
+            self.assertTrue(env[key].isdigit(), f'{key}={env[key]!r} is not a number')
+
 if __name__ == '__main__':
     unittest.main()

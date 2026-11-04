@@ -35,26 +35,34 @@ import (
 // deliberate: an operator who has not stated a policy should not be silently
 // throttled.
 type Policy struct {
-	MaxRequestsPerMinute   int
+	MaxRequestsPerMinute int
+	// MaxConcurrentPerTarget bounds scans against one host.
 	MaxConcurrentPerTarget int
-	MaxPacketsPerSecond    int
-	MaxThreads             int
+	// MaxConcurrentTotal bounds scans across the whole engagement, so a backlog
+	// of machines cannot multiply the load a single target would see.
+	MaxConcurrentTotal int
 }
 
 // DefaultLabPolicy is the ceiling for a shared, multi-tenant lab: 100 HTTP
-// requests a minute, three scans at once against one target, and rates low
-// enough that a port scan cannot be mistaken for a flood.
+// requests a minute, three scans at once against one target and three across
+// the engagement.
+//
+// The request ceiling is the hard rule and is enforced on the proxy, because a
+// tool run through Bash declares nothing. The per-tool values below are only
+// defaults: an operator may raise them, and the guidance in the tool description
+// asks for a sensible choice rather than pinning one.
 func DefaultLabPolicy() Policy {
 	return Policy{
 		MaxRequestsPerMinute:   100,
 		MaxConcurrentPerTarget: 3,
-		MaxPacketsPerSecond:    100,
-		MaxThreads:             8,
+		MaxConcurrentTotal:     3,
 	}
 }
 
 // Enabled reports whether this policy constrains anything.
-func (p Policy) Enabled() bool { return p.MaxConcurrentPerTarget > 0 || p.MaxRequestsPerMinute > 0 }
+func (p Policy) Enabled() bool {
+	return p.MaxConcurrentPerTarget > 0 || p.MaxConcurrentTotal > 0 || p.MaxRequestsPerMinute > 0
+}
 
 // Limiter enforces a Policy. One per server; safe for concurrent use.
 type Limiter struct {
@@ -62,6 +70,8 @@ type Limiter struct {
 
 	mu      sync.Mutex
 	targets map[string]*targetState
+	// total counts every run in flight across all targets.
+	total int
 }
 
 type targetState struct {
@@ -79,60 +89,22 @@ func New(p Policy) *Limiter {
 // Policy returns the ceiling this limiter enforces, for reporting.
 func (l *Limiter) Policy() Policy { return l.policy }
 
-// Clamp rewrites the throughput parameter to the policy's ceiling.
+// Guidance is the text a tool description carries, so the agent chooses a
+// sensible rate instead of being pinned to one.
 //
-// It returns the effective parameters and a note describing any change, so the
-// run result can say the rate was lowered rather than pretending the request
-// was honoured.
-func (l *Limiter) Clamp(m *manifest.Manifest, params map[string]string) (map[string]string, string) {
-	if !l.policy.Enabled() || m == nil || m.Limits.Unit == manifest.RateNone {
-		return params, ""
+// The ceiling is enforced on the proxy regardless; this is about the agent
+// picking a rate that finishes in reasonable time rather than one that would be
+// throttled for hours.
+func (l *Limiter) Guidance() string {
+	if !l.policy.Enabled() {
+		return ""
 	}
-	out := make(map[string]string, len(params)+1)
-	for k, v := range params {
-		out[k] = v
-	}
-	ceiling, why := l.ceiling(m.Limits.Unit)
-	if ceiling <= 0 || m.Limits.Param == "" {
-		return out, ""
-	}
-	current := 0
-	if raw, ok := out[m.Limits.Param]; ok {
-		// A value the tool would reject anyway is left alone: clamping it would
-		// hide the operator's mistake behind a working run.
-		parsed, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil {
-			return out, ""
-		}
-		current = parsed
-	}
-	if current > 0 && current <= ceiling {
-		return out, ""
-	}
-	out[m.Limits.Param] = strconv.Itoa(ceiling)
-	note := fmt.Sprintf("%s clamped from %d to %d (%s)", m.Limits.Param, current, ceiling, why)
-	return out, note
-}
-
-// ceiling is the largest value the policy allows for this unit.
-func (l *Limiter) ceiling(unit manifest.RateUnit) (int, string) {
-	switch unit {
-	case manifest.RateRPS:
-		// Tools take whole requests per second, so the honest ceiling is the
-		// largest integer rate whose per-minute cost stays within budget. At 100
-		// a minute that is 1, which is 60 a minute: the cap is never reachable
-		// exactly, and erring low is the point.
-		perSecond := l.policy.MaxRequestsPerMinute / 60
-		if perSecond < 1 {
-			perSecond = 1
-		}
-		return perSecond, fmt.Sprintf("%d/min budget", l.policy.MaxRequestsPerMinute)
-	case manifest.RatePPS:
-		return l.policy.MaxPacketsPerSecond, "packets per second ceiling"
-	case manifest.RateThreads:
-		return l.policy.MaxThreads, "worker ceiling"
-	}
-	return 0, ""
+	return fmt.Sprintf(
+		"Choose rates a person running this by hand would choose: "+
+			"under %d requests a minute against one target, at most %d scans at once "+
+			"in total and %d against the same host. Prefer a targeted run "+
+			"(a template subset, a short wordlist) over a full pass, and say why you picked the rate.",
+		l.policy.MaxRequestsPerMinute, l.policy.MaxConcurrentTotal, l.policy.MaxConcurrentPerTarget)
 }
 
 // reservePerMin is the request budget a run of this manifest costs while it runs.
@@ -171,6 +143,9 @@ func (l *Limiter) Acquire(ctx context.Context, target string, m *manifest.Manife
 		if l.policy.MaxConcurrentPerTarget > 0 && st.inflight >= l.policy.MaxConcurrentPerTarget {
 			fits = false
 		}
+		if l.policy.MaxConcurrentTotal > 0 && l.total >= l.policy.MaxConcurrentTotal {
+			fits = false
+		}
 		if l.policy.MaxRequestsPerMinute > 0 && reserve > 0 &&
 			st.reservedPerMin+reserve > l.policy.MaxRequestsPerMinute {
 			fits = false
@@ -178,6 +153,7 @@ func (l *Limiter) Acquire(ctx context.Context, target string, m *manifest.Manife
 		if fits {
 			st.inflight++
 			st.reservedPerMin += reserve
+			l.total++
 			l.mu.Unlock()
 			var once sync.Once
 			return func() {
@@ -186,6 +162,7 @@ func (l *Limiter) Acquire(ctx context.Context, target string, m *manifest.Manife
 					defer l.mu.Unlock()
 					st.inflight--
 					st.reservedPerMin -= reserve
+					l.total--
 					if st.inflight <= 0 && st.reservedPerMin <= 0 {
 						// Drop an idle target so the map does not grow with every
 						// host the engagement ever touched.

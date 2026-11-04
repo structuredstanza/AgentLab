@@ -824,5 +824,50 @@
       "gowitness renders in a real Chrome; only its flags were added, not a captured request",
       "raw TCP tools (nmap, masscan, naabu, hydra, enum4linux, netexec) bypass the proxy by design and keep their own fingerprints"
     ]
+  },
+  "supply_chain_and_scan_limits_20261104": {
+    "source_commit": "0028ebd46f8bcb924168191ebf8f420749de34bd",
+    "sandbox": "artex-agentlab-limits-20261104t0500z",
+    "image": "agentlab/artex:scan-limits-v3",
+    "image_id": "sha256:09e3e7c2c128",
+    "runtime_binary_sha256": "6e756f897fe4cc41cd2557d54ecfa6c3f48aed285363866f79922819b1fbda89",
+    "supply_chain": {
+      "question": "was a backdoored Artex image pulled from a public registry?",
+      "answer": "no",
+      "evidence": [
+        "every image in the local store is agentlab/artex:*, built by our Dockerfile; the only foreign bases are node, python, alpine and jasonish/suricata",
+        "every VM ever created runs an agentlab/artex tag (msb list)",
+        "the image each build ships carries a binary whose sha256 equals our locally compiled dist/amd64/artex",
+        "ghcr.io/jiwoochris/artex-global:latest resolves to config digest sha256:3bf27b43ee430a778b82c67368e7daac7f8830d029b985f8086f88ef30f89200, which appears in no container we ever created and is absent from the image store",
+        "our docker-compose.yml carried that ghcr reference only between the 2026-10-29 import (d5f47d8) and its removal on 2026-11-03 (e404ecb); deployment never used compose, it builds with docker build and loads into microsandbox",
+        "the release workflow only pushes (push: true) and never pulls"
+      ],
+      "residual_risk": "our repo still contains a release job that PUBLISHES to ghcr.io/jiwoochris/artex-global. That is an outbound publish path, not a pull, but whoever controls that namespace receives the image."
+    },
+    "scan_limits": {
+      "changed": "hard per-tool rate clamping removed; it pinned every HTTP tool to 1 rps, which made a full 13,687-template nuclei pass take about 2.3 hours",
+      "now": "guidance in list_tools output plus a hard ceiling on the proxy; the operator keeps control of requests/min",
+      "global_cap": "MaxConcurrentTotal defaults to 3 across the engagement, alongside 3 per target",
+      "knobs": [
+        "AGENTLAB_EGRESS_RPM",
+        "AGENTLAB_MAX_SCANS",
+        "AGENTLAB_MAX_SCANS_PER_TARGET"
+      ],
+      "raw_scanner_defaults": "masscan and naabu lowered from 1000 to 100 packets/s, since they bypass the proxy and are no longer clamped"
+    },
+    "defect_found": {
+      "what": "tool descriptions are seeded into Postgres with ON CONFLICT DO NOTHING and /state is a host mount, so a rebuilt binary never updates an existing description",
+      "consequence": "the guidance added to run_tool's description did not reach an existing database",
+      "resolution": "guidance is emitted in list_tools output instead, which is generated per call; the DO NOTHING is deliberate and protects operator edits from being wiped on restart"
+    },
+    "tests": {
+      "limits": "guidance states the enforced ceilings; global cap spans targets; per-target cap holds under a larger global budget",
+      "server": "list_tools output carries the rate guidance",
+      "guest_start": "the ceiling variables reach the agent environment",
+      "full_suite": "20 packages, 0 failures"
+    },
+    "not_verified": [
+      "no agent conversation was driven end to end because no LLM profile is configured in this VM, so list_tools guidance is proven by its unit test and by the deployed binary, not by a model reading it"
+    ]
   }
 }

@@ -7,7 +7,7 @@ requires = ["naabu"]
 
 [params]
 top_ports = { type = "string", label = "Top ports", placeholder = "100", description = "Scan the N most common ports instead of the default set" }
-rate = { type = "number", label = "Packets per second", default = "1000" }
+rate = { type = "number", label = "Packets per second", default = "100" }
 
 [command]
 program = "naabu"

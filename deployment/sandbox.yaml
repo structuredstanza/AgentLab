@@ -1,4 +1,4 @@
-image: agentlab/artex:egress-templates-v1
+image: agentlab/artex:scan-limits-v3
 pull_policy: never
 cpus: 4
 memory: 8G

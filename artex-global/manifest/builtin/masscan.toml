@@ -7,7 +7,7 @@ requires = ["masscan"]
 
 [params]
 ports = { type = "string", label = "Ports", default = "0-65535", required = true, description = "Port range, for example 80,443 or 0-65535" }
-rate = { type = "number", label = "Packets per second", default = "1000", description = "Higher values are faster and noisier" }
+rate = { type = "number", label = "Packets per second", default = "100", description = "Higher values are faster and noisier; stay low on shared infrastructure" }
 
 [command]
 program = "masscan"

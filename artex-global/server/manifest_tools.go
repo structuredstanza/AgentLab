@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +24,23 @@ var manifestTools = manifest.LoadBuiltin()
 // The proxy caps HTTP requests, but it cannot see a raw packet scan, and a
 // manifest default is only a suggestion: the caller can pass any rate it likes.
 // This is where a declared rate becomes a binding one.
-var engagementLimits = limits.New(limits.DefaultLabPolicy())
+var engagementLimits = limits.New(policyFromEnv())
+
+// policyFromEnv lets an operator change the ceilings for one engagement without
+// rebuilding: the defaults are a shared lab's, and a dedicated box can take more.
+func policyFromEnv() limits.Policy {
+	p := limits.DefaultLabPolicy()
+	if v, err := strconv.Atoi(os.Getenv("ARTEX_MAX_CONCURRENT_SCANS")); err == nil && v > 0 {
+		p.MaxConcurrentTotal = v
+	}
+	if v, err := strconv.Atoi(os.Getenv("ARTEX_MAX_SCANS_PER_TARGET")); err == nil && v > 0 {
+		p.MaxConcurrentPerTarget = v
+	}
+	if v, err := strconv.Atoi(os.Getenv("ARTEX_MAX_REQUESTS_PER_MINUTE")); err == nil && v > 0 {
+		p.MaxRequestsPerMinute = v
+	}
+	return p
+}
 
 // toolManifest is the DTO the tool list and the run form both render, so the UI
 // and the executor read the same declaration.
@@ -79,7 +97,7 @@ func binaryPresent(bins []string) bool {
 // one argument and no operator input can be read as a shell metacharacter.
 func (s *Server) toolRunManifest() actool.CoreTool {
 	return wrTool("run_tool",
-		"Run a reconnaissance or scanning tool declared by a manifest, and return its parsed records, the assets it found and the facts it recorded. Call list_tools first to see the parameters each tool accepts. Prefer this over Bash for any tool that appears in the list: the manifest pins the flags, parses the output into assets, and refuses an out-of-scope target.",
+		"Run a reconnaissance or scanning tool declared by a manifest, and return its parsed records, the assets it found and the facts it recorded. Call list_tools first to see the parameters each tool accepts. Prefer this over Bash for any tool that appears in the list: the manifest pins the flags, parses the output into assets, and refuses an out-of-scope target. "+engagementLimits.Guidance(),
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -119,9 +137,9 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("%v", err)), nil
 			}
-			// Clamp before resolving, so the argv carries the ceiling rather than
-			// the number the caller asked for.
-			effective, clampNote := engagementLimits.Clamp(m, effective)
+			// No clamping: the proxy enforces the hard ceiling, and pinning every
+			// tool to one request a second made a real scan take hours. The
+			// description asks for a sensible rate instead.
 			release, err := engagementLimits.Acquire(ctx, in.Target, m, effective)
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("%s not started: %v", in.Tool, err)), nil
@@ -153,9 +171,6 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 
 			var b strings.Builder
 			fmt.Fprintf(&b, "%s against %s: %d assets, %d facts", in.Tool, in.Target, len(result.Targets), len(result.Facts))
-			if clampNote != "" {
-				fmt.Fprintf(&b, "\nNote: %s, to stay inside the engagement's rate policy.", clampNote)
-			}
 			if result.Skipped > 0 {
 				fmt.Fprintf(&b, " (%d emit rules skipped: the manifest may need widening)", result.Skipped)
 			}
@@ -190,6 +205,9 @@ func (s *Server) toolListManifests() actool.CoreTool {
 		func(ctx context.Context, _ json.RawMessage) (actool.Result, error) {
 			var b strings.Builder
 			fmt.Fprintf(&b, "%d tools:\n", manifestTools.Len())
+			if g := engagementLimits.Guidance(); g != "" {
+				fmt.Fprintf(&b, "\n%s\n\n", g)
+			}
 			for _, m := range manifestTools.All() {
 				status := "ready"
 				if !binaryPresent(m.Requires) {

@@ -2,6 +2,7 @@ package limits
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,57 +16,19 @@ func rpsManifest() *manifest.Manifest {
 	}
 }
 
-// The model can pass any number it likes, so the ceiling must be applied to the
-// resolved value rather than trusted from the manifest default.
-func TestClampCapsRequestsPerSecond(t *testing.T) {
-	l := New(Policy{MaxRequestsPerMinute: 100, MaxConcurrentPerTarget: 3})
-
-	out, note := l.Clamp(rpsManifest(), map[string]string{"rate": "50"})
-	if out["rate"] != "1" {
-		t.Fatalf("rate = %q, want 1 (the largest whole rate inside 100/min)", out["rate"])
+// The guidance must state the ceilings the limiter actually enforces, or the
+// agent is told to respect numbers that are not in force.
+func TestGuidanceStatesTheEnforcedCeilings(t *testing.T) {
+	l := New(Policy{MaxRequestsPerMinute: 100, MaxConcurrentPerTarget: 3, MaxConcurrentTotal: 2})
+	g := l.Guidance()
+	for _, want := range []string{"100", "3", "2"} {
+		if !strings.Contains(g, want) {
+			t.Errorf("guidance omits %q: %s", want, g)
+		}
 	}
-	if note == "" {
-		t.Fatal("a clamped run must report that it was clamped")
-	}
-
-	// A value already inside the ceiling is left alone and not reported.
-	out, note = l.Clamp(rpsManifest(), map[string]string{"rate": "1"})
-	if out["rate"] != "1" || note != "" {
-		t.Fatalf("an in-policy rate was rewritten: %q %q", out["rate"], note)
-	}
-
-	// A missing rate is filled with the ceiling rather than left to the tool's
-	// own, larger, default.
-	out, _ = l.Clamp(rpsManifest(), map[string]string{})
-	if out["rate"] != "1" {
-		t.Fatalf("absent rate = %q, want the ceiling to be set explicitly", out["rate"])
-	}
-}
-
-func TestClampCapsPacketsAndThreads(t *testing.T) {
-	l := New(DefaultLabPolicy())
-
-	out, _ := l.Clamp(&manifest.Manifest{Limits: manifest.Limits{Param: "rate", Unit: manifest.RatePPS}},
-		map[string]string{"rate": "1000"})
-	if out["rate"] != "100" {
-		t.Fatalf("packet rate = %q, want 100", out["rate"])
-	}
-
-	out, _ = l.Clamp(&manifest.Manifest{Limits: manifest.Limits{Param: "threads", Unit: manifest.RateThreads}},
-		map[string]string{"threads": "64"})
-	if out["threads"] != "8" {
-		t.Fatalf("threads = %q, want 8", out["threads"])
-	}
-}
-
-// A tool that declares no rate is an unbounded requester, and clamping cannot
-// make it safe. It must be left visibly unclamped rather than silently allowed.
-func TestClampIgnoresToolsThatDeclareNoRate(t *testing.T) {
-	l := New(DefaultLabPolicy())
-	out, note := l.Clamp(&manifest.Manifest{Limits: manifest.Limits{Unit: manifest.RateNone}},
-		map[string]string{"x": "1"})
-	if note != "" || out["x"] != "1" {
-		t.Fatalf("a rate-less tool was rewritten: %v %q", out, note)
+	// An unconstrained engagement has nothing to say.
+	if New(Policy{}).Guidance() != "" {
+		t.Error("a zero policy should not emit guidance")
 	}
 }
 
@@ -182,10 +145,6 @@ func TestAcquireRespectsCancellation(t *testing.T) {
 // should not be silently rate-limited.
 func TestZeroPolicyAllowsEverything(t *testing.T) {
 	l := New(Policy{})
-	out, note := l.Clamp(rpsManifest(), map[string]string{"rate": "500"})
-	if out["rate"] != "500" || note != "" {
-		t.Fatalf("an unset policy rewrote the rate: %q", out["rate"])
-	}
 	for i := 0; i < 20; i++ {
 		if _, err := l.Acquire(context.Background(), "t", nil, nil); err != nil {
 			t.Fatalf("an unset policy refused a run: %v", err)
@@ -295,5 +254,62 @@ func TestNilRateGateAllows(t *testing.T) {
 	var g *RateGate
 	if ok, _ := g.Allow(context.Background(), "h", "/"); !ok {
 		t.Fatal("a nil gate refused a request")
+	}
+}
+
+// A global cap is what stops a backlog of machines multiplying the load: three
+// scans per target across ten targets is thirty scans, which is not what an
+// operator asking for "three at a time" meant.
+func TestGlobalScanLimitSpansTargets(t *testing.T) {
+	l := New(Policy{MaxConcurrentTotal: 2, MaxConcurrentPerTarget: 5})
+	ctx := context.Background()
+
+	first, err := l.Acquire(ctx, "10.10.14.7", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := l.Acquire(ctx, "10.10.14.8", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A third scan, against a third target, must still wait: the cap is global.
+	done := make(chan struct{})
+	go func() {
+		third, err := l.Acquire(ctx, "10.10.14.9", nil, nil)
+		if err == nil {
+			third()
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("a third scan started on a different target despite a global cap of 2")
+	case <-time.After(400 * time.Millisecond):
+	}
+
+	first()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the waiting scan was not admitted after a slot freed")
+	}
+	second()
+}
+
+// The per-target cap must still hold inside a larger global budget.
+func TestPerTargetCapHoldsUnderGlobalBudget(t *testing.T) {
+	l := New(Policy{MaxConcurrentTotal: 10, MaxConcurrentPerTarget: 1})
+	ctx := context.Background()
+	held, err := l.Acquire(ctx, "h", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held()
+
+	waitCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	if _, err := l.Acquire(waitCtx, "h", nil, nil); err == nil {
+		t.Fatal("a second scan on the same target was admitted despite a per-target cap of 1")
 	}
 }

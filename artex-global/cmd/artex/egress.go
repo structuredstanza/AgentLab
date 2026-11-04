@@ -27,6 +27,7 @@ func runEgressProxy(args []string) int {
 	dataDir := fs.String("data", "", "data directory, used when -dir is empty")
 	caOnly := fs.Bool("print-ca", false, "print the CA certificate and exit, for installing into a trust store")
 	perMinute := fs.Int("rpm", 0, "hard request ceiling per target per minute (0 disables)")
+
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -56,11 +57,13 @@ func runEgressProxy(args []string) int {
 	}
 
 	// The ceiling is per target: a backlog of machines must not make each box
-	// wait behind the others' budget.
+	// wait behind the others' budget. The scan count is global, so a backlog
+	// cannot multiply the load either.
 	var gate egress.Gate
 	if g := limits.NewPerHostRateGate(*perMinute); g != nil {
 		gate = g
 	}
+
 	proxy, err := egress.New(*addr, ca, identity, gate)
 	if err != nil {
 		log.Printf("egress: listen %s: %v", *addr, err)
@@ -70,6 +73,7 @@ func runEgressProxy(args []string) int {
 	if *perMinute > 0 {
 		ceiling = fmt.Sprintf("%d requests/min per target", *perMinute)
 	}
+
 	log.Printf("egress proxy on %s; presenting %q; %s", proxy.Addr(), identity.UserAgent, ceiling)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

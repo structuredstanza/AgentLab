@@ -72,7 +72,11 @@ EGRESS_TIMEOUT = 20
 # The operator's hard rule for shared labs: never exceed 100 requests a minute
 # against one target. Enforced per target so a backlog does not make each box
 # wait behind the others.
-EGRESS_RPM = 100
+EGRESS_RPM = int(os.environ.get("AGENTLAB_EGRESS_RPM", "100"))
+# Simultaneous scans: across the engagement, and against one host. An operator
+# can raise these for a dedicated box without rebuilding.
+MAX_SCANS = int(os.environ.get("AGENTLAB_MAX_SCANS", "3"))
+MAX_SCANS_PER_TARGET = int(os.environ.get("AGENTLAB_MAX_SCANS_PER_TARGET", "3"))
 CAPTURE_LIMITS = {
     "tool": "tcpdump",
     "interface": "any",
@@ -385,6 +389,9 @@ def app_env(dsn, admin_pw):
         "CURL_CA_BUNDLE": EGRESS_CA,
         "REQUESTS_CA_BUNDLE": EGRESS_CA,
         "NODE_EXTRA_CA_CERTS": EGRESS_CA,
+        "ARTEX_MAX_CONCURRENT_SCANS": str(MAX_SCANS),
+        "ARTEX_MAX_SCANS_PER_TARGET": str(MAX_SCANS_PER_TARGET),
+        "ARTEX_MAX_REQUESTS_PER_MINUTE": str(EGRESS_RPM),
     })
     if admin_pw is not None:
         env["ARTEX_ADMIN_PASSWORD"] = admin_pw
