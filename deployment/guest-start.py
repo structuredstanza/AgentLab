@@ -55,7 +55,31 @@ BROWSERS_DIR = "/opt/ms-playwright"
 ARTEX_ARGS = ["-addr", ":8787", "-proxy", "127.0.0.1:8788", "-data", ARTEX_DATA]
 STRACE_ARGS = ["-ff", "-ttt", "-T", "-yy", "-s256", "-e", "trace=process,file,network"]
 SEGMENT_MB = 128   # tcpdump -C counts millions of bytes
-MAX_SEGMENTS = 32  # tcpdump -W ring size
+MAX_SEGMENTS = 32  # tcpdump -W ring size, before the free-space cap below
+# Headroom left on /state for Postgres, the binary, the DB WAL and the next
+# session's early writes. Without it the ring can fill the volume: 32 x 128 MB is
+# 4 GB on a 5.8 GB filesystem that already holds ~700 MB, and a live engagement
+# reached 100% and took the whole stack down with it.
+RING_RESERVE_MB = 1536
+MIN_SEGMENTS = 4
+
+
+def ring_segments():
+    """Segments that fit on /state with RING_RESERVE_MB still free.
+
+    The fixed 32-segment ring is only an upper bound. Sizing it from the actual
+    filesystem means a small volume degrades to a shorter capture instead of
+    filling the disk and killing the engagement.
+    """
+    try:
+        st = os.statvfs(ARTEX_DATA)
+        free_mb = st.f_bavail * st.f_frsize // (1024 * 1024)
+    except OSError:
+        return MAX_SEGMENTS
+    budget_mb = free_mb - RING_RESERVE_MB
+    fits = budget_mb // SEGMENT_MB
+    return max(MIN_SEGMENTS, min(MAX_SEGMENTS, int(fits)))
+
 # Optional OpenVPN profile, streamed in by `lab start --vpn <file>` before the
 # supervisor launches. Absent means no VPN, which is the default.
 VPN_PROFILE = "/run/secrets/openvpn-profile.ovpn"
@@ -575,8 +599,15 @@ def start_tcpdump(sess):
         raise Fatal("tcpdump not installed")
     pcap = os.path.join(sess.pcap, "capture.pcap")
     err_path = os.path.join(sess.logs, "tcpdump.stderr.log")
+    segments = ring_segments()
     cmd = [tcpdump, "-i", "any", "-s0", "-U", "-Z", "root", "-C", str(SEGMENT_MB),
-           "-W", str(MAX_SEGMENTS), "-w", pcap]
+           "-W", str(segments), "-w", pcap]
+    # Record what was actually used, so the manifest never claims a larger ring
+    # than the disk allowed.
+    cap = sess.m["capture"]
+    cap["rotation"] = f"-C {SEGMENT_MB} (~{SEGMENT_MB} million bytes per segment) -W {segments}"
+    cap["max_segments"] = segments
+    cap["approx_max_bytes"] = SEGMENT_MB * 1_000_000 * segments
     with open(err_path, "wb") as errf:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=errf, stderr=errf, start_new_session=True)
     try:
@@ -622,7 +653,7 @@ def stop_tcpdump(sess, p):
     with open(cap["stderr_log"], "rb") as f:
         cap["stats"] = parse_stats(f.read().decode(errors="replace"))
     cap["segments"] = list_segments(sess.pcap)
-    cap["wrap_suspected"] = len(cap["segments"]) >= MAX_SEGMENTS
+    cap["wrap_suspected"] = len(cap["segments"]) >= cap.get("max_segments", MAX_SEGMENTS)
     if p.returncode != 0:
         sess.error(f"tcpdump exit code {p.returncode}")
 

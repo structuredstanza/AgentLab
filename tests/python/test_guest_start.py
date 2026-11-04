@@ -338,3 +338,39 @@ class AppEnvTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RingSizingTests(unittest.TestCase):
+    """The pcap ring must never be able to fill the volume it writes to.
+
+    A live engagement died this way: /state is a 4 GB quota, the ring was a fixed
+    32 x 128 MB = 4 GB, and the disk reached 0 bytes free. tcpdump then could not
+    write, Postgres shut down, and the stack went with it.
+    """
+
+    def _segments(self, free_mb):
+        st = mock.Mock()
+        st.f_bavail = free_mb
+        st.f_frsize = 1024 * 1024
+        with mock.patch.object(supervisor.os, 'statvfs', return_value=st):
+            return supervisor.ring_segments()
+
+    def test_ring_leaves_the_reserve_free(self):
+        for free_mb in (2048, 4096, 8192, 65536):
+            n = self._segments(free_mb)
+            used = n * supervisor.SEGMENT_MB
+            self.assertLessEqual(
+                used, free_mb - supervisor.RING_RESERVE_MB,
+                f"{free_mb} MB free: ring of {n} segments ({used} MB) eats the reserve")
+
+    def test_ring_never_exceeds_the_hard_cap(self):
+        self.assertEqual(self._segments(200_000), supervisor.MAX_SEGMENTS)
+
+    def test_ring_keeps_a_floor_when_the_volume_is_already_tight(self):
+        # Nothing fits, but a zero-segment ring would mean no capture at all.
+        self.assertEqual(self._segments(0), supervisor.MIN_SEGMENTS)
+
+    def test_the_4gb_quota_cannot_reproduce_the_crash(self):
+        # The exact shape that failed: a 4 GB quota already holding ~700 MB.
+        n = self._segments(4096 - 700)
+        self.assertLess(n * supervisor.SEGMENT_MB, 4096 - 700)
