@@ -153,8 +153,13 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		Compaction:            compactionConfig(c.window),
 		Todos:                 actool.NewTodoStore(),
 		// large tool output spills to cmd-output/ under the session dir.
-		// Use the SDK default truncation limit (30000 characters for tool.Capture).
-		ToolOutputDir: filepath.Join(sessionWorkDir, "cmd-output"),
+		// The spill file keeps everything; MaxToolOutputChars bounds only the head
+		// fed back to the model. 30k (the default) is generous enough that a live
+		// worker call carried 253 KB of tool results — 76% of a 341 KB request —
+		// where 5 messages over 8 KB accounted for 22% of it, re-sent every turn.
+		// The median result is 3.4 KB, so most outputs are untouched at this cap.
+		ToolOutputDir:      filepath.Join(sessionWorkDir, "cmd-output"),
+		MaxToolOutputChars: 8000,
 		// When the budget (step count) is hit, the SDK runs a wrap-up: it outputs a one-sentence summary. The prompt and wrap-up turn count are editable in the backend per agent key
 		// (each custom agent has its own copy; empty or 0 uses the general default of 10 turns).
 		Settlement:   wrapupSettlement(agentKey, nil),
