@@ -13,7 +13,7 @@ rate_limit = { type = "number", label = "Requests per second", default = "50" }
 
 [command]
 program = "feroxbuster"
-args = ["-u", "{{ target.value }}", "-w", "{{ params.wordlist }}", "--json", "--silent", "--depth", "{{ params.depth }}", "-s", "{{ params.status_codes }}", "--rate-limit", "{{ params.rate_limit }}"]
+args = ["-u", "{{ target.value }}", "-w", "{{ params.wordlist }}", "--json", "--silent", "--depth", "{{ params.depth }}", "-s", "{{ params.status_codes }}", "--rate-limit", "{{ params.rate_limit }}", "--proxy", "{{ proxy }}", "--user-agent", "{{ useragent }}"]
 timeout_seconds = 1800
 
 [limits]

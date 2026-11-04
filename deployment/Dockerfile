@@ -55,6 +55,7 @@ RUN set -eux; \
     git clone --depth 1 https://github.com/sqlmapproject/sqlmap /opt/sqlmap; \
     ln -s /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap; \
     nuclei -version >/dev/null; httpx -version; subfinder -version; katana -version; \
+    nuclei -update-templates >/dev/null 2>&1 && test "$(find /root/nuclei-templates -name '*.yaml' | wc -l)" -gt 1000; \
     ffuf -V >/dev/null; dalfox --version >/dev/null 2>&1 || true; sqlmap --version >/dev/null
 
 # bbot recursive recon orchestrator: isolated venv with preinstalled dependencies

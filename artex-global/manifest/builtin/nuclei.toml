@@ -13,7 +13,7 @@ rate_limit = { type = "number", label = "Requests per second", default = "150" }
 
 [command]
 program = "nuclei"
-args = ["-u", "{{ target.value }}", "-jsonl", "-silent", "-rate-limit", "{{ params.rate_limit }}", "{{ params.tags | -tags }}", "{{ params.severity | -severity }}", "{{ params.templates | -t }}"]
+args = ["-u", "{{ target.value }}", "-jsonl", "-silent", "-rate-limit", "{{ params.rate_limit }}", "{{ params.tags | -tags }}", "{{ params.severity | -severity }}", "{{ params.templates | -t }}", "-H", "User-Agent: {{ useragent }}"]
 timeout_seconds = 1800
 
 [limits]

@@ -12,7 +12,7 @@ js_crawl = { type = "bool", label = "Parse JavaScript", default = "true", descri
 
 [command]
 program = "katana"
-args = ["-u", "{{ target.value }}", "-jsonl", "-silent", "-d", "{{ params.depth }}", "-c", "{{ params.concurrency }}", "{{ params.js_crawl | -jc }}"]
+args = ["-u", "{{ target.value }}", "-jsonl", "-silent", "-d", "{{ params.depth }}", "-c", "{{ params.concurrency }}", "{{ params.js_crawl | -jc }}", "-proxy", "{{ proxy }}", "-H", "User-Agent: {{ useragent }}"]
 timeout_seconds = 1800
 
 [limits]

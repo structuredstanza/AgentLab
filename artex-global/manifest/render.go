@@ -3,6 +3,7 @@ package manifest
 import (
 	"fmt"
 	"github.com/Autumn-27/artex/useragent"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -146,6 +147,21 @@ func lookup(expr, targetValue string, values map[string]string) (string, error) 
 	switch expr {
 	case "target.value":
 		return targetValue, nil
+	case "proxy":
+		// The engagement's outbound proxy. A tool that ignores the proxy
+		// environment variables still needs it passed as a flag, or its traffic
+		// leaves with the tool's own TLS fingerprint.
+		if v := strings.TrimSpace(os.Getenv("ARTEX_EGRESS_PROXY")); v != "" {
+			return v, nil
+		}
+		return "http://127.0.0.1:8888", nil
+	case "proxyhost":
+		// Same proxy without the scheme, for tools that take host[:port] only.
+		v := strings.TrimSpace(os.Getenv("ARTEX_EGRESS_PROXY"))
+		if v == "" {
+			v = "http://127.0.0.1:8888"
+		}
+		return strings.TrimPrefix(strings.TrimPrefix(v, "http://"), "https://"), nil
 	case "useragent":
 		// The engagement's outbound identity. A tool with its own User-Agent flag
 		// is given the same string the proxy would have set, so a run that
@@ -163,7 +179,7 @@ func lookup(expr, targetValue string, values map[string]string) (string, error) 
 		}
 		return v, nil
 	}
-	return "", fmt.Errorf("unknown placeholder %q (expected target.value, useragent, or params.<name>)", expr)
+	return "", fmt.Errorf("unknown placeholder %q (expected target.value, useragent, proxy, or params.<name>)", expr)
 }
 
 // ParseParam converts a manifest parameter's string value to its declared type.

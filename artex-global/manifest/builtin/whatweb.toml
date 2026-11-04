@@ -10,7 +10,7 @@ aggression = { type = "enum", label = "Aggression", default = "1", options = ["1
 
 [command]
 program = "whatweb"
-args = ["--log-json=/dev/stdout", "--no-errors", "-a", "{{ params.aggression }}", "{{ target.value }}", "--user-agent", "{{ useragent }}"]
+args = ["--log-json=/dev/stdout", "--no-errors", "-a", "{{ params.aggression }}", "{{ target.value }}", "--user-agent", "{{ useragent }}", "--proxy", "{{ proxyhost }}"]
 timeout_seconds = 600
 
 [emit]

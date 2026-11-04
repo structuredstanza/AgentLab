@@ -12,7 +12,7 @@ tech_detect = { type = "bool", label = "Technology detection", default = "true" 
 
 [command]
 program = "httpx"
-args = ["-u", "{{ target.value }}", "-json", "-silent", "-nc", "-threads", "{{ params.threads }}", "-mc", "{{ params.status_codes }}", "{{ params.tech_detect | -td }}"]
+args = ["-u", "{{ target.value }}", "-json", "-silent", "-nc", "-threads", "{{ params.threads }}", "-mc", "{{ params.status_codes }}", "{{ params.tech_detect | -td }}", "-H", "User-Agent: {{ useragent }}"]
 timeout_seconds = 900
 
 [limits]

@@ -166,3 +166,51 @@ func TestUserAgentFlagCarriesTheEngagementIdentity(t *testing.T) {
 		t.Fatalf("checked %d manifests, want 5", checked)
 	}
 }
+
+// Every tool that speaks HTTP must present the engagement identity. A tool left
+// without it is not a style problem: it names itself to the target, and the
+// whole point of the identity is that a target sees one coherent visitor.
+//
+// Tools that do not speak HTTP (dig, whois, masscan, hydra, ...) are exempt,
+// and a new tool in a web category fails here until it is declared.
+func TestEveryHTTPToolCarriesTheIdentity(t *testing.T) {
+	nonHTTP := map[string]bool{
+		"dig": true, "whois": true, "mtr": true, "traceroute": true,
+		"masscan": true, "naabu": true, "rustscan": true, "nbtscan": true,
+		"hydra": true, "searchsploit": true, "sslscan": true, "testssl": true,
+		"enum4linux": true, "enum4linux-ng": true, "netexec": true,
+		"subfinder": true, "gau": true, "amass": true, "dnsx": true,
+		// nmap is a port scanner: it has no user-agent option, and its NSE
+		// http-* scripts would need --script-args handling of their own. A scan
+		// through nmap is a scan, not a browsing session.
+		"nmap": true,
+	}
+	for _, m := range manifest.LoadBuiltin().All() {
+		if nonHTTP[m.ID] {
+			continue
+		}
+		// Either an explicit user-agent, or the proxy, which rewrites the header
+		// on the way out. A tool with neither sends its own identity.
+		joined := strings.Join(m.Command.Args, " ")
+		if !strings.Contains(joined, "useragent") && !strings.Contains(joined, "{{ proxy }}") {
+			t.Errorf("%s speaks HTTP but passes neither an identity nor the proxy", m.ID)
+		}
+	}
+}
+
+// A tool that ignores the proxy environment variables must be given the proxy
+// as a flag, or its traffic leaves with the tool's own TLS fingerprint.
+func TestProxyBypassingToolsPassTheProxyExplicitly(t *testing.T) {
+	// Measured: these ignore http_proxy and connect directly.
+	needsFlag := []string{"katana", "dalfox"}
+	set := manifest.LoadBuiltin()
+	for _, id := range needsFlag {
+		m := set.Get(id)
+		if m == nil {
+			t.Fatalf("%s missing", id)
+		}
+		if !strings.Contains(strings.Join(m.Command.Args, " "), "{{ proxy }}") {
+			t.Errorf("%s ignores http_proxy; it must be given --proxy", id)
+		}
+	}
+}

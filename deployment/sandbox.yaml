@@ -1,4 +1,4 @@
-image: agentlab/artex:egress-identity-v5
+image: agentlab/artex:egress-templates-v1
 pull_policy: never
 cpus: 4
 memory: 8G
