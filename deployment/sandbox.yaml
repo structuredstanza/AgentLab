@@ -6,7 +6,7 @@ workdir: /state
 shell: /bin/bash
 security: default
 mounts:
-  - /mnt/Research/AgentLab/state:/state
+  - /mnt/Research/AgentLab/state:/state:quota=51200
   - /mnt/Research/AgentLab/secrets/admin-password:/run/secrets/agentlab-admin:ro
   - /mnt/Research/AgentLab/secrets/native-proxy-token:/run/secrets/agentlab-native-proxy:ro
 network:
