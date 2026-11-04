@@ -14,7 +14,9 @@ import (
 // It is a source check rather than a runtime one because the failure is silence:
 // a missing header produces no error, only a request that identifies itself.
 func TestEveryOutboundRequestSetsAnIdentity(t *testing.T) {
-	root := ".."
+	// This guard walks the whole module, so it climbs from tests/go/useragent to
+	// artex-global. It moved here from useragent/ and the depth changed with it.
+	root := "../../.."
 	allowed := map[string]string{
 		// These either set the identity themselves or never leave the guest.
 		"egress/proxy.go":        "the proxy is the identity",
