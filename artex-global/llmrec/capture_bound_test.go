@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The tee mirrors the whole response body into memory and then into a DB text
@@ -37,5 +38,22 @@ func TestCaptureIsBounded(t *testing.T) {
 	}
 	if got := c2.RawResponse(); !strings.Contains(got, body) || strings.Contains(got, "truncated") {
 		t.Fatalf("a small body was altered: %d bytes", len(got))
+	}
+}
+
+// The bound is a byte count and 3-byte runes do not divide it, so the cut lands
+// inside a character. Postgres rejects the insert on that byte (SQLSTATE 22021)
+// and the record is lost, so the captured text must stay valid UTF-8.
+func TestCaptureCutStaysValidUTF8(t *testing.T) {
+	if maxCaptureBytes%3 == 0 {
+		t.Fatal("the bound divides evenly by 3, so this test no longer cuts mid-rune")
+	}
+	_, c := NewCapture(context.Background())
+	body := strings.Repeat("€", maxCaptureBytes) // 3 bytes each: 0xE2 0x82 0xAC
+	if _, err := io.Copy(io.Discard, c.TeeResponse(200, io.NopCloser(strings.NewReader(body)))); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.RawResponse(); !utf8.ValidString(got) {
+		t.Fatalf("captured body ends mid-rune, which Postgres rejects: %q", got[len(got)-8:])
 	}
 }

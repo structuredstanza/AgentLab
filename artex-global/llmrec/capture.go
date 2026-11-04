@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 type captureContextKey struct{}
@@ -133,9 +134,29 @@ func (c *Capture) RawResponse() string {
 func (a *attempt) snapshot() string {
 	body := a.body.String()
 	if a.truncated {
-		body += "… [truncated: response body exceeded " + strconv.Itoa(maxCaptureBytes) + " bytes]"
+		body = trimPartialRune(body) + "… [truncated: response body exceeded " + strconv.Itoa(maxCaptureBytes) + " bytes]"
 	}
 	return body
+}
+
+// trimPartialRune drops a trailing incomplete UTF-8 sequence. The capture bound
+// is a byte count, so the cut lands mid-rune whenever a multi-byte character
+// straddles it; Postgres rejects the whole insert on that byte (SQLSTATE 22021),
+// losing the record entirely.
+func trimPartialRune(s string) string {
+	for i := 1; i <= 4 && i <= len(s); i++ {
+		b := s[len(s)-i]
+		if b < 0x80 {
+			return s // ASCII, so the string already ends on a boundary
+		}
+		if utf8.RuneStart(b) {
+			if utf8.FullRune([]byte(s[len(s)-i:])) {
+				return s
+			}
+			return s[:len(s)-i]
+		}
+	}
+	return s
 }
 
 // Attempt is one HTTP round trip's status code and response bytes.
@@ -157,7 +178,7 @@ func (c *Capture) Attempts() []Attempt {
 	for _, a := range c.attempts {
 		body := a.body.String()
 		if a.truncated {
-			body += "… [truncated]"
+			body = trimPartialRune(body) + "… [truncated]"
 		}
 		out = append(out, Attempt{Status: a.status, Body: body})
 	}

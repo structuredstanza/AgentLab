@@ -44,3 +44,40 @@ func TestDeleteEndpointPathPattern(t *testing.T) {
 		}
 	}
 }
+
+// The critical-path rule must judge only rm's own arguments. The shipped pattern
+// used a bare `/` alternative, so any absolute path within 60 characters of `rm`
+// was read as rm's target — the case below is a real denial from a live run, where
+// the path belonged to curl.
+func TestCriticalPathDeletePattern(t *testing.T) {
+	re := regexp.MustCompile(criticalPathDeletePattern)
+
+	miss := []string{
+		`{"command":"cd /state/artex/tasks/9/i46; rm -f cj2.txt; curl -sk -D /dev/null https://[IP]/web/?logon"}`,
+		`{"command":"rm -f cj2.txt; curl -sk -o /dev/null https://[IP]/"}`,
+		`{"command":"rm -f notes.txt && curl http://t[IP]/etc/x"}`,
+		`{"command":"rm /home/minerva/tmp.txt"}`,
+		`{"command":"rm -f /tmp/scan.txt"}`,
+	}
+	for _, s := range miss {
+		if re.MatchString(s) {
+			t.Errorf("false positive block: %s", s)
+		}
+	}
+
+	hit := []string{
+		`{"command":"rm -rf /"}`,
+		`{"command":"rm -rf /etc"}`,
+		`{"command":"rm -f /etc/passwd"}`,
+		`{"command":"rm -rf /usr/bin"}`,
+		`{"command":"rm --no-preserve-root -rf /"}`,
+		`{"command":"rm -f \"/etc/hosts\""}`,
+		`{"command":"rm -rf /dev/sda"}`,
+		`{"command":"rm -f /var/lib/dpkg/status"}`,
+	}
+	for _, s := range hit {
+		if !re.MatchString(s) {
+			t.Errorf("should match but was allowed: %s", s)
+		}
+	}
+}

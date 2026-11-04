@@ -283,6 +283,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.migrateBuiltinSeedLabelsEN(); err != nil {
 		return fmt.Errorf("relabel builtin seeds: %w", err)
 	}
+	if err := d.migrateCriticalPathRuleV5(); err != nil {
+		return fmt.Errorf("rewrite critical-path rule: %w", err)
+	}
 	if err := d.seedDefaultAssetInterceptRules(); err != nil {
 		return fmt.Errorf("seed asset intercept rules: %w", err)
 	}
@@ -377,7 +380,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 			name:     "[Built-in] Delete critical system directories",
 			target:   "tool_input",
 			typ:      "regex",
-			pattern:  `\brm\b[^"'\n]{0,60}["'\s](/|/etc|/bin|/usr|/boot|/var|/lib|/sys|/proc|/dev|/sbin|/root)`,
+			pattern:  criticalPathDeletePattern,
 			action:   "deny",
 			message:  "Deleting critical system paths is forbidden",
 			priority: 100,
@@ -601,6 +604,39 @@ ON CONFLICT DO NOTHING`,
 //
 // Exported as a package const only so the seeded regex is unit-testable without a DB.
 const deleteEndpointPathPattern = `(?i)/(?:(?:delete|remove|unlink|erase|destroy)[-\w]*|del)(?:[/?#"'\s]|$)`
+
+// criticalPathDeletePattern denies `rm` aimed at system directories. The shipped
+// pattern used a bare `/` alternative, so it denied any command where `rm` was
+// followed within 60 characters by any absolute path — `rm -f jar.txt; curl -D
+// /dev/null …` is exactly that shape, and the path belonged to curl, not rm. It
+// also denied plain deletes of user files (`rm ~/notes.txt`, `rm /home/x/y`).
+//
+// Two changes: the gap excludes `; & |` so the path must belong to rm's own simple
+// command, and root matches only as a whole token (`/` then whitespace, end, or
+// quote) rather than any leading slash.
+//
+// Exported as a package const only so the seeded regex is unit-testable without a DB.
+const criticalPathDeletePattern = `\brm\b[^;&|\n]{0,80}["'\s](?:/(?:\s|$|["'])|/(?:etc|bin|sbin|usr|boot|lib|sys|proc|dev|root|var)(?:/|\s|$|["']))`
+
+// oldCriticalPathDeletePattern is the pattern v3/v4 shipped. It is kept only so
+// the migration can find rows that still hold it verbatim.
+const oldCriticalPathDeletePattern = `\brm\b[^"'\n]{0,60}["'\s](/|/etc|/bin|/usr|/boot|/var|/lib|/sys|/proc|/dev|/sbin|/root)`
+
+// migrateCriticalPathRuleV5 rewrites the seeded critical-path rule on databases
+// that predate the fix. Only a row still holding the shipped bytes is touched, so
+// a rule the operator edited is left alone.
+func (d *DB) migrateCriticalPathRuleV5() error {
+	const flag = "intercept_critical_path_rule_v5"
+	if v, _, _ := d.GetSetting(flag); v == "done" {
+		return nil
+	}
+	if _, err := d.Exec(`UPDATE intercept_rules SET pattern=$2 WHERE name=$1 AND pattern=$3`,
+		"[Built-in] Delete critical system directories", criticalPathDeletePattern, oldCriticalPathDeletePattern,
+	); err != nil {
+		return fmt.Errorf("rewrite critical-path rule: %w", err)
+	}
+	return d.SetSetting(flag, "done")
+}
 
 func (d *DB) seedDefaultInterceptRulesV3() error {
 	if v, _, _ := d.GetSetting("intercept_default_rules_v3"); v == "done" {
