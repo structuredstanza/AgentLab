@@ -766,5 +766,63 @@
       "a browser-driven engagement would need its own profile; the proxy only covers tools that honour proxy environment variables",
       "the uTLS profile is Chrome; presenting a Chrome handshake from a non-Chrome binary is coherent only because the proxy also sends Chrome's headers"
     ]
+  },
+  "identity_leaks_and_templates_20261104": {
+    "source_commit": "116b4a1aca41202dd80b72bc0880b4779a457e22",
+    "sandbox": "artex-agentlab-templates-20261104t0310z",
+    "image": "agentlab/artex:egress-templates-v1",
+    "image_id": "sha256:2a4a757587af",
+    "survey_method": "every HTTP tool was run against a local capture listener and the headers it actually sent were recorded; classification is case-insensitive because sqlmap sends User-agent with a lower-case a",
+    "leaks_found": {
+      "katana": "ignores http_proxy, connected directly, sent Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7). Fixed with an explicit -proxy flag.",
+      "dalfox": "ignores http_proxy, sent no User-Agent at all. Fixed with --proxy.",
+      "whatweb": "--proxy takes host:port, not a URL, so passing a URL made it silently send zero requests. Fixed with a proxyhost placeholder.",
+      "feroxbuster": "had no user-agent flag in the manifest. Added.",
+      "httpx": "has no proxy flag but honours the environment; header added as a belt-and-braces measure.",
+      "nuclei": "has no proxy flag but honours the environment; header added.",
+      "gowitness": "needs --chrome-header and --chrome-proxy. Added."
+    },
+    "tools_verified_one_identity": [
+      "katana",
+      "dalfox",
+      "ffuf",
+      "feroxbuster",
+      "whatweb",
+      "gobuster",
+      "sqlmap",
+      "wafw00f",
+      "httpx",
+      "nuclei"
+    ],
+    "nuclei_templates": {
+      "count": 14104,
+      "size": "86M",
+      "loaded_by_nuclei": 13687,
+      "baked_into_image": true,
+      "gotcha": "nuclei -update-templates -duc installs nothing; -duc suppresses the install itself. The first attempt silently produced an empty directory."
+    },
+    "live_verification": [
+      "katana, dalfox, ffuf, feroxbuster, whatweb, gobuster, sqlmap, wafw00f each present the engagement identity with the proxy environment unset, so only the flags could have applied",
+      "nuclei: 1737 requests across exposure templates and 896 across the technologies tree, all one identity",
+      "nuclei targeted run: 391 requests, one identity",
+      "sqlmap: 52 and 90 requests across runs, one identity",
+      "32 manifests, all 32 available in the guest"
+    ],
+    "rate_limit_operational_note": {
+      "clamped": {
+        "nuclei": "150 -> 1 rps",
+        "ffuf": "50 -> 1 rps",
+        "feroxbuster": "50 -> 1 rps",
+        "masscan": "1000 -> 100 pps",
+        "naabu": "1000 -> 100 pps",
+        "katana": "10 -> 8 workers"
+      },
+      "consequence": "1 rps is 60 requests a minute, the largest whole rate under a 100/min cap. A full 13,687-template pass therefore takes about 2.3 hours per target.",
+      "mitigation": "use targeted template subsets (tags, severity, or a template directory) rather than a full pass"
+    },
+    "not_verified": [
+      "gowitness renders in a real Chrome; only its flags were added, not a captured request",
+      "raw TCP tools (nmap, masscan, naabu, hydra, enum4linux, netexec) bypass the proxy by design and keep their own fingerprints"
+    ]
   }
 }
