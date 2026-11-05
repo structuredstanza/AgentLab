@@ -50,7 +50,7 @@ jobs:
         # The core achievement of this fork is that "there is no Chinese text on the screens visible to users."
         # Prevents regressions where contributors hardcode Chinese text or omit translations, catching them before merge.
         # The script locates web/out under the git root by itself, so it does not depend on the working directory.
-        run: python3 -I ../scripts/check-web-cjk.py
+        run: python3 -I ../scripts/check-cjk.py
       - name: biome check (merge gate · zero lint, format, and a11y errors)
         if: always()
         run: npm run check
