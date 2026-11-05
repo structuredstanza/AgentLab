@@ -65,6 +65,8 @@ The upstream ARTEX project's per-version release history (0.3.x and earlier) and
 - Migrate only exact known shipped prompt/tool/trigger defaults. Preserve operator-custom values, tool bindings, limits, historical conversations, and all previous prompt versions.
 - Write model approval reasons with `[Model]` while retaining classification and display support for historical `[模型]` records.
 - Translate authored source comments into English, including embedded SQL, script heredocs, and Markdown code fences. Preserve non-comment code and literal legacy protocol data.
+- Translate the prompts that reach the model, which the earlier pass missed: the cold-node compaction prompt, the planner's to-do and change blocks, the worker's traffic and artifact rules, the goal framing, and the judge's input boundary. The compaction prompt being Chinese made every compacted summary come back in Chinese and flow on into planner context and the graph view. Chat mention labels shown in the dropdown are English too.
+- Keep Chinese where it matches text already stored or produced: `[模型]` prefixes and legacy mention tokens for saved history, the relabel migrations and orchestration constants that match shipped bytes verbatim, ICP (`备案`) scope keywords, log-severity keywords, and the quota markers that classify provider error text — an upstream may answer in Chinese whatever this application's own language is.
 
 ### Fixed
 
