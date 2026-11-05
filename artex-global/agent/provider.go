@@ -424,6 +424,9 @@ func IsQuotaExhaustedMessage(message string) bool {
 		"exceeded your current quota", "billing_hard_limit_reached",
 		"billing hard limit", "billing_not_active", "credit balance", "insufficient credit",
 		"insufficient balance", "balance is too low", "payment required", "status 402",
+		// Provider error text is whatever the upstream chose to send, so the
+		// classifier matches Chinese wording too even though this application is
+		// English-only. Do not translate these.
 		"余额不足", "额度不足", "额度已用尽", "欠费",
 	}
 	for _, marker := range markers {
@@ -646,7 +649,7 @@ func testConnection(ctx context.Context, c Config, prov llm.Provider, nonStreami
 	// EscalateMaxTokens stays false: do not raise the limit and retry because of truncation, to avoid a resume loop that wastes tokens.
 	reply, err := agentcore.Run(ctx, agentcore.Options{
 		Provider:       prov,
-		SystemPrompt:   []string{"你是连接测试。直接输出两个字符 OK 即可，不要思考、不要解释、不要别的。"},
+		SystemPrompt:   []string{"You are a connection test. Output exactly the two characters OK - no reasoning, no explanation, nothing else."},
 		PermissionMode: acperm.ModeBypass,
 		MaxTurns:       1,
 		MaxTokens:      8192,

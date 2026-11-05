@@ -143,7 +143,7 @@ func renderPlannerTodos(items []actool.Todo) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n\n【你的规划待办（跨唤醒保留，上一轮你写的）】：\n")
+	b.WriteString("\n\n[Your planning to-do list (carried across wake-ups, written by you last round)]:\n")
 	for _, it := range items {
 		mark := map[actool.TodoStatus]string{actool.TodoPending: "☐", actool.TodoInProgress: "▶", actool.TodoCompleted: "✔"}[it.Status]
 		if mark == "" {
@@ -151,7 +151,7 @@ func renderPlannerTodos(items []actool.Todo) string {
 		}
 		b.WriteString(fmt.Sprintf("  %s %s\n", mark, it.Content))
 	}
-	b.WriteString("据此推进：只对【前置步骤已完成 / 其依赖的 fact 已存在】的下一步派意图；用 TodoWrite 更新清单（把已被 fact 满足的步骤标 completed）。不要重复派已在清单里 pending/in_progress 的步骤。")
+	b.WriteString("Proceed on that basis: dispatch an intent only for a next step whose [prerequisites are complete / required facts already exist]; update the list with TodoWrite (mark steps already satisfied by a fact as completed). Do not dispatch again a step already pending or in_progress in the list.")
 	return b.String()
 }
 
@@ -187,42 +187,42 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n\n【本次触发本轮的实际变动（先看这里，再决定是否补方向）】：")
+	b.WriteString("\n\n[Actual changes that triggered this round (read here first, then decide whether to add direction)]:")
 	for _, ev := range evs {
 		switch ev.Kind {
 		case "goal":
 			if len(ev.Goals) == 1 {
-				b.WriteString(fmt.Sprintf("\n- 人（主 agent）新增了一个目标：%s —— 新的待达成目标，请据此补充探索方向（若尚无对应意图）。", ev.Goals[0]))
+				b.WriteString(fmt.Sprintf("\n- The human (main agent) added a goal: %s - a new goal to reach; add exploration direction for it (if no intent covers it yet).", ev.Goals[0]))
 			} else {
-				b.WriteString(fmt.Sprintf("\n- 人（主 agent）新增了 %d 个目标：%s —— 均为新的待达成目标，请逐一为尚无对应意图的目标补充探索方向。", len(ev.Goals), strings.Join(ev.Goals, "；")))
+				b.WriteString(fmt.Sprintf("\n- The human (main agent) added %d goals: %s - all are new goals to reach; add exploration direction for each one that no intent covers yet.", len(ev.Goals), strings.Join(ev.Goals, "; ")))
 			}
 		case "hint":
 			if len(ev.Hints) == 1 {
-				b.WriteString(fmt.Sprintf("\n- 人（主 agent）新增了一条战略提示：%s —— 已挂到探索图上，请据此调整/补充探索方向（若尚无对应意图）。", ev.Hints[0]))
+				b.WriteString(fmt.Sprintf("\n- The human (main agent) added a strategic hint: %s - it is now on the exploration graph; adjust or add exploration direction accordingly (if no intent covers it yet).", ev.Hints[0]))
 			} else {
-				b.WriteString(fmt.Sprintf("\n- 人（主 agent）新增了 %d 条战略提示：%s —— 均已挂到探索图上，请逐一据此调整/补充探索方向。", len(ev.Hints), strings.Join(ev.Hints, "；")))
+				b.WriteString(fmt.Sprintf("\n- The human (main agent) added %d strategic hints: %s - all are now on the exploration graph; adjust or add direction for each.", len(ev.Hints), strings.Join(ev.Hints, "; ")))
 			}
 		case "goal_deleted":
-			b.WriteString(fmt.Sprintf("\n- 人删除了该目标：%s —— 该目标已移除，请据此重判剩余目标/方向（不必再为它派意图）。", ev.Detail))
+			b.WriteString(fmt.Sprintf("\n- The human deleted this goal: %s - it is removed; re-assess the remaining goals and directions (no further intents for it).", ev.Detail))
 		case "goal_edited":
-			b.WriteString(fmt.Sprintf("\n- 人修改了目标，由「%s」变为「%s」—— 请据新目标调整探索方向（原方向若已不适用请停派）。", ev.OldGoal, ev.NewGoal))
+			b.WriteString(fmt.Sprintf("\n- The human changed the goal from \"%s\" to \"%s\" - adjust exploration direction to the new goal (stop dispatching the old direction if it no longer applies).", ev.OldGoal, ev.NewGoal))
 		case "finding":
-			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）的 worker 报告了一个 finding：%s", ev.IntentID, intentSummary(ts, ev.IntentID), ev.Detail))
+			b.WriteString(fmt.Sprintf("\n- The worker on intent #%d (%s) reported a finding: %s", ev.IntentID, intentSummary(ts, ev.IntentID), ev.Detail))
 		case "cancelled":
 			// The intent content prefers the Summary captured at deletion time (after a real deletion the node no longer exists, so intentSummary cannot look it up).
 			sm := ev.Summary
 			if sm == "" {
 				sm = intentSummary(ts, ev.IntentID)
 			}
-			b.WriteString(fmt.Sprintf("\n- 意图 #%d 由用户删除，意图内容是：%s、删除原因是：%s。该意图已删除（不再执行）；请据此重新规划。", ev.IntentID, sm, ev.Detail))
+			b.WriteString(fmt.Sprintf("\n- Intent #%d was deleted by the user; its content was: %s; reason: %s. It is gone and will not run; re-plan accordingly.", ev.IntentID, sm, ev.Detail))
 		default: // "done"
-			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）的 worker 结束，输出结论：%s", ev.IntentID, intentSummary(ts, ev.IntentID), workerOutput(ts, ev.IntentID)))
+			b.WriteString(fmt.Sprintf("\n- The worker on intent #%d (%s) finished; its conclusion: %s", ev.IntentID, intentSummary(ts, ev.IntentID), workerOutput(ts, ev.IntentID)))
 			if fids := factIDsYielded(ts, ev.IntentID); fids != "" {
-				b.WriteString(fmt.Sprintf("；本意图新产生的事实 id：%s ", fids))
+				b.WriteString(fmt.Sprintf("; fact ids newly produced by this intent: %s ", fids))
 			}
 		}
 	}
-	b.WriteString("\n（完整细节可 node_detail / get_worker_output / list_findings 再查。）")
+	b.WriteString("\n(For full detail, query node_detail / get_worker_output / list_findings.)")
 	return b.String()
 }
 
@@ -261,7 +261,7 @@ func intentSummary(ts *db.ExplorationStore, id int64) string {
 func workerOutput(ts *db.ExplorationStore, id int64) string {
 	acts, _, err := ts.ActivityPageByNode(id, 1000)
 	if err != nil {
-		return "(取输出失败)"
+		return "(failed to fetch output)"
 	}
 	var pick *db.Activity
 	for i := range acts {
@@ -272,7 +272,7 @@ func workerOutput(ts *db.ExplorationStore, id int64) string {
 		}
 	}
 	if pick == nil {
-		return "(该 work 尚无输出记录)"
+		return "(this work has no output recorded yet)"
 	}
 	out, _ := ts.ActivityDetail(pick.ID)
 	if out == "" {
@@ -288,7 +288,7 @@ func truncOutput(s string, n int) string {
 	if len(r) <= n {
 		return s
 	}
-	return string(r[:n]) + " …（已截断，完整见 get_worker_output）"
+	return string(r[:n]) + " ... (truncated; see get_worker_output for the full text)"
 }
 
 // renderGraphOverview folds the pre-computed graph_overview snapshot into the
@@ -301,7 +301,7 @@ func renderGraphOverview(data map[string]any) string {
 	if err != nil {
 		return "" // fall back to the model calling graph_overview itself
 	}
-	return "\n\n【本轮态势（graph_overview 预取，等同你调用该工具的返回；需要细节再按需调 node_detail/list_facts 等）】：\n" + string(b)
+	return "\n\n[Situation this round (graph_overview prefetched - identical to what that tool would return; call node_detail/list_facts as needed for detail)]:\n" + string(b)
 }
 
 // plannerDefaultTmpl is the built-in EDITABLE body (section [A]) of the planner prompt,
@@ -399,7 +399,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// goal judgment and does not produce new intents.
 	tc := taskClockFrom(ctx)
 	if tc.Final {
-		situational += "\n\n【任务终局收尾（本轮特殊指令，覆盖上面的常规规划流程）】：" + resolveTaskTimeoutWrapup("planner")
+		situational += "\n\n[Task wind-down (special instruction this round; overrides the normal planning flow above)]: " + resolveTaskTimeoutWrapup("planner")
 	}
 	// The working directory for this task is <workDir>/tasks/<taskID>; create it first.
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
@@ -466,16 +466,16 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// Instructions + cross-wakeup todo list (the todo is the model's own planning notes; it is regenerable, so placing it in the user message is fine).
 	// The opening depends on whether this round has concrete changes: if so, point to the [Actual changes] block below; if not
 	// (heartbeat periodic inspection / hint / recovery, etc.) → do not falsely claim "the graph has changed"; instead, suggest re-checking the intents currently in progress.
-	lead := "刚有具体变动（见下面的【本次触发本轮的实际变动】），据此规划下一步："
+	lead := "A concrete change just happened (see [Actual changes that triggered this round] below); plan the next step from it:"
 	if len(triggers) == 0 {
-		lead = "本轮是**定时巡检（心跳到点）/无具体变动信号**的唤醒——图不一定有新变动。顺带复查在跑意图：长时间无进展或跑偏的用 steer_work 纠偏、方向整个错的用 kill_work 止损；再判定目标、决定是否补方向："
+		lead = "This round is a **scheduled check (heartbeat fired) / no concrete change signal** wake-up - the graph may hold nothing new. While here, review the running intents: steer_work one that has stalled or drifted, kill_work one whose whole direction is wrong; then judge the goals and decide whether to add direction:"
 		// On heartbeat/no-change wakeups, if the whole graph has no open or running intents → exploration has stalled (no worker is running,
 		// and no directions are queued). Explicitly inform the planner and force it to produce new directions this round; do not merely re-check in-progress intents and idle for another round.
 		if active, err := ts.HasActiveIntent(); err == nil && !active {
-			lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
+			lead = "This round is a **scheduled check (heartbeat fired)** wake-up, and there is currently **no open or running intent at all** - no worker is running and nothing is queued, so exploration has stalled. You **must** produce one or more new intents this round that advance the goals and **do not duplicate** any intent already on the graph (zero intents is not allowed); first judge from the situation below whether the goals are met, and if not, add direction immediately:"
 		}
 	}
-	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。**硬底线：只要目标尚未达成、且当前没有任何 open 或 running 意图（frontier_open=0 且 running_intents 为空），本轮就必须产出至少一个向目标推进的意图——此时没有在跑的 work 可等、也没有在排队的方向，产出 0 意图=任务停摆。仅当已有 open/running 意图在推进、或目标已达成时，本轮才可以不产出新意图。**" +
+	input := lead + situational + "\n\nFrom the situation above, judge the goals. When a goal is [genuinely met] (the outcome is in hand / the target vulnerability is confirmed), mark it with prove_goal one by one. **Hard floor: while a goal is unmet and there is no open or running intent (frontier_open=0 and running_intents empty), this round must produce at least one intent that advances a goal - there is no running work to wait on and nothing queued, so producing zero intents means the task stalls. Only when an open or running intent is already advancing, or the goals are met, may this round produce no new intent.**" +
 		renderPlannerTodos(opts.Todos.List())
 	// MaxDuration now interrupts the running tool when the wall-clock deadline is reached and enters wrap-up in place (on the live ctx), so a single stuck round no longer
 	// Bypass the teardown; no external hard ctx fallback is needed. ctx only carries pause / kill / shutdown.
