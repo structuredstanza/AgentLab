@@ -51,7 +51,7 @@ func TestIsDefaultConversationTitle(t *testing.T) {
 	if !isDefaultConversationTitle(convDefaultTitle) {
 		t.Fatalf("the generated default %q must be eligible for auto-titling", convDefaultTitle)
 	}
-	if isDefaultConversationTitle("사용자가 지은 제목") {
+	if isDefaultConversationTitle("user-chosen title") {
 		t.Fatal("a user-chosen title must not be eligible for auto-titling")
 	}
 }

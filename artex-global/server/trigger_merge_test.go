@@ -9,15 +9,15 @@ import (
 // fix: the task-context header (description + goal) is rendered ONCE per task, no
 // matter how many same-task fires are merged.
 
-const longGoal = "拿到题目 f2-05 的受保护 flag 并通过 submit_flag 提交；本题密文已高度收敛，flag 只能由二进制内嵌数据派生……" // Represents that inheritance fact, which spans several thousand characters
+const longGoal = "Get the protected flag for challenge f2-05 and submit it through submit_flag; the ciphertext here is already tightly constrained, so the flag can only be derived from data embedded in the binary..." // Represents that inheritance fact, which spans several thousand characters
 
-const sameTaskMessage = "【本次由工具调用触发】\n工具: submit_flag\n入参: {...}\n返回: {correct:false}"
+const sameTaskMessage = "[triggered by a tool call this time]\nTool: submit_flag\nInput: {...}\nReturn: {correct:false}"
 
 func sameTaskFires(n int) []triggeredRun {
 	items := make([]triggeredRun, n)
 	for i := range items {
 		items[i] = triggeredRun{
-			agentKey: "tec_benchmark", taskID: 72, taskDesc: "f2-05 逆向", taskGoal: longGoal,
+			agentKey: "tec_benchmark", taskID: 72, taskDesc: "f2-05 reverse engineering", taskGoal: longGoal,
 			message: sameTaskMessage, mergeable: true,
 		}
 	}
@@ -85,14 +85,14 @@ func TestTaskContextHeaderEmptyForIntervalFire(t *testing.T) {
 		t.Fatalf("interval/none trigger (no task) must produce no header, got %q", h)
 	}
 	// An interval fire's message must pass through untouched.
-	item := triggeredRun{message: "定时触发正文"}
-	if finalTriggerMessage(item) != "定时触发正文" {
+	item := triggeredRun{message: "scheduled trigger body"}
+	if finalTriggerMessage(item) != "scheduled trigger body" {
 		t.Fatalf("interval fire message must pass through unchanged")
 	}
 }
 
 func TestTaskContextHeaderTruncatesLongGoal(t *testing.T) {
-	huge := strings.Repeat("很", 5000)
+	huge := strings.Repeat("very", 5000)
 	h := taskContextHeader(72, "d", huge)
 	if len([]rune(h)) > 800 { // 200 desc + 500 goal + truncation marker/decoration, well below 5000
 		t.Fatalf("header should be bounded even for a huge goal, got %d runes", len([]rune(h)))

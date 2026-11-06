@@ -427,7 +427,7 @@ func IsQuotaExhaustedMessage(message string) bool {
 		// Provider error text is whatever the upstream chose to send, so the
 		// classifier matches Chinese wording too even though this application is
 		// English-only. Do not translate these.
-		"余额不足", "额度不足", "额度已用尽", "欠费",
+		"\u4f59\u989d\u4e0d\u8db3", "\u989d\u5ea6\u4e0d\u8db3", "\u989d\u5ea6\u5df2\u7528\u5c3d", "\u6b20\u8d39",
 	}
 	for _, marker := range markers {
 		if strings.Contains(message, marker) {

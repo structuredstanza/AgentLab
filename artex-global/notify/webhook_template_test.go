@@ -62,7 +62,7 @@ func TestTemplateCannotReachUnknownData(t *testing.T) {
 		t.Fatal("accessing a nonexistent field should fail")
 	}
 	// Error messages must not contain the actual content from the template context (vulnerability titles/summaries).
-	for _, leak := range []string{"SQL注入", "参数 id"} {
+	for _, leak := range []string{"SQL injection", "param id"} {
 		if strings.Contains(err.Error(), leak) {
 			t.Errorf("template error leaked message content %q: %v", leak, err)
 		}

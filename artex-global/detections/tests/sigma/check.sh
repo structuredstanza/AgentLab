@@ -8,7 +8,7 @@
 #   1. structural + best-practice validation passes          (sigma check == 0 errors)
 #   2. the whole tree compiles to a backend query language   (sigma convert -> splunk)
 #   3. each atomic indicator string survives into the query  (enrich UA, self-update UA, guard marker, CA file)
-#   4. the correlation rules compile as correlations         (event_count / value_count aggregations)
+#   4. the correlation rules compile as correlations         (event_count / event_type_count aggregations)
 #   5. a correlation rule converted ALONE fails              (it genuinely depends on its atomic base rule)
 #
 # POSIX sh (the slim image ships dash). Exits non-zero if any assertion fails.
@@ -46,8 +46,10 @@ echo "== 3/4  each atomic indicator survives into the compiled query =="
 # Grep the indicator VALUES, not backend field names or quoting, so the test is
 # robust across splunk-backend releases. These strings come straight from the
 # rule bodies, which are grounded in this repository's source. The last one is
-# the recording-proxy CA filename, grounded in traffic/traffic.go.
-for ind in 'artex-enrich/1.0' 'artex-selfupdate' '【ARTEX platform control · not target defense】' 'mitmproxy-ca-cert.pem'; do
+# the recording-proxy CA filename, grounded in traffic/traffic.go. Enrichment has
+# no User-Agent of its own any more (it presents the masked browser identity), so
+# there is no enrich indicator in this list.
+for ind in 'artex-selfupdate' '[ARTEX platform control - not target defense]' 'mitmproxy-ca-cert.pem'; do
   if printf '%s' "$tree_out" | grep -qF "$ind"; then
     pass "indicator present: $ind"
   else
@@ -56,12 +58,12 @@ for ind in 'artex-enrich/1.0' 'artex-selfupdate' '【ARTEX platform control · n
 done
 
 echo "== 4/4  correlation rules compile as correlations, and depend on their base rules =="
-# The event_count / value_count aggregation aliases prove the correlation rules
-# were compiled as correlations (not dropped), using the whole tree so their
-# base-rule references resolve.
+# The event_count (event_count rule) and event_type_count (temporal rule)
+# aggregation aliases prove the correlation rules were compiled as correlations
+# (not dropped), using the whole tree so their base-rule references resolve.
 if printf '%s' "$tree_out" | grep -q 'event_count' \
-   && printf '%s' "$tree_out" | grep -q 'value_count'; then
-  pass "correlation aggregations present (event_count, value_count)"
+   && printf '%s' "$tree_out" | grep -q 'event_type_count'; then
+  pass "correlation aggregations present (event_count, event_type_count)"
 else
   bad  "correlation aggregations missing from compiled query"
 fi
@@ -71,7 +73,7 @@ fi
 # a single-file input. A passing conversion here would mean the reference is
 # decorative; this asserts it is load-bearing.
 if sigma convert -t splunk --without-pipeline \
-     /sigma/correlation/artex_enrich_scan_velocity.yml >/dev/null 2>&1; then
+     /sigma/correlation/artex_guard_block_burst.yml >/dev/null 2>&1; then
   bad  "a correlation rule converted alone (its base-rule reference is not enforced)"
 else
   pass "correlation rule fails to convert alone — it requires its atomic base rule"

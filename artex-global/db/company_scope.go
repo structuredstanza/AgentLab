@@ -156,8 +156,8 @@ func ParseAutoScopeLine(line string) (ParsedScope, error) {
 	// If stored as ICP, it would yield a dead rule that never matches any asset. ICP ownership uses exact
 	// equality comparison (see the kind='icp' ownership query in companies.go), so such text is classified as a keyword.
 	lower := strings.ToLower(raw)
-	if !strings.ContainsAny(raw, ".．。") &&
-		(strings.Contains(lower, "icp") || strings.Contains(raw, "备案")) {
+	if !strings.ContainsAny(raw, ".\uff0e\u3002") &&
+		(strings.Contains(lower, "icp") || strings.Contains(raw, "\u5907\u6848")) {
 		return ParseScopeInput(ScopeInput{Kind: "icp", Value: raw})
 	}
 	return ParseScopeInput(ScopeInput{Kind: "keyword", Value: raw})

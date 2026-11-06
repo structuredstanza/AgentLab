@@ -30,8 +30,8 @@ func TestSendWorkerMessageInputValidationLocalized(t *testing.T) {
 		// A valid JSON body exceeding the 64KB limit. MaxBytesReader returns the over-limit error mid-read.
 		{"request_too_large", `{"message":"` + strings.Repeat("a", maxWorkerMessageBytes+1024) + `"}`, http.StatusRequestEntityTooLarge},
 		{"message_empty", `{"message":"  "}`, http.StatusBadRequest},
-		{"message_too_long", `{"message":"` + strings.Repeat("가", 4001) + `"}`, http.StatusBadRequest},
-		{"bad_request_id", `{"message":"안녕","request_id":"공백 포함"}`, http.StatusBadRequest},
+		{"message_too_long", `{"message":"` + strings.Repeat("a", 4001) + `"}`, http.StatusBadRequest},
+		{"bad_request_id", `{"message":"hello","request_id":"contains whitespace"}`, http.StatusBadRequest},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

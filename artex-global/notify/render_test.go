@@ -11,11 +11,11 @@ func TestTruncateBytesKeepsValidUTF8(t *testing.T) {
 	// so any implementation that cuts strictly by bytes will split a character in half, producing invalid UTF-8 that the platform rejects.
 	// Hit every possible cut point with mixed Chinese-English inputs whose lengths are mutually coprime.
 	inputs := []string{
-		"中文测试内容",
-		"混合 mixed 内容 content",
-		"a中b文c测d试e",
+		"localised test content",
+		"mixed content",
+		"a1b2c3d4e",
 		"🔴🟠🟡🔵", // 4-byte emoji make wrong cuts more obvious
-		strings.Repeat("漏洞", 100),
+		strings.Repeat("finding", 100),
 	}
 	for _, in := range inputs {
 		for max := 1; max <= len(in)+2; max++ {
@@ -59,7 +59,7 @@ func TestTruncateBytesEllipsisBudget(t *testing.T) {
 func TestTruncateRunesCountsCharactersNotBytes(t *testing.T) {
 	// The difference in counting from TruncateBytes must be preserved: Telegram limits length by characters,
 	// while counting by bytes would cut a Chinese message down to only a third of its length.
-	s := "一二三四五六七八九十"
+	s := "abcdefghij"
 	got := TruncateRunes(s, 5)
 	if n := utf8.RuneCountInString(got); n != 5 {
 		t.Fatalf("expected 5 characters, got %d (%q)", n, got)
@@ -71,7 +71,7 @@ func TestTruncateRunesCountsCharactersNotBytes(t *testing.T) {
 }
 
 func TestOneLineCollapsesWhitespace(t *testing.T) {
-	got := OneLine("第一行\n\n第二行\t带制表   多空格", 0)
+	got := OneLine("first line\n\nsecond line\ttabbed   multi space", 0)
 	if strings.ContainsAny(got, "\n\t") {
 		t.Fatalf("should collapse all whitespace, got %q", got)
 	}
@@ -79,7 +79,7 @@ func TestOneLineCollapsesWhitespace(t *testing.T) {
 		t.Fatalf("consecutive spaces must not be kept, got %q", got)
 	}
 	// After truncation, the result must still be readable and valid.
-	got = OneLine("一二三四五六七八九十", 4)
+	got = OneLine("abcdefghij", 4)
 	if n := utf8.RuneCountInString(got); n != 4 {
 		t.Fatalf("expected 4 characters, got %d (%q)", n, got)
 	}
@@ -87,7 +87,7 @@ func TestOneLineCollapsesWhitespace(t *testing.T) {
 
 func TestTruncateHTMLNeverCutsTagInHalf(t *testing.T) {
 	// Cutting HTML directly leaves fragments such as `<a href="htt`, and the platform will reject the whole message.
-	s := `<b>标题</b>正文正文正文<a href="https://example.com/very/long/path">查看详情</a>`
+	s := `<b>title</b>bodybodybody<a href="https://example.com/very/long/path">see details</a>`
 	for max := 1; max <= utf8.RuneCountInString(s)+2; max++ {
 		got := TruncateHTML(s, max)
 		if n := utf8.RuneCountInString(got); max > 0 && n > max {

@@ -164,8 +164,12 @@ type Interceptor struct {
 	loaded       bool            // distinguishes "no rules" from "never loaded"
 	lastGood     []compiledRule  // survives Invalidate, so a failed reload cannot disarm the gate
 	enabledTools map[string]bool // nil means not loaded yet
-	pending      *pendingManager
-	reviewer     Reviewer // nil = LLM fallback judge not wired
+	// lastGoodEnabled mirrors lastGood for the enabled-tool set. IsToolEnabled
+	// returning false means "this tool never enters the rule path", i.e. every
+	// deny rule is skipped for it, so a failed load must not answer false.
+	lastGoodEnabled map[string]bool
+	pending         *pendingManager
+	reviewer        Reviewer // nil = LLM fallback judge not wired
 }
 
 // SetReviewer installs the LLM fallback judge callback. Passing nil disables it.
@@ -244,6 +248,7 @@ func (i *Interceptor) loadLocked() error {
 			i.enabledTools = m
 		}
 	}
+	i.lastGoodEnabled = i.enabledTools
 	return nil
 }
 
@@ -290,7 +295,16 @@ func (i *Interceptor) IsToolEnabled(name string) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.enabledTools == nil {
-		_ = i.loadLocked()
+		if err := i.loadLocked(); err != nil {
+			// The rule source is unreachable. A false answer here means the tool
+			// skips every deny rule, so this must fail closed the way rules()
+			// already does: keep enforcing the last set that loaded, and treat
+			// an unknown tool as enabled (the rules themselves still decide).
+			if i.lastGoodEnabled != nil {
+				return i.lastGoodEnabled[name]
+			}
+			return true
+		}
 	}
 	return i.enabledTools[name]
 }
@@ -526,7 +540,7 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 	out.ConfigDigest = digestInput(configJSON)
 	if out.Message == "" {
 		out.Message = "[Model] " + out.Action
-	} else if !strings.HasPrefix(out.Message, "[Model]") && !strings.HasPrefix(out.Message, "[模型]") {
+	} else if !strings.HasPrefix(out.Message, "[Model]") && !strings.HasPrefix(out.Message, "[\u6a21\u578b]") {
 		out.Message = "[Model] " + out.Message
 	}
 	if out.Action == "ask" {
@@ -573,19 +587,63 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 }
 
 func ruleMatches(r compiledRule, toolName string, input []byte) bool {
-	var subject string
 	switch r.MatchTarget {
 	case "tool_name":
-		subject = toolName
+		return r.matchesText(toolName)
 	case "tool_input":
-		subject = string(input)
+		// The tool decodes its arguments before acting on them, so a rule that
+		// only inspected the encoded bytes could be walked past with a JSON
+		// escape: `{"command":"\u0072m -rf /"}` decodes to `rm -rf /` and runs
+		// while no deny rule matches. Match the raw envelope and every decoded
+		// string leaf.
+		if r.matchesText(string(input)) {
+			return true
+		}
+		for _, leaf := range decodedInputText(input) {
+			if r.matchesText(leaf) {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}
+}
+
+// matchesText applies the rule's matcher to one candidate string.
+func (r compiledRule) matchesText(subject string) bool {
 	if r.MatchType == "regex" {
 		return r.re != nil && r.re.MatchString(subject)
 	}
 	return strings.Contains(subject, r.Pattern)
+}
+
+// decodedInputText returns every string value in a tool call's JSON arguments,
+// decoded. Input that is not valid JSON yields nothing (the raw match above
+// still applies), so this can only widen what a rule sees, never narrow it.
+func decodedInputText(input []byte) []string {
+	var v any
+	if err := json.Unmarshal(input, &v); err != nil {
+		return nil
+	}
+	var out []string
+	var walk func(any)
+	walk = func(node any) {
+		switch t := node.(type) {
+		case string:
+			out = append(out, t)
+		case []any:
+			for _, item := range t {
+				walk(item)
+			}
+		case map[string]any:
+			for _, item := range t {
+				walk(item)
+			}
+		}
+	}
+	walk(v)
+	return out
 }
 
 func defaultMessage(action, name string) string {

@@ -64,20 +64,28 @@ var hopByHop = map[string]bool{
 	"upgrade":             true,
 }
 
-// forwarded are the headers the caller controls, carried through untouched.
-// Everything not listed here is dropped and replaced by the identity's own set,
-// so a tool cannot leak a header the browser would never send.
-var forwarded = map[string]bool{
-	"content-type":      true,
-	"content-length":    true,
-	"cookie":            true,
-	"authorization":     true,
-	"referer":           true,
-	"origin":            true,
-	"if-none-match":     true,
-	"if-modified-since": true,
-	"range":             true,
-	"x-requested-with":  true,
+// identityOwned are the headers the engagement identity sets. They are always
+// replaced, never forwarded, so a tool cannot leak its own Accept or UA.
+//
+// Everything else the caller sends is forwarded. That is a deliberate inversion
+// of an allowlist: an allowlist silently dropped X-API-Key, X-Auth-Token,
+// SOAPAction and every vendor X-* header, so a tool authenticating to an API got
+// 401 through the proxy and 200 without it, with nothing in the response or log
+// to explain the difference. Dropping a credential does not make the request
+// look more like a browser; it makes it fail.
+var identityOwned = map[string]bool{
+	"user-agent":                true,
+	"accept":                    true,
+	"accept-encoding":           true,
+	"accept-language":           true,
+	"upgrade-insecure-requests": true,
+	"sec-ch-ua":                 true,
+	"sec-ch-ua-mobile":          true,
+	"sec-ch-ua-platform":        true,
+	"sec-fetch-site":            true,
+	"sec-fetch-mode":            true,
+	"sec-fetch-user":            true,
+	"sec-fetch-dest":            true,
 }
 
 // canonicalHeaders builds the exact header set and order a Chrome navigation
@@ -91,14 +99,14 @@ func canonicalHeaders(id Identity, method, host, target string, in [][2]string) 
 	out = append(out, [2]string{"Connection", "keep-alive"})
 
 	// Caller headers that a browser would also send, in the caller's order.
+	// Only the identity's own headers are replaced; everything else the caller
+	// set is kept, so credentials and vendor headers survive.
 	for _, kv := range in {
 		key := strings.ToLower(kv[0])
-		if hopByHop[key] || key == "host" || key == "user-agent" {
+		if hopByHop[key] || key == "host" || identityOwned[key] {
 			continue
 		}
-		if forwarded[key] {
-			out = append(out, kv)
-		}
+		out = append(out, kv)
 	}
 
 	out = append(out, [2]string{"sec-ch-ua", id.SecChUA})

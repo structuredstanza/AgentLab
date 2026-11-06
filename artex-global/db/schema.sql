@@ -787,16 +787,26 @@ ALTER TABLE task_scope ADD COLUMN IF NOT EXISTS value TEXT;
 ALTER TABLE task_scope DROP CONSTRAINT IF EXISTS task_scope_kind_check;
 ALTER TABLE task_scope ADD CONSTRAINT task_scope_kind_check
     CHECK (kind IN ('company','root_domain','subdomain','ip','cidr','icp','keyword'));
--- Deduplication: the same scope entry for the same task is stored only once (auto-fill batch inserts rely on this for idempotency).
-DROP INDEX IF EXISTS uq_task_scope;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_task_scope_v2 ON task_scope(
-    task_id, kind, COALESCE(domain,''), COALESCE(net::text,''), COALESCE(company_id,0), COALESCE(value,''));
-CREATE INDEX IF NOT EXISTS idx_ts_domain  ON task_scope(domain) WHERE kind IN ('root_domain','subdomain');
-CREATE INDEX IF NOT EXISTS idx_ts_net     ON task_scope USING GIST(net inet_ops) WHERE kind IN ('ip','cidr');
-CREATE INDEX IF NOT EXISTS idx_ts_company ON task_scope(company_id) WHERE kind = 'company';
+-- The effect column: 'include' (the default) or 'exclude'. An exclusion is the
+-- only value the tool guard enforces. Declared here, before the dedup index
+-- below, because that index is keyed on it.
 ALTER TABLE task_scope ADD COLUMN IF NOT EXISTS effect TEXT NOT NULL DEFAULT 'include';
 ALTER TABLE task_scope DROP CONSTRAINT IF EXISTS task_scope_effect_check;
 ALTER TABLE task_scope ADD CONSTRAINT task_scope_effect_check CHECK (effect IN ('include','exclude'));
+-- Deduplication: the same scope entry for the same task is stored only once (auto-fill batch inserts rely on this for idempotency).
+--
+-- effect is part of the key on purpose. Without it, excluding a host that
+-- auto-scope had already recorded as an include hit the include row, was
+-- dropped by ON CONFLICT DO NOTHING, and the operator's exclusion vanished:
+-- the API reported success and the guard never fired. With effect in the key
+-- both rows coexist and the checker's "an exclusion always wins" rule decides.
+DROP INDEX IF EXISTS uq_task_scope;
+DROP INDEX IF EXISTS uq_task_scope_v2;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_task_scope_v3 ON task_scope(
+    task_id, kind, COALESCE(domain,''), COALESCE(net::text,''), COALESCE(company_id,0), COALESCE(value,''), effect);
+CREATE INDEX IF NOT EXISTS idx_ts_domain  ON task_scope(domain) WHERE kind IN ('root_domain','subdomain');
+CREATE INDEX IF NOT EXISTS idx_ts_net     ON task_scope USING GIST(net inet_ops) WHERE kind IN ('ip','cidr');
+CREATE INDEX IF NOT EXISTS idx_ts_company ON task_scope(company_id) WHERE kind = 'company';
 
 -- =====================================================================
 -- E. Agents / Prompt Templates / Variable Catalog
@@ -1121,7 +1131,7 @@ ALTER TABLE intercept_pending ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFA
 ALTER TABLE intercept_pending ADD COLUMN IF NOT EXISTS audit JSONB;
 ALTER TABLE intercept_pending ADD COLUMN IF NOT EXISTS decision_source TEXT NOT NULL DEFAULT '';
 UPDATE intercept_pending SET decision_source=CASE WHEN rule_id IS NOT NULL THEN 'rule'
- WHEN reason LIKE '[模型]%' THEN 'model' ELSE 'unknown' END WHERE decision_source='';
+ WHEN reason LIKE U&'[\6A21\578B]%' THEN 'model' ELSE 'unknown' END WHERE decision_source='';
 
 -- =====================================================================
 -- L. Vulnerability finding persistence

@@ -10,7 +10,7 @@
 # ATT&CK test proves the layer matches the rules' tags; the Suricata test proves
 # the network rule *fires*. None of them look back at the source the indicator
 # claims to come from. So the realistic rot they miss is an upstream re-sync that
-# bumps the prober User-Agent to "artex-enrich/2.0" or rewrites the guard marker:
+# rewrites the guard marker or renames a deny-list token:
 # every rule still compiles, the layer still matches, the pcap test still fires on
 # the synthesized capture — and the deployed rule silently stops matching real
 # ARTEX traffic. This test turns detections/README's claim ("every indicator is
@@ -23,9 +23,6 @@
 #     rule -> the rule is now stale);
 #   - rule drift: the value is still pinned in the rule(s) built on it (fails if a
 #     rule edit moved the indicator away from the source).
-# The enrichment UA also carries a Suricata prefix check, because that rule
-# matches the User-Agent by `startswith` and so pins a prefix of the full value.
-#
 # The destructive-command tokens are handled separately and honestly: they are
 # generic hunting leads, not unique ARTEX fingerprints, so the test only asserts
 # the correspondence the rule actually claims — each token appears both in ARTEX's
@@ -64,17 +61,8 @@ ROOT = os.environ.get("ARTEX_REPO_ROOT", "/repo")
 # upstream re-sync changes the source string, the rule must change with it.
 INDICATORS = [
     {
-        "label": "enrichment prober User-Agent",
-        "value": "artex-enrich/1.0",
-        "sources": ["enrich/enrich.go"],
-        "rules": ["detections/sigma/artex_enrich_user_agent.yml"],
-        # Suricata matches the UA by `startswith`, so it pins a prefix of the
-        # full value rather than the whole string. (file, prefix)
-        "prefix_rules": [("detections/suricata/artex.rules", "artex-enrich/")],
-    },
-    {
         "label": "platform-guard audit framing marker",
-        "value": "【ARTEX platform control · not target defense】",
+        "value": "[ARTEX platform control - not target defense]",
         "sources": ["guard/guard.go"],
         "rules": ["detections/sigma/artex_guard_audit_framing.yml"],
     },
@@ -150,18 +138,6 @@ for ind in INDICATORS:
             bad("rule file missing: %s" % rule)
         else:
             bad("%s no longer pins %r (rule drift from source)" % (rule, value))
-    for rfile, prefix in ind.get("prefix_rules", []):
-        if not value.startswith(prefix):
-            bad("%s: prefix %r is not a prefix of %r (internal inconsistency)"
-                % (rfile, prefix, value))
-            continue
-        hit = contains(rfile, prefix)
-        if hit is True:
-            ok("%s pins prefix %r of %r" % (rfile, prefix, value))
-        elif hit is None:
-            bad("rule file missing: %s" % rfile)
-        else:
-            bad("%s no longer pins prefix %r" % (rfile, prefix))
 
 print("== 3/5  destructive hunting tokens match ARTEX's guard deny-list ==")
 src, rule, tokens = DENYLIST["source"], DENYLIST["rule"], DENYLIST["tokens"]
@@ -297,7 +273,7 @@ print("== 5/5  CI and the pre-commit hook both fire this test on any pinned sour
 # detections/ tree at all).
 WORKFLOW_REL = ".github/workflows/detections.yml"
 PRECOMMIT_REL = ".pre-commit-config.yaml"
-DETECTIONS_SAMPLE = "detections/sigma/artex_enrich_user_agent.yml"
+DETECTIONS_SAMPLE = "detections/sigma/artex_guard_audit_framing.yml"
 needed_sources = set()
 for ind in INDICATORS:
     needed_sources.update(ind["sources"])

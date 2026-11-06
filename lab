@@ -393,6 +393,18 @@ def export():
     manifest = {'started_at': now(), 'sandbox': NAME, 'model_data': 'genuine records only',
                 'consistency': 'transactional PostgreSQL rows; separate pg_dump snapshot; online filesystem copy',
                 'privacy': 'raw artifacts may contain credentials, task content and personal data',
+                # Deliberate: the raw table dump is verbatim, so credential columns
+                # travel with it -- llm_profiles.api_key, llm_profiles.api_key_hint,
+                # oauth_grants.access_token/refresh_token, task_credentials.password
+                # and notify_channels.config. This keeps an export faithful to the
+                # database it captured (the point of a training/forensic archive) and
+                # leaves redaction to the consumer. It also means every export is
+                # credential-bearing: handle it as a secret, and redact before sharing.
+                # The place to change that is the per-table SELECT below: project the
+                # columns, or subtract the credential keys from row_to_json.
+                'credentials': 'included verbatim in raw/*.jsonl and raw/postgres.dump '
+                               '(llm_profiles.api_key, oauth_grants tokens, task_credentials, '
+                               'notify_channels config); redact before sharing',
                 'limits': ['guest-root can tamper with guest-side captures',
                            'packet rotation overwrites old segments; inspect session manifest',
                            'TLS packet payloads are encrypted; application proxy records inspectable HTTP',

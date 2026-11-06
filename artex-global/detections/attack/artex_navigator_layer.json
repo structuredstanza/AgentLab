@@ -30,22 +30,6 @@
     "hideDisabled": false,
     "techniques": [
         {
-            "techniqueID": "T1595",
-            "tactic": "reconnaissance",
-            "score": 100,
-            "comment": "ARTEX asset-enrichment probe (User-Agent artex-enrich/1.0). sigma/artex_enrich_user_agent.yml; behaviour via sigma/correlation/artex_enrich_scan_velocity.yml and artex_enrich_fanout.yml; network via suricata sid 1000001/1000002. Defense guide section 2 (target view), 4.1, 4.4.",
-            "enabled": true,
-            "showSubtechniques": false
-        },
-        {
-            "techniqueID": "T1592",
-            "tactic": "reconnaissance",
-            "score": 100,
-            "comment": "ARTEX auto-enrichment gathers victim host info (DNS/HTTP, reads <title>) under User-Agent artex-enrich/1.0. sigma/artex_enrich_user_agent.yml; behaviour via sigma/correlation/artex_enrich_scan_velocity.yml and artex_enrich_fanout.yml; network via suricata sid 1000001/1000002. Defense guide section 2 (target view), 4.4.",
-            "enabled": true,
-            "showSubtechniques": false
-        },
-        {
             "techniqueID": "T1105",
             "tactic": "command-and-control",
             "score": 100,

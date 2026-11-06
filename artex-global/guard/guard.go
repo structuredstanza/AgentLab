@@ -176,8 +176,14 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 // forbidden — so the agent pivots to another approach instead of evading it.
 // Audit/history rows keep the raw reason (see Interceptor.Log); only the
 // model-facing tool_result carries this framing.
+//
+// The prefix names ARTEX on purpose: it is the published forensic IoC that
+// detections/indicators/artex_indicators.{csv,misp.json}, the Sigma/Suricata
+// rules and docs/defense-en.md all match verbatim, and
+// detections/tests/indicators/check.py fails the build if this string drifts.
+// Do not restyle the brackets or drop "ARTEX".
 func systemBlockMessage(reason string) string {
-	return "【Platform control · not target defense】This call was blocked by the platform. " +
+	return "[ARTEX platform control - not target defense]This call was blocked by the platform. " +
 		"Reason: " + reason + ". This operation is forbidden."
 }
 

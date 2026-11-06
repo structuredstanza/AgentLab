@@ -60,20 +60,18 @@ are inherited by the runner, so exporting any of them applies to every suite at 
 ## Suricata — [`suricata/`](suricata/)
 
 [`suricata/run.sh`](suricata/run.sh) exercises the network rules in
-[`../suricata/artex.rules`](../suricata/artex.rules) end to end and asserts five properties:
+[`../suricata/artex.rules`](../suricata/artex.rules) end to end and asserts three properties:
 
 - **Valid** — the whole rules file loads under `suricata -T --init-errors-fatal`, so a rule that fails to
   parse or initialise is caught even when no capture below exercises it. Plain `suricata -r` skips such a
   rule and still exits 0, so this load check is the Suricata analogue of the Sigma suite's `sigma check`
   validity assertion.
-- **Presence (enrich)** — sid `1000001` fires exactly once per enrichment probe.
-- **Velocity** — sid `1000002` fires once the `detection_filter` rate of 30 requests in 300 s per source is
-  crossed.
-- **Presence (WebFetch)** — sid `1000003` fires exactly once per norma WebFetch request, and the enrich sids
-  stay silent on that same capture — so the two network signatures are mutually specific, not just each
-  present.
+- **Presence (WebFetch)** — sid `1000003` fires exactly once per norma WebFetch request.
 - **Specificity** — an identical capture whose only change is a benign browser User-Agent produces **zero**
   ARTEX alerts.
+
+The retired enrichment signatures (sids `1000001`/`1000002`) are gone with the User-Agent they matched: the
+prober now presents the engagement's masked browser identity, so no network rule can key on it.
 
 [`suricata/gen_pcap.py`](suricata/gen_pcap.py) builds the capture with [scapy](https://scapy.net): N
 independent plaintext HTTP request/response flows from one fixed source, each carrying a chosen
@@ -92,10 +90,7 @@ Expected output (abridged):
 
 ```
   PASS  ruleset loads with zero parse/init errors (suricata -T)
-  PASS  sid 1000001 presence: one alert per probe  (got 35, want eq 35)
-  PASS  sid 1000002 velocity: fires past 30-in-300s  (got 5, want ge 1)
   PASS  sid 1000003 presence: one alert per WebFetch request  (got 8, want eq 8)
-  PASS  enrich sids stay silent on norma traffic (specificity)  (got 0, want eq 0)
   PASS  benign browser UA produces no ARTEX alerts  (got 0, want eq 0)
 RESULT: PASS
 ```
@@ -103,15 +98,8 @@ RESULT: PASS
 The script exits non-zero if any assertion fails, so it drops straight into CI or a pre-commit hook.
 Override the images with `SURICATA_IMAGE` / `PYTHON_IMAGE` if you mirror them internally.
 
-### Why the velocity count is a floor, not an exact match
-
-`run.sh` asserts the presence counts (`1000001 == 35`, `1000003 == 8`) and the benign count (`== 0`) exactly,
-because those are engine-version-independent: one alert per matching request, and no match on a different
-User-Agent. The
-velocity rule's count depends on how a given Suricata release resolves the `detection_filter` threshold at
-the boundary, so the test asserts `>= 1` and records the reference value separately. On **Suricata 8.0.7**
-the reference run produces **5** alerts on sid `1000002` (flows 31–35, after the 30-in-300 s threshold is
-crossed).
+The counts are asserted exactly because they are engine-version-independent: one alert per matching
+request, and no match on a different User-Agent.
 
 ## Sigma — [`sigma/`](sigma/)
 
@@ -120,11 +108,11 @@ compilation with [sigma-cli](https://github.com/SigmaHQ/sigma-cli) (pySigma), an
 
 - **Valid** — `sigma check` reports 0 errors, 0 condition errors, and 0 issues over the whole tree.
 - **Compiles** — `sigma convert -t splunk` turns the whole tree into a backend query language without error.
-- **Indicators survive** — each atomic indicator string (`artex-enrich/1.0`, `artex-selfupdate`, the guard
-  marker, and the recording-proxy CA filename `mitmproxy-ca-cert.pem`) is still present in the compiled query,
-  so a rule cannot silently lose the string it is built on.
+- **Indicators survive** — each atomic indicator string (`artex-selfupdate`, the guard marker, and the
+  recording-proxy CA filename `mitmproxy-ca-cert.pem`) is still present in the compiled query, so a rule
+  cannot silently lose the string it is built on.
 - **Correlations compile** — the behaviour rules in [`../sigma/correlation/`](../sigma/correlation/) emit their
-  `event_count` / `value_count` aggregations rather than being dropped.
+  `event_count` / `event_type_count` aggregations rather than being dropped.
 - **Correlations are load-bearing** — converting one correlation rule *alone* fails, because it references its
   atomic base rule by `id`; the reference is enforced, not decorative. This is the Sigma analogue of the
   Suricata specificity assertion above.
@@ -150,7 +138,7 @@ Expected output (abridged):
 ```
   PASS  sigma check: 0 errors, 0 condition errors, 0 issues
   PASS  whole tree converts to splunk (exit 0)
-  PASS  indicator present: artex-enrich/1.0
+  PASS  indicator present: artex-selfupdate
   PASS  correlation rule fails to convert alone — it requires its atomic base rule
 RESULT: PASS
 ```
@@ -176,12 +164,11 @@ asserts six properties, three for the atomic rules and three for the correlation
   [`events/correlation/<name>.json`](sigma_match/events/correlation/) timeline file and every timeline maps back
   to a rule. Each timeline event carries a `ts` field in relative seconds.
 - **Correlation true positives** — each rule fires on a positive timeline where the threshold is met inside the
-  window within one group. For example, requests from one source (`c-ip`) fanning out to 20 distinct hosts
-  within 10 minutes trip the enrichment fan-out rule.
+  window within one group. For example, five guard markers on one host inside ten minutes trip the guard-block
+  burst rule.
 - **Correlation true negatives** — each rule stays quiet when the threshold is not met, when it is met but the
   events are spread beyond the window, when they are split across groups, or when a temporal rule is missing a
-  leg. In particular a high-volume, low-breadth burst does **not** trip the fan-out rule: breadth, not volume, is
-  the signal, and the matching test is what proves that discrimination.
+  leg. The matching test is what proves that discrimination.
 
 The trust model is that pySigma — not hand-written code — parses each rule: an atomic rule into a condition tree
 (`|contains` → a wildcard value, `|all` → an AND, `1 of selection_*` → an OR), and a correlation rule into its
@@ -207,12 +194,12 @@ detections/tests/sigma_match/run.sh
 Expected output (abridged):
 
 ```
-  PASS  rule/sample pairing: 5 atomic rules, 5 event files, no orphans
-  PASS  artex_enrich_user_agent: 1/1 positive events matched
+  PASS  rule/sample pairing: 4 atomic rules, 4 event files, no orphans
+  PASS  artex_guard_audit_framing: 1/1 positive events matched
   PASS  artex_recording_proxy_ca: 2/2 benign events correctly not matched
-  PASS  rule/timeline pairing: 4 correlation rules, 4 timeline files, no orphans
-  PASS  artex_enrich_fanout: fired — 20 distinct hosts from one source within the 10-minute window
-  PASS  artex_enrich_fanout: quiet — high volume, low breadth: 25 requests from one source but only 4 distinct hosts
+  PASS  rule/timeline pairing: 2 correlation rules, 2 timeline files, no orphans
+  PASS  artex_guard_block_burst: fired — 5 guard-control markers on one host inside the 10-minute window
+  PASS  artex_guard_block_burst: quiet — below the threshold: only 4 markers
 RESULT: PASS
 ```
 
@@ -229,9 +216,8 @@ tree and which take only the atomic rules — a claim that is only trustworthy i
 properties, both positive so the test fails only on a real regression:
 
 - **Correlations are portable** — the whole tree (atomic + correlation) converts on Splunk, the Elasticsearch
-  `eql` target, and Grafana `loki`, with the enrich indicator surviving into each query. This shows the
-  correlation rules are not Splunk-only.
-- **Atomic-only fallback works** — the five atomic rules still convert on `lucene` and the Microsoft `kusto`
+  `eql` target, and Grafana `loki`. This shows the correlation rules are not Splunk-only.
+- **Atomic-only fallback works** — the four atomic rules still convert on `lucene` and the Microsoft `kusto`
   backend, which do not support Sigma correlation conversion at the pinned versions, so a defender on those
   backends can deploy the atomic rules and express the correlation window natively.
 
@@ -251,8 +237,8 @@ detections/tests/sigma_backends/run.sh
 Expected output (abridged):
 
 ```
-  PASS  whole tree (atomic + correlation) converts on 'eql', enrich indicator survives
-  PASS  five atomic rules convert on 'kusto', enrich indicator survives
+  PASS  whole tree (atomic + correlation) converts on 'eql'
+  PASS  four atomic rules convert on 'kusto'
 RESULT: PASS
 ```
 
@@ -331,8 +317,8 @@ detections/tests/attack/run.sh
 Expected output (abridged):
 
 ```
-  PASS  scored techniques match the rule set exactly (8: T1059, T1105, T1485, T1489, T1557, T1561.002, T1592, T1595)
-  PASS  scored tactics match the rule set exactly (collection, command-and-control, credential-access, execution, impact, reconnaissance)
+  PASS  scored techniques match the rule set exactly (6: T1059, T1105, T1485, T1489, T1557, T1561.002)
+  PASS  scored tactics match the rule set exactly (collection, command-and-control, credential-access, execution, impact)
 RESULT: PASS
 ```
 
@@ -345,17 +331,16 @@ Override the image with `PYTHON_IMAGE` if you mirror it internally.
 pinned indicator is still the string ARTEX's own source actually emits. The Sigma test proves an indicator
 survives rule→query *compilation*; the ATT&CK test proves the layer matches the rules' tags; the Suricata
 test proves the network rule *fires* on a synthesized capture. None of them look back at the source file the
-indicator claims to come from. The rot they all miss is an upstream re-sync that bumps the prober User-Agent
-to `artex-enrich/2.0` or rewrites the guard marker: every rule still compiles, the layer still matches, the
-pcap test still fires — and the deployed rule silently stops matching real ARTEX traffic. It asserts, for
-each indicator, bidirectionally:
+indicator claims to come from. The rot they all miss is an upstream re-sync that rewrites the guard marker
+or renames a deny-list token: every rule still compiles, the layer still matches, the pcap test still fires
+— and the deployed rule silently stops matching real ARTEX traffic. It asserts, for each indicator,
+bidirectionally:
 
 - **Source still emits it** — the value is present in the upstream source file(s) that produce it
-  (`artex-enrich/1.0` in `enrich/enrich.go`, `artex-selfupdate` in `selfupdate/`, the guard marker in
-  `guard/guard.go`). A missing value means an upstream change the rule has not caught up with.
+  (`artex-selfupdate` in `selfupdate/`, the guard marker in `guard/guard.go`). A missing value means an
+  upstream change the rule has not caught up with.
 - **Rule still pins it** — the value is present in the rule built on it, so a rule edit cannot quietly move
-  the indicator away from its source. The Suricata rule is checked by its `startswith` prefix, matching how
-  it actually matches the wire.
+  the indicator away from its source.
 - **Deny-list correspondence** — the destructive-command tokens (`rm -rf`, `mkfs`, `DROP DATABASE`,
   `FLUSHALL`) appear both in ARTEX's guard deny-list (`db/db.go`) and in the hunting rule that mirrors it.
   These are generic hunting leads, not unique fingerprints, so the test asserts only the correspondence the
@@ -392,11 +377,11 @@ detections/tests/indicators/run.sh
 Expected output (abridged):
 
 ```
-  PASS  enrichment prober User-Agent: 'artex-enrich/1.0' emitted by enrich/enrich.go
-  PASS  detections/sigma/artex_enrich_user_agent.yml pins 'artex-enrich/1.0'
+  PASS  platform-guard audit framing marker: '[ARTEX platform control - not target defense]' emitted by guard/guard.go
+  PASS  detections/sigma/artex_guard_audit_framing.yml pins '[ARTEX platform control - not target defense]'
   PASS  'FLUSHALL' present in both db/db.go and detections/sigma/destructive_command_hunting.yml
-  PASS  enrich-user-agent: 'artex-enrich/1.0' grounded in enrich/enrich.go
-  PASS  tested fingerprint 'artex-enrich/1.0' is published in the list
+  PASS  guard-audit-marker: '[ARTEX platform control - not target defense]' grounded in guard/guard.go
+  PASS  tested fingerprint '[ARTEX platform control - not target defense]' is published in the list
   PASS  .github/workflows/detections.yml push paths covers cmd/artex/main.go
   PASS  .pre-commit-config.yaml files covers cmd/artex/main.go
 RESULT: PASS
@@ -450,7 +435,7 @@ recorded reference), and avoid any content that reads as attack guidance. See
 
 All eight suites run in CI (see [`../../.github/workflows/detections.yml`](../../.github/workflows/detections.yml))
 on every push or pull request that touches `detections/` — and the indicator test also runs when the upstream
-source files it pins (`enrich/`, `selfupdate/`, `guard/`, `db/`, `cmd/artex/main.go`) change — so a rule
+source files it pins (`selfupdate/`, `guard/`, `db/`, `traffic/`, `cmd/artex/main.go`) change — so a rule
 change that drops an indicator, drifts from the ATT&CK layer, stops converting on a documented backend,
 breaks a SigmaHQ convention, falls out of sync with the source, lets the MISP event drift from the CSV, or
 pins a new source the workflow does not yet watch turns the build red before it can merge.

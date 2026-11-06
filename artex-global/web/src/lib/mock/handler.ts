@@ -2740,7 +2740,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       throw new Error("Invalid decision source");
     const filtered = mockInterceptHistory.filter((row) => {
       const source =
-        row.decision_source || (row.rule_id ? "rule" : row.reason?.startsWith("[模型]") || row.reason?.startsWith("[Model]") ? "model" : "unknown");
+        row.decision_source || (row.rule_id ? "rule" : row.reason?.startsWith("[\u6a21\u578b]") || row.reason?.startsWith("[Model]") ? "model" : "unknown");
       return (
         (seg[1] !== "task" || row.task_id === decodeURIComponent(seg[2])) &&
         (!status || row.status === status) &&

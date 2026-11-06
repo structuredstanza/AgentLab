@@ -29,7 +29,7 @@ func TestTaskTemplateResponsesLocalized(t *testing.T) {
 
 	// validateTaskTemplateRequest — a name past the rune limit returns the
 	// Korean field-too-long error (surfaced via writeErr in the handlers).
-	longName := strings.Repeat("가", db.MaxTaskTemplateNameRunes+1)
+	longName := strings.Repeat("a", db.MaxTaskTemplateNameRunes+1)
 	err := validateTaskTemplateRequest(taskTemplateRequest{Name: &longName})
 	if err == nil {
 		t.Fatal("name-too-long: validation must not pass")

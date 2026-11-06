@@ -139,6 +139,54 @@ Upstream provides several methods: an install script (`./install.sh`), precompil
 
 **Common flags:** `./start.sh -addr :8787 -proxy :8788` — `-addr` is the frontend and API, `-proxy` is the traffic-recording proxy port. `-addr` defaults to `127.0.0.1:8787` (local connections only); pass an explicit bind address such as `:8787` to serve other machines (see "First-run protection" below).
 
+### Target-traffic masking and asset enrichment
+
+The recording proxy (`-proxy`, normally `127.0.0.1:8788`) and the masking proxy
+(`egress-proxy`, normally `127.0.0.1:8888`) are separate processes. The latter
+uses a uTLS Chrome preset and replaces browser identity headers while preserving
+caller credentials. This does not make every protocol fingerprint identical to a browser.
+
+`./dev.sh` starts both proxies and the backend, waits for its own masking process
+to report readiness, and stops only the process groups it created. The lab guest
+supervisor also starts the masker. Both launchers use a per-host sliding-window
+ceiling of 100 requests per minute.
+
+For a single-binary deployment, start the masker first, then configure the backend
+in a second terminal:
+
+```sh
+./artex egress-proxy -addr 127.0.0.1:8888 -dir "$PWD/data/egress" -rpm 100
+# Second terminal, after the proxy reports that it is listening:
+ARTEX_EGRESS_PROXY=http://127.0.0.1:8888 \
+ARTEX_EGRESS_CA="$PWD/data/egress/ca.pem" ./artex
+```
+
+- **Worker capture routing:** with capture enabled and no operator global proxy
+  set, the recorder exits through `ARTEX_EGRESS_PROXY`. This fallback is not saved
+  to `settings.global_proxy`; an explicit global proxy retains precedence.
+- **Enrichment capture:** probes connect directly to the masker and submit their
+  observations to the traffic store when capture is enabled. This avoids a
+  second MITM handshake and supports HTTPS IP literals and redirects without
+  weakening certificate verification. Only complete bodies up to 256 KiB and
+  genuine transport failures are recorded. Larger or interrupted observations
+  are skipped with a log message, never stored as complete evidence.
+- **Enrichment:** successfully stored worker discoveries enqueue DNS or HTTP
+  enrichment with their task ID. Task exclusions and asset rules are checked
+  before dispatch and on redirects. HTTP probes require an explicit masking URL
+  and a usable CA (`ARTEX_EGRESS_CA`, falling back to `SSL_CERT_FILE`); if either
+  is missing, or the proxy fails, probes do not fall back to direct HTTP.
+- **Scope:** enforcement remains at the worker/enrichment-dispatch layer.
+  The masking proxy is not a scope firewall, and proxy environment variables
+  cannot constrain programs that ignore them.
+- **TLS:** self-signed targets remain reachable, but failed upstream verification
+  produces a warning once per retained host. Warnings do not establish that
+  interception occurred. The warning set and leaf-certificate cache each retain
+  at most 4096 hosts; warning deduplication resets for evicted hosts.
+- **Resource bounds:** responses stream without the old 32 MiB truncation;
+  buffered request bodies remain capped at 32 MiB. At most 512 client connections
+  are handled concurrently; overload receives `503`. Idle rate windows are
+  reclaimed on subsequent traffic.
+
 ### Model selection
 
 The output-language request is **a prompt instruction, not a server-enforced cap.** How consistently the model writes in English depends on the model's capability, the role, and the context.
@@ -189,24 +237,24 @@ flowchart TB
     UI["Dashboard · Tasks · Assets · Coverage graph · Traffic · Workspace · System settings"]
   end
   subgraph SRV["server (Go net/http)"]
-    API["REST /api/*　JWT auth　SSE"]
+    API["REST /api/* · JWT auth · SSE"]
     ENG["engine scheduling loop"]
-    MGR["Manager　task/engine/store lifecycle"]
+    MGR["Manager · task/engine/store lifecycle"]
   end
   subgraph AG["agent (norma SDK)"]
-    GO["goals　goal decomposition + scope extraction"]
-    PL["planner　the only intent producer"]
-    WK["worker　executor ×N"]
-    MA["mainagent　human-in-the-loop"]
+    GO["goals · goal decomposition + scope extraction"]
+    PL["planner · the only intent producer"]
+    WK["worker · executor ×N"]
+    MA["mainagent · human-in-the-loop"]
   end
   subgraph DB["PostgreSQL"]
-    AGRAPH["Asset graph　assets / companies / task_scope"]
-    EGRAPH["Exploration graph　exploration_nodes / anchors / activity"]
+    AGRAPH["Asset graph · assets / companies / task_scope"]
+    EGRAPH["Exploration graph · exploration_nodes / anchors / activity"]
   end
   subgraph SUB["Supporting subsystems"]
-    PROXY["traffic-recording proxy　MITM + CA recording"]
-    GUARD["guard / intercept　tool approval gate"]
-    ENR["enrich　async DNS / HTTP enrichment"]
+    PROXY["traffic-recording proxy · MITM + CA recording"]
+    GUARD["guard / intercept · tool approval gate"]
+    ENR["enrich · async DNS / HTTP enrichment"]
     EXT["MCP · skills · memory · report"]
   end
 
@@ -330,15 +378,15 @@ A real attack chain is often an ordered sequence of mutually dependent steps (e.
 flowchart TB
   subgraph TODO["shared todolist (persists per task · resident across wakes)"]
     direction LR
-    T1["1 injection point　[done]"]
-    T2["2 obtain credentials　[in progress]"]
-    T3["3 lateral movement　[awaiting prereq]"]
-    T4["4 privilege escalation　[awaiting prereq]"]
+    T1["1 injection point · [done]"]
+    T2["2 obtain credentials · [in progress]"]
+    T3["3 lateral movement · [awaiting prereq]"]
+    T4["4 privilege escalation · [awaiting prereq]"]
     T1 -. prereq satisfied .-> T2 -.-> T3 -.-> T4
   end
-  R1["round 1 wake　dispatch intent ①"] --> T1
-  R2["round 2 (① yields fact)　dispatch intent ②"] --> T2
-  R3["round 3 (② yields fact)　dispatch intent ③"] --> T3
+  R1["round 1 wake · dispatch intent ①"] --> T1
+  R2["round 2 (① yields fact) · dispatch intent ②"] --> T2
+  R3["round 3 (② yields fact) · dispatch intent ③"] --> T3
 ```
 
 This lets the attack chain progress reliably even in an "event-driven + stateless session" environment — without duplication and without going out of order. This is the core of how ARTEX completes multi-step attack chains autonomously.

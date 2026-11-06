@@ -50,7 +50,7 @@ func run() int {
 		return runEgressProxy(os.Args[2:])
 	}
 	var (
-		addr    = flag.String("addr", "[IP]:8787", "HTTP listen address (default accepts local connections only; use :8787 to serve other hosts)")
+		addr    = flag.String("addr", "127.0.0.1:8787", "HTTP listen address (default accepts local connections only; use :8787 to serve other hosts)")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
 	)
@@ -100,6 +100,25 @@ func run() int {
 		Addr:              *addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// ReadTimeout bounds the whole request (headers plus body), so a client
+		// that dribbles one byte every 30s cannot pin a goroutine forever. It is
+		// generous because the workspace upload path accepts up to 512 MiB: five
+		// minutes still allows ~1.7 MB/s and cuts a stalled body long before it
+		// matters. IdleTimeout closes keep-alive connections that go quiet.
+		//
+		// WriteTimeout is deliberately left unset: SSE and the download handlers
+		// hold a response open for as long as the client wants it, and a
+		// blanket deadline would cut those streams. The consequence is honest
+		// and should be known: a client that stops reading holds its handler
+		// goroutine until the connection breaks, so anything fronting this
+		// server (the reverse proxy in dev.sh, a load balancer in a deployment)
+		// must bound idle responses. Streaming handlers cannot set a per-write
+		// deadline themselves here — http.ResponseController applies to the
+		// connection this process owns, and the SSE writers flush through the
+		// same ResponseWriter, so a single deadline would cap the whole stream.
+		ReadTimeout:    5 * time.Minute,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	go func() {

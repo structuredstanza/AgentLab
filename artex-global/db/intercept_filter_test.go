@@ -40,7 +40,7 @@ func TestInterceptApprovalFilters(t *testing.T) {
 					if source == "model" {
 						reason = "[Model] fixture"
 						if i%2 == 1 {
-							reason = "[模型] fixture"
+							reason = "[\u6a21\u578b] fixture"
 						}
 					}
 					id, err := d.CreateDecidedIntercept(ruleID, 0, task, "test", "Bash", []byte(`{"command":"fixture"}`), status, reason)

@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/Autumn-27/artex/egress"
 	"github.com/Autumn-27/artex/limits"
@@ -78,6 +79,28 @@ func runEgressProxy(args []string) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Attach the request logger. Without this every call to logEvent is a no-op:
+	// a refused connection or a failed upstream dial leaves no trace at all, so
+	// an operator seeing a 502 in the guest has nothing to read. The guest
+	// redirects stdout/stderr to /state/runtime/logs/egress.log.
+	ctx = egress.WithLogger(ctx, func(ev egress.Event) {
+		if ev.TLSWarning != "" {
+			log.Printf("egress: TLS %s", ev.TLSWarning)
+			return
+		}
+		if ev.Refused {
+			log.Printf("egress: REFUSED %s %s%s (%s) in %s",
+				ev.Method, ev.Host, ev.Path, ev.Reason, ev.Duration.Round(time.Millisecond))
+			return
+		}
+		if ev.Aborted {
+			log.Printf("egress: %s %s%s -> %d, %d bytes in %s (ABORTED: the client received a short response)",
+				ev.Method, ev.Host, ev.Path, ev.Status, ev.Bytes, ev.Duration.Round(time.Millisecond))
+			return
+		}
+		log.Printf("egress: %s %s%s -> %d, %d bytes in %s",
+			ev.Method, ev.Host, ev.Path, ev.Status, ev.Bytes, ev.Duration.Round(time.Millisecond))
+	})
 	if err := proxy.Serve(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "egress: %v\n", err)
 		return 1

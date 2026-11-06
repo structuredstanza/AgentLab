@@ -60,7 +60,7 @@ func newNotifyFixture(t *testing.T) *notifyFixture {
 
 	// Build a task of its own: the task created by the shared fixture trafficEvidenceServer cannot obtain an exploration id,
 	// yet recording a vulnerability requires one.
-	task, err := s.m.CreateTask("通知推送测试", "推送行为验证", nil, 0, 0)
+	task, err := s.m.CreateTask("notification push test", "push behaviour verification", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func (f *notifyFixture) record(t *testing.T, vulnclass, severity string) int64 {
 		VulnClass:     vulnclass,
 		Name:          vulnclass,
 		Severity:      severity,
-		Summary:       vulnclass + " 的摘要",
+		Summary:       vulnclass + " summary",
 		Evidence:      "poc",
 	}, nil)
 	if err != nil {
@@ -236,11 +236,11 @@ func TestNotifyEndToEndRealtimeDelivery(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":   "实时推送",
+		"name":   "realtime push",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": hook.URL},
 	})
-	f.record(t, "SQL注入", "high")
+	f.record(t, "SQL injection", "high")
 	f.deliver(t, chID, "")
 
 	if hook.count() != 1 {
@@ -249,7 +249,7 @@ func TestNotifyEndToEndRealtimeDelivery(t *testing.T) {
 	text := markdownText(t, hook.last(t))
 	// The vulnerability title is echoed verbatim from input, so it is the stable check.
 	// Severity and summary labels are rendering details and are not pinned.
-	if !strings.Contains(text, "SQL注入") {
+	if !strings.Contains(text, "SQL injection") {
 		t.Fatalf("message body is missing the finding title:\n%s", text)
 	}
 	// Delivery must transition to sent.
@@ -266,7 +266,7 @@ func TestNotifyEndToEndRealtimeDelivery(t *testing.T) {
 func TestNotifyChannelAPIMasksSecretsAndPreservesOnUpdate(t *testing.T) {
 	f := newNotifyFixture(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":   "掩码用例",
+		"name":   "masking case",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": "https://oapi.dingtalk.com/robot/send?access_token=abc123456", "secret": "SECabcdef123456"},
 	})
@@ -310,7 +310,7 @@ func TestNotifyChannelAPIMasksSecretsAndPreservesOnUpdate(t *testing.T) {
 
 	// PATCH only renames and echoes back masked credentials: real credentials must be preserved as-is.
 	body, _ := json.Marshal(map[string]any{
-		"name":   "改名后",
+		"name":   "after rename",
 		"config": map[string]any{"webhook": fmt.Sprint(mine.Config["webhook"]), "secret": fmt.Sprint(mine.Config["secret"])},
 	})
 	if r := f.request("PATCH", fmt.Sprintf("/api/notify/channels/%d", chID), string(body)); r.Code != 200 {
@@ -323,7 +323,7 @@ func TestNotifyChannelAPIMasksSecretsAndPreservesOnUpdate(t *testing.T) {
 	if cfg["secret"] != "SECabcdef123456" {
 		t.Fatalf("masked echo overwrote secret: %v", cfg["secret"])
 	}
-	if f.channel(t, chID).Name != "改名后" {
+	if f.channel(t, chID).Name != "after rename" {
 		t.Fatal("name was not updated")
 	}
 
@@ -377,12 +377,12 @@ func TestNotifyFilterBlocksBelowThreshold(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":   "仅严重",
+		"name":   "critical only",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": hook.URL},
 		"filter": map[string]any{"min_severity": "critical"},
 	})
-	f.record(t, "低危问题", "low")
+	f.record(t, "low-severity issue", "low")
 	if _, _, err := f.pg.FanOutPendingEvents(context.Background(), 500); err != nil {
 		t.Fatal(err)
 	}
@@ -403,13 +403,13 @@ func TestNotifyDigestBatchesMultipleFindingsIntoOneMessage(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":   "汇总推送",
+		"name":   "digest push",
 		"kind":   notify.KindDingTalk,
 		"mode":   db.NotifyModeDigest,
 		"config": map[string]any{"webhook": hook.URL},
 	})
 	for i := 0; i < 3; i++ {
-		f.record(t, fmt.Sprintf("汇总漏洞%d", i+1), "high")
+		f.record(t, fmt.Sprintf("digest finding %d", i+1), "high")
 	}
 	ctx := context.Background()
 	if _, _, err := f.pg.FanOutPendingEvents(ctx, 500); err != nil {
@@ -431,7 +431,7 @@ func TestNotifyDigestBatchesMultipleFindingsIntoOneMessage(t *testing.T) {
 	}
 	text := markdownText(t, hook.last(t))
 	for i := 1; i <= 3; i++ {
-		if !strings.Contains(text, fmt.Sprintf("汇总漏洞%d", i)) {
+		if !strings.Contains(text, fmt.Sprintf("digest finding %d", i)) {
 			t.Fatalf("digest message is missing item %d:\n%s", i, text)
 		}
 	}
@@ -449,12 +449,12 @@ func TestNotifyDisabledChannelDoesNotSend(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":    "停用渠道",
+		"name":    "disabled channel",
 		"kind":    notify.KindDingTalk,
 		"enabled": false,
 		"config":  map[string]any{"webhook": hook.URL},
 	})
-	f.record(t, "停用期间的漏洞", "critical")
+	f.record(t, "finding during the disabled period", "critical")
 	if _, _, err := f.pg.FanOutPendingEvents(context.Background(), 500); err != nil {
 		t.Fatal(err)
 	}
@@ -471,12 +471,12 @@ func TestNotifyStatusChangeDelivery(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":   "状态变更订阅",
+		"name":   "status-change subscription",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": hook.URL},
 		"filter": map[string]any{"on_status_change": true},
 	})
-	finding := f.record(t, "状态变更用例", "high")
+	finding := f.record(t, "status-change case", "high")
 	r := f.request("PATCH", fmt.Sprintf("/api/exploration/findings/%d", finding), `{"status":"fixed"}`)
 	if r.Code != 200 {
 		t.Fatalf("status change failed %d: %s", r.Code, r.Body)
@@ -489,7 +489,7 @@ func TestNotifyStatusChangeDelivery(t *testing.T) {
 		t.Fatalf("expected at least 2 messages (creation and status change), got %d", n)
 	}
 	for i := 0; i < hook.count(); i++ {
-		if !strings.Contains(markdownText(t, hook.body(t, i)), "状态变更用例") {
+		if !strings.Contains(markdownText(t, hook.body(t, i)), "status-change case") {
 			t.Fatalf("message %d does not carry the finding title", i)
 		}
 	}
@@ -499,11 +499,11 @@ func TestNotifyStatusChangeSuppressedByDefault(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":   "不订阅状态变更",
+		"name":   "no status-change subscription",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": hook.URL},
 	})
-	finding := f.record(t, "不订阅变更", "high")
+	finding := f.record(t, "no change subscription", "high")
 	if r := f.request("PATCH", fmt.Sprintf("/api/exploration/findings/%d", finding), `{"status":"false_positive"}`); r.Code != 200 {
 		t.Fatalf("status change failed %d: %s", r.Code, r.Body)
 	}
@@ -525,7 +525,7 @@ func TestNotifyTestMessageEndpoint(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":   "测试发送",
+		"name":   "test send",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": hook.URL},
 	})
@@ -537,7 +537,7 @@ func TestNotifyTestMessageEndpoint(t *testing.T) {
 	}
 	// When the configuration is broken, the channel's original error should be returned to the user as-is.
 	badID := f.createChannel(t, map[string]any{
-		"name":   "坏地址",
+		"name":   "bad address",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": "http://127.0.0.1:1/hook"},
 	})
@@ -550,11 +550,11 @@ func TestNotifyDeliveriesHistoryAndRetry(t *testing.T) {
 	f := newNotifyFixture(t)
 	// Point at an address that is guaranteed to fail, to produce a failed delivery.
 	chID := f.createChannel(t, map[string]any{
-		"name":   "失败重试",
+		"name":   "failing retry",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": "http://127.0.0.1:1/hook"},
 	})
-	f.record(t, "会失败的推送", "high")
+	f.record(t, "will-fail push", "high")
 	ctx := context.Background()
 	if _, _, err := f.pg.FanOutPendingEvents(ctx, 500); err != nil {
 		t.Fatal(err)
@@ -601,7 +601,7 @@ func TestNotifyDeliveriesHistoryAndRetry(t *testing.T) {
 	if hist.Deliveries[0].Attempts < db.MaxNotifyAttempts {
 		t.Fatalf("the attempt count should be recorded, got %d", hist.Deliveries[0].Attempts)
 	}
-	if hist.Deliveries[0].Title != "会失败的推送" {
+	if hist.Deliveries[0].Title != "will-fail push" {
 		t.Fatalf("history should include the finding title, got %q", hist.Deliveries[0].Title)
 	}
 
@@ -675,11 +675,11 @@ func TestNotifyDeepLinkUsesPublicBaseURL(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":   "回链",
+		"name":   "backlink",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": hook.URL},
 	})
-	finding := f.record(t, "带回链的漏洞", "high")
+	finding := f.record(t, "finding with a backlink", "high")
 	f.deliver(t, chID, "https://artex.example.com")
 
 	body := hook.last(t)
@@ -699,11 +699,11 @@ func TestNotifyNoDeepLinkWithoutBaseURL(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
 	chID := f.createChannel(t, map[string]any{
-		"name":   "无回链",
+		"name":   "no backlink",
 		"kind":   notify.KindDingTalk,
 		"config": map[string]any{"webhook": hook.URL},
 	})
-	f.record(t, "无回链的漏洞", "high")
+	f.record(t, "finding without a backlink", "high")
 	f.deliver(t, chID, "")
 
 	body := hook.last(t)
@@ -730,14 +730,14 @@ func TestNotifyDigestSegmentsAndDefersRemainder(t *testing.T) {
 	hook := newFakeWebhook(t)
 	// Using WeCom: the markdown limit is 4096 bytes, the tightest of the six channels.
 	chID := f.createChannel(t, map[string]any{
-		"name":   "分段汇总",
+		"name":   "segmented digest",
 		"kind":   notify.KindWeCom,
 		"mode":   db.NotifyModeDigest,
 		"config": map[string]any{"webhook": hook.URL},
 	})
 	const total = 60
 	// Make the title longer to ensure the 60 entries far exceed 4096 bytes, so splitting is inevitable.
-	longName := strings.Repeat("超长漏洞名称", 6)
+	longName := strings.Repeat("overlong finding name", 6)
 	for i := 0; i < total; i++ {
 		f.record(t, longName+strconv.Itoa(i+1), "high")
 	}

@@ -148,7 +148,10 @@ type ToolSet struct {
 	// its next tool call and re-plans, without being killed. nil = tool unavailable.
 	steerWork func(intentID int64, msg string) error
 	// enrich, if set, receives async auto-completion triggers (DNS resolve for a
-	// domain, HTTP probe for a site). nil = no engine enrichment.
+	// domain, HTTP probe for a site) for assets this run persists. The trigger
+	// carries this run's task id, because the engine is manager-wide and must
+	// check the destination against that task's boundary. nil = no engine
+	// enrichment.
 	enrich EnrichTrigger
 	// notify, if set, wakes the task's planner after a graph change that should be
 	// re-planned promptly (currently: a new hint). nil = no wake (the hint is still
@@ -201,9 +204,14 @@ func (t *ToolSet) SetNotifyFinding(fn func(int64, string)) { t.notifyFinding = f
 
 // EnrichTrigger is the enrichment engine seen from the tool layer (see package
 // enrich). Kept as an interface here to avoid coupling agent → enrich.
+//
+// taskID travels with every trigger because the engine is manager-wide: it must
+// check the destination against the boundary of the task the asset was found
+// under, not against whichever task happens to be running. An id without a task
+// (0) is refused by the engine rather than enriched on nobody's authority.
 type EnrichTrigger interface {
-	ResolveDomain(id int64, host string)
-	ProbeSite(id int64, url string)
+	ResolveDomain(taskID, id int64, host string)
+	ProbeSite(taskID, id int64, url string)
 }
 
 // WriteCounts breaks down what a worker persisted this run, by node kind, so the
@@ -951,24 +959,61 @@ func inheritedIntentSummaryState(state string) bool {
 
 // compactNode distills any exploration node to id + summary + state, dropping the
 // big detail/evidence (fetch that on demand via node_detail).
+//
+// The summary is capped: graph_overview embeds every recent fact in the
+// planner's *current* user turn on every round, and compaction rewrites only
+// the history. One worker that pastes a large response into a summary would
+// therefore make every later round exceed the context window, with no way to
+// evict it until twenty newer facts are written — which needs the planner to
+// run. The cap is compactSummaryRunes, applied by every compact* view.
 func compactNode(n *db.Node) map[string]any {
 	var p map[string]any
 	_ = json.Unmarshal(n.Payload, &p)
 	m := map[string]any{"id": n.ID, "state": n.State, "summary": p["summary"]}
+	if s, ok := p["summary"].(string); ok {
+		clipped, cut := clipRunes(s, compactSummaryRunes)
+		m["summary"] = clipped
+		if cut {
+			m["summary_truncated"] = true
+		}
+	}
 	if n.Inherited {
 		inheritedMap(m, n.SourceTaskID)
 	}
 	return m
 }
 
+// compactSummaryRunes bounds a summary injected into any agent-visible view.
+// Facts carry one-line conclusions, but nothing enforces brevity; a runaway
+// summary must not bloat a whole page — and in graph_overview it lands in the
+// planner's current turn on every round, where nothing can evict it. Full text
+// stays available via node_detail(id).
+const compactSummaryRunes = 160
+
+// clipRunes truncates s to at most n runes and reports whether it cut.
+func clipRunes(s string, n int) (string, bool) {
+	if n <= 0 {
+		return "", s != ""
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i] + "…", true
+		}
+		count++
+	}
+	return s, false
+}
+
 // compactFinding is compactNode plus the vuln-specific vulnclass/severity.
+//
+// It delegates to compactNode so the summary cap applies here too: a finding's
+// summary reaches the planner through graph_overview every round, exactly like
+// a fact's, so leaving it uncapped would defeat the bound.
 func compactFinding(n *db.Node) map[string]any {
 	var p map[string]any
 	_ = json.Unmarshal(n.Payload, &p)
-	m := map[string]any{"id": n.ID, "state": n.State, "summary": p["summary"]}
-	if n.Inherited {
-		inheritedMap(m, n.SourceTaskID)
-	}
+	m := compactNode(n)
 	if vc, ok := p["vulnclass"]; ok && vc != nil && vc != "" {
 		m["vulnclass"] = vc
 	}
@@ -1043,7 +1088,7 @@ func (t *ToolSet) listFacts() actool.CoreTool {
 			}
 			out := make([]map[string]any, 0, len(f))
 			for _, n := range f {
-				out = append(out, compactFact(n))
+				out = append(out, compactNode(n))
 			}
 			res := map[string]any{"facts": out, "total": total, "has_more": hasMore}
 			if hasMore && len(f) > 0 {
@@ -1051,22 +1096,6 @@ func (t *ToolSet) listFacts() actool.CoreTool {
 			}
 			return jsonResult(res)
 		})
-}
-
-// factSummaryMax caps a fact summary in list_facts output. Facts carry one-line
-// conclusions, but nothing enforces brevity; a runaway summary must not bloat a
-// whole page. Full text stays available via node_detail(id).
-const factSummaryMax = 160
-
-// compactFact is compactNode with the summary rune-capped for list_facts, so a
-// page of facts stays bounded regardless of how long any single summary grew.
-func compactFact(n *db.Node) map[string]any {
-	m := compactNode(n)
-	if s, ok := m["summary"].(string); ok && len([]rune(s)) > factSummaryMax {
-		m["summary"] = string([]rune(s)[:factSummaryMax]) + "…"
-		m["summary_truncated"] = true
-	}
-	return m
 }
 
 func (t *ToolSet) nodeDetail() actool.CoreTool {
@@ -1260,8 +1289,19 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 			if err != nil || evidenceNode == nil || (evidenceNode.Kind != db.KindFact && evidenceNode.Kind != db.KindFinding) {
 				return actool.Errorf("evidence_id must be a finding/fact node of this task or of directly linked tasks"), nil
 			}
-			_ = t.ts.Link(ev, db.RelProves, goal)
-			_ = t.ts.SetNodeState(goal, "met")
+			// Both writes must succeed before the goal counts as met. Dropping
+			// their errors let a failed SetNodeState leave the goal open in the
+			// database while the all-met check below still returned met=true
+			// (it re-reads, but a transient failure there can succeed while the
+			// write failed), which closes the task on evidence that was never
+			// persisted. A dropped Link error likewise leaves a "met" goal with
+			// no proof edge, so the audit view shows no evidence.
+			if err := t.ts.Link(ev, db.RelProves, goal); err != nil {
+				return actool.Errorf(fmt.Sprintf("could not link evidence %d to goal %d: %v", ev, goal, err)), nil
+			}
+			if err := t.ts.SetNodeState(goal, "met"); err != nil {
+				return actool.Errorf(fmt.Sprintf("could not mark goal %d met: %v", goal, err)), nil
+			}
 			// Each time a goal is marked met, check whether ALL goals of this task are now met; if so, automatically determine
 			// Task completed (sets GoalMet), no need to rely on the model explicitly calling goal_met anymore.
 			if goals, err := t.ts.ListByKind(db.KindGoal, 1000); err == nil && len(goals) > 0 {

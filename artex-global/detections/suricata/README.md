@@ -3,38 +3,37 @@
 
 
 The network-layer companion to the [Sigma rules](../sigma/). These [Suricata](https://suricata.io)
-signatures cover the two ARTEX artifacts that are observable on the wire, and every indicator is grounded in a
-string or behaviour verified in this repository's source, not inferred. The host, log, and SIEM layers live
+signatures cover the one ARTEX artifact that is observable on the wire, and every indicator is grounded in a
+string verified in this repository's source, not inferred. The host, log, and SIEM layers live
 under [`../sigma/`](../sigma/); the [English defense guide](../../docs/defense-en.md) explains the full picture.
 
 ## Rules — [`artex.rules`](artex.rules)
 
-- **sid 1000001** — `ARTEX enrichment prober User-Agent`. An inbound HTTP `GET` whose User-Agent starts with
-  `artex-enrich/` — the asset-enrichment prober (`enrich/enrich.go:233`). The single-request presence
-  indicator. `classtype: attempted-recon`.
-- **sid 1000002** — `ARTEX enrichment prober high-rate enumeration`. The same User-Agent crossing a
-  `detection_filter` rate of **30 requests in 300 s per source** — the machine-speed velocity a single-hit
-  rule misses. Mirrors the Sigma correlation `artex_enrich_scan_velocity`. `classtype: attempted-recon`.
 - **sid 1000003** — `ARTEX worker WebFetch User-Agent`. An inbound HTTP request whose User-Agent starts with
   `norma/` — the norma SDK's WebFetch tool (`github.com/Autumn-27/norma/tool/webfetch.go`). This UA is hardcoded across all norma
   versions (v0.1.0–v0.4.3, verified) and reaches the target through the recording proxy, which does not
-  modify request headers (`traffic/traffic.go`). Unlike the enrich prober, this fires during the **attack
-  phase** (active vulnerability probing). `classtype: attempted-recon`.
+  modify request headers (`traffic/traffic.go`). It fires during the **attack phase** (active vulnerability
+  probing). `classtype: attempted-recon`.
+
+Sids 1000001 and 1000002 (the enrichment prober's presence and high-rate rules) are retired: the prober no
+longer sends a distinctive User-Agent, so those signatures could never match again.
 
 ## Scope and honesty — read before deploying
 
-- **Two ARTEX User-Agents are network-observable.** The enrich prober sends `artex-enrich/1.0`
-  (`enrich/enrich.go:233`) during reconnaissance; the norma SDK's WebFetch tool sends `norma/0.4`
-  (`github.com/Autumn-27/norma/tool/webfetch.go`) during the attack phase. The recording proxy (`traffic/traffic.go`) does not
-  modify request headers, so both UAs reach the target on the wire. Other worker tools (Bash subprocesses
-  like `curl`, `nmap`) use their own User-Agents — detect those with generic scanner signatures and the
-  behavioural SIEM rules under [`../sigma/`](../sigma/).
+- **One ARTEX User-Agent is network-observable.** The norma SDK's WebFetch tool sends `norma/0.4`
+  (`github.com/Autumn-27/norma/tool/webfetch.go`) during the attack phase. The recording proxy
+  (`traffic/traffic.go`) does not modify request headers, so that UA reaches the target on the wire. The
+  asset-enrichment prober has **no** static fingerprint: it presents the engagement's masked browser
+  identity, so at the target it is indistinguishable from ordinary browser traffic and there is no
+  User-Agent rule for it — detect enrichment by behaviour (rate, breadth, sequence) instead. Other worker
+  tools (Bash subprocesses like `curl`, `nmap`) use their own User-Agents — detect those with generic
+  scanner signatures and the behavioural SIEM rules under [`../sigma/`](../sigma/).
 - **The User-Agent is only visible in plaintext.** It appears where traffic is plaintext HTTP or inspected at
   a TLS-terminating proxy / WAF. End-to-end TLS encrypts it, so deploy these where you actually see the HTTP
   request buffer.
 - **A static User-Agent can be changed** by the operator, so its absence does **not** mean safety. The durable
-  signal is behaviour — rate and breadth — which is why sid 1000002 (and the Sigma correlation layer) key on
-  velocity, and why pure web multi-stage detection needs base rules specific to your environment.
+  signal is behaviour — rate, breadth, and sequence — which is why the Sigma correlation layer keys on it,
+  and why pure web multi-stage detection needs base rules specific to your environment.
 - **Deliberately omitted.** The self-update User-Agent `artex-selfupdate` travels over HTTPS to GitHub and is
   not network-observable (TLS SNI alone is too common to alert on). The audit-control marker is an
   operator-side log artifact, not target-facing traffic — detect it with
@@ -68,15 +67,14 @@ Docker:
 detections/tests/suricata/run.sh
 ```
 
-It asserts that sid 1000001 fires exactly once per probe (35 over a 35-flow capture), that sid 1000002
-trips past the 30-in-300 s rate (**5** alerts on Suricata 8.0.7, flows 31–35), and that the same capture
-with a benign browser User-Agent produces **0** alerts — confirming the signatures are specific. See
-[`../tests/README.md`](../tests/README.md). To check against your own traffic instead, capture a loopback
-`curl -A 'artex-enrich/1.0'` against a local server and read the alerts:
+It asserts that sid 1000003 fires exactly once per WebFetch request (8 over an 8-flow capture) and that
+the same capture with a benign browser User-Agent produces **0** alerts — confirming the signature is
+specific. See [`../tests/README.md`](../tests/README.md). To check against your own traffic instead, capture
+a loopback `curl -A 'norma/0.4'` against a local server and read the alerts:
 
 ```sh
-suricata -r enrich.pcap -S artex.rules -l out && \
-  grep -c '"signature_id":1000001' out/eve.json    # presence: one per probe
+suricata -r norma.pcap -S artex.rules -l out && \
+  grep -c '"signature_id":1000003' out/eve.json    # presence: one per request
 ```
 
 ## Contributing

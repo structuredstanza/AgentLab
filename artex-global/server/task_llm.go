@@ -1118,7 +1118,7 @@ func llmAuditProfileLabel(profile *llmAuditProfile) string {
 	if len(detail) == 0 {
 		return name
 	}
-	return fmt.Sprintf("%s（%s）", name, strings.Join(detail, " / "))
+	return fmt.Sprintf("%s (%s)", name, strings.Join(detail, " / "))
 }
 
 func sameOptionalID(a, b *int64) bool {

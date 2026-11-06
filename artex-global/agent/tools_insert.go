@@ -227,15 +227,25 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 			var results []result
 			var errs []errEntry
 
-			// Asset gate rules are loaded once; if reading fails, the judgment is skipped (insertion is not blocked).
+			// Asset gate rules are loaded once. A read failure must fail the
+			// call, not skip the judgment: the rules are the operator's
+			// authorization boundary, so "could not check" has to mean "did not
+			// run" rather than "allowed everything". This is exactly the state
+			// a pool-exhaustion error produces, i.e. it would fail open at the
+			// worst moment.
 			// Intercept rules = global ∪ task-level block; allow rules = task-level allow.
-			blockRules, _ := t.as.ListAssetInterceptRules()
+			blockRules, err := t.as.ListAssetInterceptRules()
+			if err != nil {
+				return actool.Errorf("asset gate rules unavailable, refusing to insert without them: " + err.Error()), nil
+			}
 			var allowRules []db.AssetInterceptRule
 			if t.taskID > 0 {
-				if tb, ta, err := t.as.TaskInterceptRulesSplit(t.taskID); err == nil {
-					blockRules = append(blockRules, tb...)
-					allowRules = ta
+				tb, ta, err := t.as.TaskInterceptRulesSplit(t.taskID)
+				if err != nil {
+					return actool.Errorf("task asset gate rules unavailable, refusing to insert without them: " + err.Error()), nil
 				}
+				blockRules = append(blockRules, tb...)
+				allowRules = ta
 			}
 
 			for i, item := range a.Assets {
@@ -363,6 +373,13 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					}
 					_ = t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP)
 				}
+				// Async engine-side auto-completion for what was just persisted: DNS
+				// for a domain, an HTTP probe for a web service. The engine re-checks
+				// the destination against this task's boundary at dispatch (and again
+				// for every redirect), so this call only chooses the work kind. A
+				// task-less caller (auto/chat) has no boundary to check and the engine
+				// drops it there rather than enriching on nobody's authority.
+				t.enrichAsset(taskID, typ, id, item)
 			}
 
 			return jsonResult(map[string]any{
@@ -371,6 +388,32 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 			})
 		},
 	)
+}
+
+// enrichAsset schedules engine-side auto-completion for one asset that was just
+// persisted: DNS resolution for a domain asset, an HTTP probe for a web service.
+// Nothing is scheduled for an IP, app, non-HTTP service or endpoint — there is no
+// new host to reach for those, and probing an endpoint URL would be contact the
+// insert itself did not authorize.
+//
+// The destination is NOT checked here: the engine is shared by every task, so it
+// re-checks the target (and every redirect) against the owning task's boundary at
+// dispatch, where the task identity is still attached. No engine, no task, or an
+// asset that failed to persist → nothing is scheduled.
+func (t *ToolSet) enrichAsset(taskID int64, typ string, id int64, item assetInputItem) {
+	if t.enrich == nil || taskID <= 0 || id <= 0 {
+		return
+	}
+	switch typ {
+	case "root_domain", "subdomain":
+		if host := strings.TrimSpace(item.Domain); host != "" {
+			t.enrich.ResolveDomain(taskID, id, host)
+		}
+	case "service":
+		if rawURL := strings.TrimSpace(item.URL); rawURL != "" {
+			t.enrich.ProbeSite(taskID, id, rawURL)
+		}
+	}
 }
 
 // addCompanyScope writes to company_scope table and triggers asset attribution.
@@ -437,9 +480,10 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 			"value: for company, pass the company name or id (the company must already exist); for root_domain/subdomain pass the domain; for ip/cidr pass an IP or range; for icp/keyword pass the filing number or company keyword.\n"+
 			"Always provide reason with the basis (auditable). Use the entries array for multiple items.",
 		obj(map[string]any{
-			"entries": map[string]any{"type": "array", "description": "Batch: [{kind, value}]. kind is one of company/root_domain/subdomain/ip/cidr/icp/keyword.", "items": map[string]any{"type": "object"}},
+			"entries": map[string]any{"type": "array", "description": "Batch: [{kind, value, effect}]. kind is one of company/root_domain/subdomain/ip/cidr/icp/keyword; effect is include (default) or exclude.", "items": map[string]any{"type": "object"}},
 			"kind":    str("[Single] company / root_domain / subdomain / ip / cidr / icp / keyword"),
 			"value":   str("[Single] company name or id / domain / IP / CIDR / ICP filing / keyword"),
+			"effect":  str("[Single] include (default) or exclude. exclude means the operator forbids this host: the tool guard refuses any call naming it, and it always wins over an include. Only root_domain / subdomain / ip / cidr can be excluded; company / icp / keyword are matched against asset attributes and are refused as exclusions."),
 			"reason":  str("Reason for adding (for audit); always provide"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
@@ -450,8 +494,9 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 				return actool.Errorf("add_task_scope requires a task context (no current task)"), nil
 			}
 			type scopeEntry struct {
-				Kind  string `json:"kind"`
-				Value string `json:"value"`
+				Kind   string `json:"kind"`
+				Value  string `json:"value"`
+				Effect string `json:"effect"`
 			}
 			var a struct {
 				Entries    []scopeEntry `json:"entries"`
@@ -466,12 +511,12 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 			var added []map[string]any
 			errs := map[string]string{}
 			for i, e := range items {
-				ts, err := t.as.AddAgentScope(t.taskID, strings.TrimSpace(e.Kind), e.Value, a.Reason, "agent")
+				ts, err := t.as.AddAgentScope(t.taskID, strings.TrimSpace(e.Kind), e.Value, a.Reason, "agent", e.Effect)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
 				}
-				added = append(added, map[string]any{"kind": ts.Kind, "domain": ts.Domain, "net": ts.Net, "value": ts.Value, "company_id": ts.CompanyID})
+				added = append(added, map[string]any{"kind": ts.Kind, "domain": ts.Domain, "net": ts.Net, "value": ts.Value, "company_id": ts.CompanyID, "effect": ts.Effect})
 			}
 			out := map[string]any{"added": added}
 			if len(errs) > 0 {

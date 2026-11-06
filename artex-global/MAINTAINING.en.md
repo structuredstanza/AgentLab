@@ -156,7 +156,7 @@ def flatten(d, p=''):
     else: out[p] = d
     return out
 fk, fz = flatten(ko), flatten(zh)
-han = re.compile(r'[㐀-鿿]')
+han = re.compile(r'[\u3400-\u9fff]')
 print('ko leaf keys :', len(fk))
 print('zh leaf keys :', len(fz))
 print('key symdiff  :', len(set(fk) ^ set(fz)))        # must be 0
@@ -174,7 +174,7 @@ The brain body keeps the original Chinese, so if the **count of Han-character li
 the check below, that is a signal that the brain was accidentally translated and contaminated.
 
 ```bash
-python3 -c "import re; han=re.compile(r'[㐀-鿿]'); t=open('agent/promptcatalog.go').read(); print('promptcatalog.go CJK lines =', sum(1 for l in t.splitlines() if han.search(l)))"
+python3 -c "import re; han=re.compile(r'[\u3400-\u9fff]'); t=open('agent/promptcatalog.go').read(); print('promptcatalog.go CJK lines =', sum(1 for l in t.splitlines() if han.search(l)))"
 ```
 
 Baseline (2026-10-05): `promptcatalog.go CJK lines = 70`. If this number drops sharply, check whether

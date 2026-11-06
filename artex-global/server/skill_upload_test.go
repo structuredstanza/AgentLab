@@ -18,11 +18,11 @@ import (
 )
 
 func TestValidSkillName(t *testing.T) {
-	ok := []string{"web-recon", "a", "nuclei2", "中文技能", "端口扫描-x", "日本語スキル"}
+	ok := []string{"web-recon", "a", "nuclei2", "localised-skill", "port-scan-x", "café-skill"}
 	bad := []string{
-		"", "Web-Recon", "-lead", "trail-", "dou--ble", "has space", "中文 技能",
-		"dot.name", "a/b", `a\b`, "..", ".", "中文/技能", "sk\x00ill", "中‮文",
-		strings.Repeat("a", 65), "1abc", "中文技能!",
+		"", "Web-Recon", "-lead", "trail-", "dou--ble", "has space", "localised skill",
+		"dot.name", "a/b", `a\b`, "..", ".", "localised/skill", "sk\x00ill", "a\u202eb",
+		strings.Repeat("a", 65), "1abc", "localised-skill!",
 	}
 	for _, n := range ok {
 		if !validSkillName(n) {
@@ -38,12 +38,13 @@ func TestValidSkillName(t *testing.T) {
 
 func TestSkillRelPath(t *testing.T) {
 	ok := map[string]string{
-		"SKILL.md":           "SKILL.md",
-		"scripts/run.py":     "scripts/run.py",
-		"参考/中文说明.md":         "参考/中文说明.md",
-		"references/a b.txt": "references/a b.txt",
-		"./SKILL.md":         "SKILL.md",
-		"assets/图片-1_v2.png": "assets/图片-1_v2.png",
+		"SKILL.md":                     "SKILL.md",
+		"scripts/run.py":               "scripts/run.py",
+		"reference/localised notes.md": "reference/localised notes.md",
+		"references/café.md":           "references/café.md",
+		"references/a b.txt":           "references/a b.txt",
+		"./SKILL.md":                   "SKILL.md",
+		"assets/image-1_v2.png":        "assets/image-1_v2.png",
 	}
 	for in, want := range ok {
 		got, msg := skillRelPath(in)
@@ -53,7 +54,7 @@ func TestSkillRelPath(t *testing.T) {
 	}
 	bad := []string{
 		"", "../etc/passwd", "a/../../b", "/abs/path", "a//b", `..\..\x`,
-		"%2e%2e/x", "a\x00b", "中文 名.md", "中‮文.md", "a#b.md", "a?b.md",
+		"%2e%2e/x", "a\x00b", "localised\u00a0name.md", "localised\u202ename.md", "a#b.md", "a?b.md",
 		"a:b.md", string([]byte{0xd6, 0xd0}) + ".md", // Raw GBK bytes: invalid UTF-8
 		strings.Repeat("a", maxSkillPathLen+1),
 	}
@@ -126,26 +127,26 @@ func uploadZip(t *testing.T, skillDir string, filename string, data []byte) (*ht
 	return rr, out
 }
 
-const zhSkillMD = "---\nname: 中文技能\ndescription: 测试\n---\n正文\n"
+const zhSkillMD = "---\nname: localised-skill\ndescription: test\n---\nbody\n"
 
 // A zstd-compressed archive (WinZip's optional compression method) used to blow up with
 // "zip: unsupported compression"; it now installs like any Deflate archive.
 func TestUploadSkillZstdAndChineseNames(t *testing.T) {
 	dir := t.TempDir()
 	data := buildZip(t,
-		zipFile{name: "中文技能/SKILL.md", body: zhSkillMD, method: zipMethodZstd},
-		zipFile{name: "中文技能/参考/说明 文档.md", body: "参考", method: zipMethodZstd},
-		zipFile{name: "中文技能/scripts/run.py", body: "print(1)", method: zip.Deflate},
+		zipFile{name: "localised-skill/SKILL.md", body: zhSkillMD, method: zipMethodZstd},
+		zipFile{name: "localised-skill/reference/notes doc.md", body: "reference", method: zipMethodZstd},
+		zipFile{name: "localised-skill/scripts/run.py", body: "print(1)", method: zip.Deflate},
 	)
-	rr, out := uploadZip(t, dir, "中文技能.zip", data)
+	rr, out := uploadZip(t, dir, "localised-skill.zip", data)
 	if rr.Code != 201 {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
 	}
-	if out["name"] != "中文技能" {
-		t.Fatalf("name = %v, want 中文技能", out["name"])
+	if out["name"] != "localised-skill" {
+		t.Fatalf("name = %v, want localised-skill", out["name"])
 	}
-	for _, rel := range []string{"SKILL.md", "参考/说明 文档.md", "scripts/run.py"} {
-		if _, err := os.Stat(filepath.Join(dir, "中文技能", rel)); err != nil {
+	for _, rel := range []string{"SKILL.md", "reference/notes doc.md", "scripts/run.py"} {
+		if _, err := os.Stat(filepath.Join(dir, "localised-skill", rel)); err != nil {
 			t.Errorf("missing extracted file %q: %v", rel, err)
 		}
 	}
@@ -163,17 +164,17 @@ func TestUploadSkillGBKNames(t *testing.T) {
 	}
 	dir := t.TempDir()
 	data := buildZip(t,
-		zipFile{name: gbk("中文技能/SKILL.md"), body: zhSkillMD, method: zip.Deflate, nonUTF8: true},
-		zipFile{name: gbk("中文技能/参考资料.md"), body: "内容", method: zip.Deflate, nonUTF8: true},
+		zipFile{name: gbk("localised-skill/SKILL.md"), body: zhSkillMD, method: zip.Deflate, nonUTF8: true},
+		zipFile{name: gbk("localised-skill/reference.md"), body: "content", method: zip.Deflate, nonUTF8: true},
 	)
 	rr, out := uploadZip(t, dir, "skill.zip", data)
 	if rr.Code != 201 {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
 	}
-	if out["name"] != "中文技能" {
-		t.Fatalf("name = %v, want 中文技能", out["name"])
+	if out["name"] != "localised-skill" {
+		t.Fatalf("name = %v, want localised-skill", out["name"])
 	}
-	if _, err := os.Stat(filepath.Join(dir, "中文技能", "参考资料.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "localised-skill", "reference.md")); err != nil {
 		t.Errorf("GBK-named entry not extracted: %v", err)
 	}
 }
@@ -229,8 +230,8 @@ func TestUploadSkillRejectsTraversal(t *testing.T) {
 }
 
 func TestSkillNameFromFrontmatterQuoted(t *testing.T) {
-	got := skillNameFromFrontmatter([]byte("---\nname: \"中文技能\"\ndescription: x\n---\n"))
-	if got != "中文技能" {
-		t.Fatalf("name = %q, want 中文技能", got)
+	got := skillNameFromFrontmatter([]byte("---\nname: \"localised-skill\"\ndescription: x\n---\n"))
+	if got != "localised-skill" {
+		t.Fatalf("name = %q, want localised-skill", got)
 	}
 }

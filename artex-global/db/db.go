@@ -328,13 +328,23 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 // default — the user turns them on per-agent when needed. scopesentry additionally
 // declares `mcps: ScopeSentry`, which only takes effect once it's made visible and
 // that MCP is enabled/configured.
+//
+// recon-orchestration goes to the same agents that hold run_tool (auto, pentest,
+// worker, planner). It is the skill that explains how to choose and drive a
+// manifest tool, so binding the tool without the skill left the agents to
+// rediscover the ranking by hand — or skip it and reach for Bash.
 var builtinSkillVisibility = map[string][]string{
-	"api-recon": {"auto", "pentest", "worker"},
+	"api-recon":           {"auto", "pentest", "worker"},
+	"recon-orchestration": {"auto", "pentest", "worker", "planner"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default
 // agents. Insert-if-absent (ON CONFLICT DO NOTHING) so a user's later toggle-off is
 // never resurrected on restart — matches the browser-MCP / intercept-rule seed policy.
+//
+// This only holds because toggle-off writes enabled=false rather than deleting the
+// row (see ToggleSkillVisibility / SetAgentSkillVisibility): a deleted row leaves
+// no record of the user's choice, and this seed would insert it straight back.
 func (d *DB) seedBuiltinSkillVisibility() error {
 	for skillName, agentKeys := range builtinSkillVisibility {
 		for _, key := range agentKeys {
@@ -676,26 +686,26 @@ func (d *DB) migrateBuiltinSeedLabelsEN() error {
 	}
 	type relabel struct{ oldName, oldMsg, newName, newMsg string }
 	rules := []relabel{
-		{"[内置] 递归强制删除 rm -rf", "禁止执行递归强制删除（rm -rf / rm --recursive），可能永久损坏系统或靶机环境", "[Built-in] Recursive forced delete rm -rf", "Recursive forced deletion (rm -rf / rm --recursive) is forbidden; it can permanently damage the system or target environment"},
-		{"[内置] 删除系统关键目录", "禁止删除系统关键路径", "[Built-in] Delete critical system directories", "Deleting critical system paths is forbidden"},
-		{"[内置] 磁盘格式化 mkfs", "禁止格式化磁盘（mkfs）", "[Built-in] Disk format mkfs", "Formatting a disk (mkfs) is forbidden"},
-		{"[内置] 覆写磁盘设备 dd", "禁止使用 dd 覆写磁盘设备", "[Built-in] Overwrite disk device with dd", "Overwriting a disk device with dd is forbidden"},
-		{"[内置] Fork 炸弹", "禁止执行 Fork 炸弹", "[Built-in] Fork bomb", "Running a fork bomb is forbidden"},
-		{"[内置] 关机 / 重启", "禁止执行关机或重启命令", "[Built-in] Shutdown / reboot", "Shutdown or reboot commands are forbidden"},
-		{"[内置] 杀死全部进程", "禁止 kill -9 -1 或 killall -9（杀死所有进程）", "[Built-in] Kill all processes", "kill -9 -1 or killall -9 (killing all processes) is forbidden"},
-		{"[内置] 磁盘擦除 shred / wipe", "禁止对磁盘设备执行 shred/wipe 擦除", "[Built-in] Disk erase shred / wipe", "Erasing a disk device with shred/wipe is forbidden"},
-		{"[内置] 清空防火墙规则", "禁止清空防火墙规则（iptables -F / nft flush）", "[Built-in] Clear firewall rules", "Clearing firewall rules (iptables -F / nft flush) is forbidden"},
-		{"[内置] SQL DROP DATABASE / TABLE / SCHEMA", "禁止执行 DROP 操作，可能不可逆地销毁数据库对象", "[Built-in] SQL DROP DATABASE / TABLE / SCHEMA", "DROP operations are forbidden; they can irreversibly destroy database objects"},
-		{"[内置] SQL TRUNCATE", "禁止执行 TRUNCATE，可能清空数据表所有数据", "[Built-in] SQL TRUNCATE", "TRUNCATE is forbidden; it may clear all rows in a data table"},
-		{"[内置] MongoDB drop / dropDatabase", "禁止执行 MongoDB drop 操作", "[Built-in] MongoDB drop / dropDatabase", "MongoDB drop operations are forbidden"},
-		{"[内置] Redis FLUSHALL / FLUSHDB", "禁止执行 Redis FLUSHALL / FLUSHDB，可能清空全部缓存数据", "[Built-in] Redis FLUSHALL / FLUSHDB", "Redis FLUSHALL / FLUSHDB is forbidden; it may clear all cached data"},
-		{"[内置] curl / wget 发送 DELETE 请求", "禁止通过 curl/wget 发送 HTTP DELETE 请求，可能删除目标系统数据", "[Built-in] curl / wget sending DELETE requests", "Sending HTTP DELETE requests via curl/wget is forbidden; it may delete target system data"},
-		{"[内置] Python HTTP 客户端 DELETE（requests/httpx/aiohttp）", "禁止使用 Python HTTP 客户端发送 DELETE 请求", "[Built-in] Python HTTP client DELETE (requests/httpx/aiohttp)", "Sending HTTP DELETE requests with a Python HTTP client is forbidden"},
-		{"[内置] 脚本中声明 HTTP DELETE 方法（JS/通用）", "禁止在脚本中声明并发送 HTTP DELETE 请求", "[Built-in] HTTP DELETE method declared in script (JS/generic)", "Declaring and sending HTTP DELETE requests in a script is forbidden"},
-		{"[内置] 批量清空 / 清除接口路径", "禁止调用批量清空或销毁类接口（/clear /wipe /flush /purge 等）", "[Built-in] Bulk clear / purge endpoint paths", "Calling bulk clear or destroy endpoints (/clear /wipe /flush /purge etc.) is forbidden"},
-		{"[内置] 破坏性系统命令", "破坏性命令被拒绝（rm -rf / / mkfs / dd / fork bomb / 关机重启 / 覆写磁盘设备）", "[Built-in] Destructive system commands", "Destructive command rejected (rm -rf / / mkfs / dd / fork bomb / shutdown or reboot / overwriting a disk device)"},
-		{"[内置] 数据外泄管道", "疑似数据外泄管道被拒绝（命令输出经 curl/wget/nc 外传）", "[Built-in] Data exfiltration pipe", "Suspected data-exfiltration pipe rejected (command output being sent out via curl/wget/nc)"},
-		{"[内置] 删除类接口路径", "禁止调用删除类接口（/delete /remove /unlink /erase 等），不论使用哪种 HTTP 方法——多数应用的删除接口用 GET/POST 就能触发，同样会真实删除目标数据", "[Built-in] Delete-type endpoint paths", "Calling delete-type endpoints (/delete /remove /unlink /erase etc.) is forbidden regardless of HTTP method. Many applications trigger deletion with GET/POST, and it still really deletes target data"},
+		{"[\u5185\u7f6e] \u9012\u5f52\u5f3a\u5236\u5220\u9664 rm -rf", "\u7981\u6b62\u6267\u884c\u9012\u5f52\u5f3a\u5236\u5220\u9664\uff08rm -rf / rm --recursive\uff09\uff0c\u53ef\u80fd\u6c38\u4e45\u635f\u574f\u7cfb\u7edf\u6216\u9776\u673a\u73af\u5883", "[Built-in] Recursive forced delete rm -rf", "Recursive forced deletion (rm -rf / rm --recursive) is forbidden; it can permanently damage the system or target environment"},
+		{"[\u5185\u7f6e] \u5220\u9664\u7cfb\u7edf\u5173\u952e\u76ee\u5f55", "\u7981\u6b62\u5220\u9664\u7cfb\u7edf\u5173\u952e\u8def\u5f84", "[Built-in] Delete critical system directories", "Deleting critical system paths is forbidden"},
+		{"[\u5185\u7f6e] \u78c1\u76d8\u683c\u5f0f\u5316 mkfs", "\u7981\u6b62\u683c\u5f0f\u5316\u78c1\u76d8\uff08mkfs\uff09", "[Built-in] Disk format mkfs", "Formatting a disk (mkfs) is forbidden"},
+		{"[\u5185\u7f6e] \u8986\u5199\u78c1\u76d8\u8bbe\u5907 dd", "\u7981\u6b62\u4f7f\u7528 dd \u8986\u5199\u78c1\u76d8\u8bbe\u5907", "[Built-in] Overwrite disk device with dd", "Overwriting a disk device with dd is forbidden"},
+		{"[\u5185\u7f6e] Fork \u70b8\u5f39", "\u7981\u6b62\u6267\u884c Fork \u70b8\u5f39", "[Built-in] Fork bomb", "Running a fork bomb is forbidden"},
+		{"[\u5185\u7f6e] \u5173\u673a / \u91cd\u542f", "\u7981\u6b62\u6267\u884c\u5173\u673a\u6216\u91cd\u542f\u547d\u4ee4", "[Built-in] Shutdown / reboot", "Shutdown or reboot commands are forbidden"},
+		{"[\u5185\u7f6e] \u6740\u6b7b\u5168\u90e8\u8fdb\u7a0b", "\u7981\u6b62 kill -9 -1 \u6216 killall -9\uff08\u6740\u6b7b\u6240\u6709\u8fdb\u7a0b\uff09", "[Built-in] Kill all processes", "kill -9 -1 or killall -9 (killing all processes) is forbidden"},
+		{"[\u5185\u7f6e] \u78c1\u76d8\u64e6\u9664 shred / wipe", "\u7981\u6b62\u5bf9\u78c1\u76d8\u8bbe\u5907\u6267\u884c shred/wipe \u64e6\u9664", "[Built-in] Disk erase shred / wipe", "Erasing a disk device with shred/wipe is forbidden"},
+		{"[\u5185\u7f6e] \u6e05\u7a7a\u9632\u706b\u5899\u89c4\u5219", "\u7981\u6b62\u6e05\u7a7a\u9632\u706b\u5899\u89c4\u5219\uff08iptables -F / nft flush\uff09", "[Built-in] Clear firewall rules", "Clearing firewall rules (iptables -F / nft flush) is forbidden"},
+		{"[\u5185\u7f6e] SQL DROP DATABASE / TABLE / SCHEMA", "\u7981\u6b62\u6267\u884c DROP \u64cd\u4f5c\uff0c\u53ef\u80fd\u4e0d\u53ef\u9006\u5730\u9500\u6bc1\u6570\u636e\u5e93\u5bf9\u8c61", "[Built-in] SQL DROP DATABASE / TABLE / SCHEMA", "DROP operations are forbidden; they can irreversibly destroy database objects"},
+		{"[\u5185\u7f6e] SQL TRUNCATE", "\u7981\u6b62\u6267\u884c TRUNCATE\uff0c\u53ef\u80fd\u6e05\u7a7a\u6570\u636e\u8868\u6240\u6709\u6570\u636e", "[Built-in] SQL TRUNCATE", "TRUNCATE is forbidden; it may clear all rows in a data table"},
+		{"[\u5185\u7f6e] MongoDB drop / dropDatabase", "\u7981\u6b62\u6267\u884c MongoDB drop \u64cd\u4f5c", "[Built-in] MongoDB drop / dropDatabase", "MongoDB drop operations are forbidden"},
+		{"[\u5185\u7f6e] Redis FLUSHALL / FLUSHDB", "\u7981\u6b62\u6267\u884c Redis FLUSHALL / FLUSHDB\uff0c\u53ef\u80fd\u6e05\u7a7a\u5168\u90e8\u7f13\u5b58\u6570\u636e", "[Built-in] Redis FLUSHALL / FLUSHDB", "Redis FLUSHALL / FLUSHDB is forbidden; it may clear all cached data"},
+		{"[\u5185\u7f6e] curl / wget \u53d1\u9001 DELETE \u8bf7\u6c42", "\u7981\u6b62\u901a\u8fc7 curl/wget \u53d1\u9001 HTTP DELETE \u8bf7\u6c42\uff0c\u53ef\u80fd\u5220\u9664\u76ee\u6807\u7cfb\u7edf\u6570\u636e", "[Built-in] curl / wget sending DELETE requests", "Sending HTTP DELETE requests via curl/wget is forbidden; it may delete target system data"},
+		{"[\u5185\u7f6e] Python HTTP \u5ba2\u6237\u7aef DELETE\uff08requests/httpx/aiohttp\uff09", "\u7981\u6b62\u4f7f\u7528 Python HTTP \u5ba2\u6237\u7aef\u53d1\u9001 DELETE \u8bf7\u6c42", "[Built-in] Python HTTP client DELETE (requests/httpx/aiohttp)", "Sending HTTP DELETE requests with a Python HTTP client is forbidden"},
+		{"[\u5185\u7f6e] \u811a\u672c\u4e2d\u58f0\u660e HTTP DELETE \u65b9\u6cd5\uff08JS/\u901a\u7528\uff09", "\u7981\u6b62\u5728\u811a\u672c\u4e2d\u58f0\u660e\u5e76\u53d1\u9001 HTTP DELETE \u8bf7\u6c42", "[Built-in] HTTP DELETE method declared in script (JS/generic)", "Declaring and sending HTTP DELETE requests in a script is forbidden"},
+		{"[\u5185\u7f6e] \u6279\u91cf\u6e05\u7a7a / \u6e05\u9664\u63a5\u53e3\u8def\u5f84", "\u7981\u6b62\u8c03\u7528\u6279\u91cf\u6e05\u7a7a\u6216\u9500\u6bc1\u7c7b\u63a5\u53e3\uff08/clear /wipe /flush /purge \u7b49\uff09", "[Built-in] Bulk clear / purge endpoint paths", "Calling bulk clear or destroy endpoints (/clear /wipe /flush /purge etc.) is forbidden"},
+		{"[\u5185\u7f6e] \u7834\u574f\u6027\u7cfb\u7edf\u547d\u4ee4", "\u7834\u574f\u6027\u547d\u4ee4\u88ab\u62d2\u7edd\uff08rm -rf / / mkfs / dd / fork bomb / \u5173\u673a\u91cd\u542f / \u8986\u5199\u78c1\u76d8\u8bbe\u5907\uff09", "[Built-in] Destructive system commands", "Destructive command rejected (rm -rf / / mkfs / dd / fork bomb / shutdown or reboot / overwriting a disk device)"},
+		{"[\u5185\u7f6e] \u6570\u636e\u5916\u6cc4\u7ba1\u9053", "\u7591\u4f3c\u6570\u636e\u5916\u6cc4\u7ba1\u9053\u88ab\u62d2\u7edd\uff08\u547d\u4ee4\u8f93\u51fa\u7ecf curl/wget/nc \u5916\u4f20\uff09", "[Built-in] Data exfiltration pipe", "Suspected data-exfiltration pipe rejected (command output being sent out via curl/wget/nc)"},
+		{"[\u5185\u7f6e] \u5220\u9664\u7c7b\u63a5\u53e3\u8def\u5f84", "\u7981\u6b62\u8c03\u7528\u5220\u9664\u7c7b\u63a5\u53e3\uff08/delete /remove /unlink /erase \u7b49\uff09\uff0c\u4e0d\u8bba\u4f7f\u7528\u54ea\u79cd HTTP \u65b9\u6cd5——\u591a\u6570\u5e94\u7528\u7684\u5220\u9664\u63a5\u53e3\u7528 GET/POST \u5c31\u80fd\u89e6\u53d1\uff0c\u540c\u6837\u4f1a\u771f\u5b9e\u5220\u9664\u76ee\u6807\u6570\u636e", "[Built-in] Delete-type endpoint paths", "Calling delete-type endpoints (/delete /remove /unlink /erase etc.) is forbidden regardless of HTTP method. Many applications trigger deletion with GET/POST, and it still really deletes target data"},
 	}
 	for _, r := range rules {
 		if _, err := d.Exec(`UPDATE intercept_rules SET name=$3, message=$4 WHERE name=$1 AND message=$2`,
@@ -704,10 +714,10 @@ func (d *DB) migrateBuiltinSeedLabelsEN() error {
 		}
 	}
 	notes := [][2]string{
-		{"[内置] 政府网站 (.gov)", "[Built-in] Government site (.gov)"},
-		{"[内置] 政府网站 (.gov.cn)", "[Built-in] Government site (.gov.cn)"},
-		{"[内置] 教育网站 (.edu)", "[Built-in] Education site (.edu)"},
-		{"[内置] 教育网站 (.edu.cn)", "[Built-in] Education site (.edu.cn)"},
+		{"[\u5185\u7f6e] \u653f\u5e9c\u7f51\u7ad9 (.gov)", "[Built-in] Government site (.gov)"},
+		{"[\u5185\u7f6e] \u653f\u5e9c\u7f51\u7ad9 (.gov.cn)", "[Built-in] Government site (.gov.cn)"},
+		{"[\u5185\u7f6e] \u6559\u80b2\u7f51\u7ad9 (.edu)", "[Built-in] Education site (.edu)"},
+		{"[\u5185\u7f6e] \u6559\u80b2\u7f51\u7ad9 (.edu.cn)", "[Built-in] Education site (.edu.cn)"},
 	}
 	for _, n := range notes {
 		if _, err := d.Exec(`UPDATE asset_intercept_rules SET note=$2 WHERE builtin=true AND note=$1`, n[0], n[1]); err != nil {

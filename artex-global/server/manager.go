@@ -208,7 +208,11 @@ func (t *Task) setLLMState(profileID, activeID *int64, profileIDs []int64, revis
 func (t *Task) nextRotatedProfile() (int64, bool) {
 	t.rotateMu.Lock()
 	defer t.rotateMu.Unlock()
-	ids := t.LLMProfileIDs
+	// Read the chain through llmStateSnapshot, not the field: setLLMState
+	// rewrites the slice under llmMu while this holds only rotateMu, and an
+	// append that reallocates can be observed as a new length with the old
+	// backing array, which indexes out of range and panics the process.
+	ids := t.llmStateSnapshot().ProfileIDs
 	if len(ids) == 0 {
 		return 0, false
 	}
@@ -271,6 +275,12 @@ type Manager struct {
 	// capture is on it becomes the MITM's upstream; when capture is off it is
 	// injected into agent bash env / WebFetch directly. See ProxyAddr.
 	globalProxy string
+	// enrichMask/enrichMaskCA are the explicitly configured masking egress proxy
+	// (ARTEX_EGRESS_PROXY / ARTEX_EGRESS_CA, resolved once at startup). Empty
+	// means asset-enrichment HTTP probes are disabled — there is no assumed
+	// default and no direct fallback.
+	enrichMask   string
+	enrichMaskCA string
 }
 
 // Settings keys the UI toggles at runtime.
@@ -445,8 +455,8 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			}()
 		}
 	}
-	// Asset auto-completion engine (§5): HTTP probes routed through the recording
-	// proxy (via m.ProxyAddr, which honors the traffic-capture toggle).
+	// Asset auto-completion engine (§5) is created at the end of startup, once the
+	// egress configuration is settled. Traffic capture toggle (default off).
 	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
 	// LLM recording switch (default off). The recorder reads this flag on each call.
 	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
@@ -472,12 +482,26 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if v, ok, _ := pg.GetSetting(settingGlobalProxy); ok {
 		m.globalProxy = strings.TrimSpace(v)
 	}
-	if m.traffic != nil {
-		if err := m.traffic.SetUpstreamProxy(m.globalProxy); err != nil {
-			log.Printf("[proxy] global proxy %q is invalid and was ignored: %v", m.globalProxy, err)
+	// Masking egress proxy for backend-originated target traffic. Only an
+	// explicit configuration counts: a fixed loopback port may belong to an
+	// unrelated listener, and nothing here dials a proxy it was not told about.
+	maskProxy, maskCA := enrich.MaskFromEnv()
+	if maskProxy != "" {
+		if _, err := traffic.ValidateProxyURL(maskProxy); err != nil {
+			log.Printf("[enrich] ARTEX_EGRESS_PROXY (%s) is not a usable proxy URL; HTTP enrichment is disabled", enrich.RedactProxyURL(maskProxy))
+			maskProxy, maskCA = "", ""
 		}
 	}
-	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
+	m.enrichMask, m.enrichMaskCA = maskProxy, maskCA
+	// Recorder exit path: the operator's global proxy when set, else the masking
+	// egress proxy. The fallback is in-memory only — settings.global_proxy is
+	// never rewritten — so capture stays on for the operator's workers.
+	_ = m.applyRecorderUpstream()
+	// Asset auto-completion engine (§5). Probes go straight to the masking egress
+	// proxy in every capture mode (no mask configured → probes are skipped; there
+	// is no direct path). When capture is on, each exchange is also stored through
+	// the existing first-party RecordExternal path via observeEnrichment.
+	m.enrich = enrich.New(m.assets, enrich.Options{Workers: 4, Proxy: m.enrichMask, CAFile: m.enrichMaskCA, Observe: m.observeEnrichment})
 	// Reconcile the seeded browser MCP with the persisted capture state, so a
 	// restart with capture already on keeps Playwright routed through the proxy.
 	m.syncBrowserMCPProxy()
@@ -839,17 +863,89 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 	m.mu.Lock()
 	m.globalProxy = raw
 	m.mu.Unlock()
-	if m.traffic != nil {
-		if err := m.traffic.SetUpstreamProxy(raw); err != nil {
-			return err
-		}
+	// The recorder exits through the operator's proxy, or through the masking
+	// egress proxy when the operator set none. Clearing the setting restores the
+	// mask fallback rather than silently reverting to a direct dial.
+	if err := m.applyRecorderUpstream(); err != nil {
+		return err
 	}
 	// Keep the browser MCP's egress in sync with the new global proxy too.
 	m.syncBrowserMCPProxy()
 	return nil
 }
 
+// applyRecorderUpstream points the recording proxy at the operator's global
+// proxy, falling back to the masking egress proxy when no global proxy is
+// configured. The fallback is in-memory only: settings.global_proxy is never
+// rewritten, so the operator's choice stays exactly as saved.
+//
+// Only worker/recorded traffic uses this path; enrichment probes go straight to
+// the mask and do not depend on it.
+func (m *Manager) applyRecorderUpstream() error {
+	if m.traffic == nil {
+		return nil
+	}
+	m.mu.RLock()
+	global := strings.TrimSpace(m.globalProxy)
+	mask := strings.TrimSpace(m.enrichMask)
+	m.mu.RUnlock()
+	upstream := global
+	fallback := false
+	if upstream == "" && mask != "" {
+		upstream, fallback = mask, true
+	}
+	err := m.traffic.SetUpstreamProxy(upstream)
+	if err != nil {
+		// err and upstream can both carry URL credentials; log neither verbatim.
+		log.Printf("[proxy] recorder upstream %s is invalid and was ignored", enrich.RedactProxyURL(upstream))
+		return err
+	}
+	if fallback {
+		log.Printf("[proxy] recorder exits through the masking egress proxy %s (no operator global proxy is set; the setting itself is unchanged)", enrich.RedactProxyURL(mask))
+	}
+	return nil
+}
+
+// observeEnrichment stores what an enrichment probe exchanged with the masking
+// proxy in the traffic store, when capture is on; it reads the toggle at call
+// time, so flipping it applies immediately. Every redirect hop arrives here
+// uniformly. The probe never routes through the recorder: a second MITM in front
+// of the mask would present leaves without IP SANs for SNI-less IP targets.
+//
+// Only evidence that is exact is stored. RecordExternal records
+// resp_len = len(body), and evidence binding trusts that length, so an exchange
+// whose body was cut or not fully read is NOT stored (never as a "successful"
+// prefix, never as Failed, which means "no response"). A genuine no-response
+// failure is stored as Failed. Log lines carry no URL (it may hold credentials).
+func (m *Manager) observeEnrichment(o enrich.Observation) {
+	if m.traffic == nil || !m.TrafficEnabled() {
+		return
+	}
+	if !o.Failed && !o.Complete {
+		log.Printf("[enrich] a probe response was not stored in the traffic store: its body was incomplete or over the capture cap")
+		return
+	}
+	if err := m.traffic.RecordExternal(traffic.ExternalExchange{
+		Method:          o.Method,
+		URL:             o.URL,
+		Status:          o.Status,
+		Failed:          o.Failed,
+		RequestHeaders:  o.RequestHeaders,
+		ResponseHeaders: o.ResponseHeaders,
+		ResponseBody:    o.ResponseBody,
+	}); err != nil {
+		log.Printf("[enrich] could not record a probe in the traffic store")
+	}
+}
+
 func (m *Manager) Close() error {
+	// Stop enrichment first and OUTSIDE m.mu: a finishing probe reports through
+	// observeEnrichment, which takes m.mu.RLock, and Close waits for probes to
+	// finish, so holding the lock here would deadlock. It also guarantees no
+	// enrichment job is still writing when the database closes below.
+	if m.enrich != nil {
+		m.enrich.Close()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.traffic != nil {

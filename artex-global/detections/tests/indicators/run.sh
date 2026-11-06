@@ -4,7 +4,7 @@
 # (see check.py for the assertions). It proves the one thing the Sigma, Suricata,
 # and ATT&CK tests do not: that each rule's pinned indicator is still the string
 # ARTEX's own source actually emits. The realistic rot it catches is an upstream
-# re-sync that bumps the prober User-Agent or rewrites the guard marker — every
+# re-sync that rewrites the guard marker or renames a deny-list token — every
 # other test stays green while the deployed rule silently stops matching.
 #
 # No host dependency beyond Docker: the check is pure Python standard library and
@@ -24,7 +24,6 @@ PYTHON_IMAGE="${PYTHON_IMAGE:-python:3.12-slim}"
 docker run --rm \
   -e ARTEX_REPO_ROOT=/repo \
   -v "$REPO/detections:/repo/detections:ro" \
-  -v "$REPO/enrich:/repo/enrich:ro" \
   -v "$REPO/guard:/repo/guard:ro" \
   -v "$REPO/db:/repo/db:ro" \
   -v "$REPO/cmd:/repo/cmd:ro" \

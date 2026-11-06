@@ -50,7 +50,7 @@ const (
 	convAttachmentTitle = "Attachment message"
 	// legacyConvDefaultTitle is the default title that rows created before the English switch carry.
 	// It is read-only: it is recognized as an auto-titlable default and never written.
-	legacyConvDefaultTitle = "새 대화"
+	legacyConvDefaultTitle = "\uc0c8 \ub300\ud654"
 )
 
 // Closing reason for re-verification (finding_retest). Used when runConversationTurn seals the re-verification conversation,
@@ -355,7 +355,7 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	q := r.URL.Query()
-	limit := atoiDefault(q.Get("limit"), 200)
+	limit := atoiClamp(q.Get("limit"), 200, maxConversationMessages)
 	s.chatMu.Lock()
 	running := s.chatBusy[s.convBusyKey(c.ID)]
 	s.chatMu.Unlock()

@@ -36,31 +36,31 @@ var credentialCases = []struct {
 	secret string
 }{
 	{
-		name:   "钉钉 access_token 在 query",
+		name:   "DingTalk access_token in the query",
 		ch:     dingTalkChannel{},
 		cfg:    map[string]any{"webhook": "http://127.0.0.1:1/robot/send?access_token=" + leakProbeToken},
 		secret: leakProbeToken,
 	},
 	{
-		name:   "企业微信 key 在 query",
+		name:   "WeCom key in the query",
 		ch:     weComChannel{},
 		cfg:    map[string]any{"webhook": "http://127.0.0.1:1/cgi-bin/webhook/send?key=" + leakProbeToken},
 		secret: leakProbeToken,
 	},
 	{
-		name:   "飞书 hook id 在路径末段",
+		name:   "Feishu hook id at the end of the path",
 		ch:     feishuChannel{},
 		cfg:    map[string]any{"webhook": "http://127.0.0.1:1/open-apis/bot/v2/hook/" + leakProbeToken},
 		secret: leakProbeToken,
 	},
 	{
-		name:   "Telegram bot token 在路径中段",
+		name:   "Telegram bot token mid-path",
 		ch:     telegramChannel{},
 		cfg:    map[string]any{"bot_token": leakProbeToken, "chat_id": "1", "base_url": "http://127.0.0.1:1"},
 		secret: leakProbeToken,
 	},
 	{
-		name:   "钉钉加签密钥",
+		name:   "DingTalk signing secret",
 		ch:     dingTalkChannel{},
 		cfg:    map[string]any{"webhook": "http://127.0.0.1:1/robot/send", "secret": leakProbeToken},
 		secret: leakProbeToken,
@@ -76,7 +76,7 @@ func TestChannelErrorsNeverLeakCredentials(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// The peer that is guaranteed to fail: nothing listens on 127.0.0.1:1, so this takes the connection-refused path.
 			_, err := tc.ch.Send(context.Background(), tc.cfg, Message{
-				Items: []Item{{FindingID: 1, Severity: "high", Name: "泄露探针"}},
+				Items: []Item{{FindingID: 1, Severity: "high", Name: "leak probe"}},
 			})
 			if err == nil {
 				t.Fatal("an unreachable address should produce an error")
@@ -95,11 +95,11 @@ func TestChannelErrorsNeverLeakCredentialsInPermanentPath(t *testing.T) {
 		cfg  map[string]any
 	}{
 		// An address that embeds credentials but has an illegal format → triggers the validateHTTPURL / url.Parse branch.
-		{"钉钉地址非法", dingTalkChannel{}, map[string]any{"webhook": "file:///" + leakProbeToken}},
-		{"企微地址非法", weComChannel{}, map[string]any{"webhook": "gopher://" + leakProbeToken}},
-		{"飞书地址非法", feishuChannel{}, map[string]any{"webhook": "ftp://" + leakProbeToken + "/hook"}},
-		{"Telegram API 地址非法", telegramChannel{}, map[string]any{"bot_token": "tok", "chat_id": "1", "base_url": "file://" + leakProbeToken}},
-		{"通用 Webhook 地址非法", webhookChannel{}, map[string]any{"url": "javascript:" + leakProbeToken}},
+		{"DingTalk address is invalid", dingTalkChannel{}, map[string]any{"webhook": "file:///" + leakProbeToken}},
+		{"WeCom address is invalid", weComChannel{}, map[string]any{"webhook": "gopher://" + leakProbeToken}},
+		{"Feishu address is invalid", feishuChannel{}, map[string]any{"webhook": "ftp://" + leakProbeToken + "/hook"}},
+		{"Telegram API address is invalid", telegramChannel{}, map[string]any{"bot_token": "tok", "chat_id": "1", "base_url": "file://" + leakProbeToken}},
+		{"generic webhook address is invalid", webhookChannel{}, map[string]any{"url": "javascript:" + leakProbeToken}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,7 +175,7 @@ func TestRedactTransportErrorStripsURL(t *testing.T) {
 // TestRedactURLsInTextHandlesFallback covers the fallback path: custom errors that are not *url.Error
 // (such as errors returned by a redirect policy) must also have their addresses stripped out.
 func TestRedactURLsInTextHandlesFallback(t *testing.T) {
-	in := fmt.Sprintf("拒绝跨主机重定向（a.example → http://b.example/bot%s/send）", leakProbeToken)
+	in := fmt.Sprintf("refuse a cross-host redirect (a.example -> http://b.example/bot%s/send)", leakProbeToken)
 	got := redactURLsInText(in)
 	assertNoSecret(t, got, leakProbeToken)
 	if !strings.Contains(got, "http://b.example/…") {

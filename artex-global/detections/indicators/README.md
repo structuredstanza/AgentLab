@@ -16,7 +16,7 @@ row records where it comes from and which rule (if any) is built on it.
 - **`type`** — the kind of indicator: `http.user-agent`, `string` (a literal to hunt for in logs/files),
   `port`, `ip-dst|port`, or `other` (a host artifact that fits none of the above, e.g. a database schema
   object name). These map onto the equivalent MISP/STIX attribute types.
-- **`value`** — the exact indicator. Preserved verbatim, including the non-ASCII guard marker.
+- **`value`** — the exact indicator. Preserved verbatim, byte for byte.
 - **`perspective`** — `target` (observable in traffic *toward* a system ARTEX probes) or `forensic`
   (observable *on* a host where ARTEX ran or was relayed through). The defense guide keeps these apart on
   purpose; mixing them produces false conclusions.

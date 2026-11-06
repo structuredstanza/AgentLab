@@ -2,16 +2,13 @@ package useragent
 
 import (
 	"os"
-	"sync"
 	"testing"
 )
 
 // The identity must come from the engagement, not from a compiled-in product
 // name, or two engagements on the same box look identical to a target.
 func TestGetReadsTheEngagementIdentity(t *testing.T) {
-	Set("")
-	value = ""
-	once = sync.Once{}
+	resetIdentity()
 	t.Setenv("ARTEX_USER_AGENT", "Mozilla/5.0 (X11; Linux x86_64) TestIdentity/1.0")
 	if got := Get(); got != "Mozilla/5.0 (X11; Linux x86_64) TestIdentity/1.0" {
 		t.Fatalf("Get() = %q, want the environment identity", got)
@@ -22,15 +19,21 @@ func TestGetReadsTheEngagementIdentity(t *testing.T) {
 // regression that matters: Go-http-client/1.1 is the default, and every request
 // that omits the header sends it.
 func TestGetNeverReturnsTheLanguageDefault(t *testing.T) {
-	Set("")
-	value = ""
-	once = sync.Once{}
+	resetIdentity()
 	os.Unsetenv("ARTEX_USER_AGENT")
 	t.Setenv("ARTEX_USER_AGENT", "")
 	got := Get()
 	if got == "" || got == "Go-http-client/1.1" {
 		t.Fatalf("Get() = %q, want a browser identity", got)
 	}
+}
+
+// resetIdentity clears the cached value so Get re-reads the environment.
+func resetIdentity() {
+	mu.Lock()
+	value = ""
+	loaded = false
+	mu.Unlock()
 }
 
 // A caller that deliberately sets its own User-Agent keeps it.

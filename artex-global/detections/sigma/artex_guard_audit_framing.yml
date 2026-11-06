@@ -19,7 +19,7 @@ logsource:
     category: application
 detection:
     keywords:
-        - '【ARTEX platform control · not target defense】'
+        - '[ARTEX platform control - not target defense]'
     condition: keywords
 falsepositives:
     - Logs that quote this defense guide or the ARTEX source code for documentation purposes.

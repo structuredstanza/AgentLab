@@ -10,11 +10,11 @@ func TestParseFilterMalformedFallsBackToMatchAll(t *testing.T) {
 		name string
 		raw  string
 	}{
-		{"空输入", ""},
-		{"非法 JSON", `{not json`},
-		{"截断的 JSON", `{"min_severity":`},
-		{"类型不匹配", `{"min_severity": 123, "task_ids": "abc"}`},
-		{"顶层是数组", `[1,2,3]`},
+		{"empty input", ""},
+		{"invalid JSON", `{not json`},
+		{"truncated JSON", `{"min_severity":`},
+		{"type mismatch", `{"min_severity": 123, "task_ids": "abc"}`},
+		{"top level is an array", `[1,2,3]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,21 +67,21 @@ func TestMatchScopeRestrictions(t *testing.T) {
 		Severity:  "high",
 		TaskID:    7,
 		AssetIDs:  []int64{10, 20},
-		VulnClass: "SQL注入",
+		VulnClass: "SQL injection",
 	}
 	cases := []struct {
 		name   string
 		filter Filter
 		expect bool
 	}{
-		{"空范围=不限", Filter{}, true},
-		{"任务命中", Filter{TaskIDs: []int64{7}}, true},
-		{"任务未命中", Filter{TaskIDs: []int64{8}}, false},
-		{"任务多选含命中", Filter{TaskIDs: []int64{8, 7}}, true},
-		{"资产有交集", Filter{AssetIDs: []int64{20, 99}}, true},
-		{"资产无交集", Filter{AssetIDs: []int64{99}}, false},
-		{"任务与资产同时命中", Filter{TaskIDs: []int64{7}, AssetIDs: []int64{10}}, true},
-		{"任务命中但资产未命中", Filter{TaskIDs: []int64{7}, AssetIDs: []int64{99}}, false},
+		{"empty scope = unrestricted", Filter{}, true},
+		{"task match", Filter{TaskIDs: []int64{7}}, true},
+		{"task miss", Filter{TaskIDs: []int64{8}}, false},
+		{"task multi-select containing a match", Filter{TaskIDs: []int64{8, 7}}, true},
+		{"assets intersect", Filter{AssetIDs: []int64{20, 99}}, true},
+		{"assets do not intersect", Filter{AssetIDs: []int64{99}}, false},
+		{"task and asset both match", Filter{TaskIDs: []int64{7}, AssetIDs: []int64{10}}, true},
+		{"task matches but asset does not", Filter{TaskIDs: []int64{7}, AssetIDs: []int64{99}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,20 +102,20 @@ func TestMatchVulnClassKeywords(t *testing.T) {
 		class  string
 		expect bool
 	}{
-		{"include 为空=全收", Filter{}, "任意类型", true},
-		{"include 命中", Filter{VulnClassInclude: []string{"SQL"}}, "SQL注入", true},
-		{"include 未命中", Filter{VulnClassInclude: []string{"命令执行"}}, "SQL注入", false},
-		{"include 多词任一命中", Filter{VulnClassInclude: []string{"命令执行", "SQL"}}, "SQL注入", true},
-		{"大小写不敏感", Filter{VulnClassInclude: []string{"sql"}}, "SQL注入", true},
-		{"exclude 命中即排除", Filter{VulnClassExclude: []string{"信息泄露"}}, "信息泄露", false},
-		{"exclude 未命中则放行", Filter{VulnClassExclude: []string{"信息泄露"}}, "SQL注入", true},
+		{"empty include = receive all", Filter{}, "any kind", true},
+		{"include match", Filter{VulnClassInclude: []string{"SQL"}}, "SQL injection", true},
+		{"include miss", Filter{VulnClassInclude: []string{"command execution"}}, "SQL injection", false},
+		{"include matches any of several words", Filter{VulnClassInclude: []string{"command execution", "SQL"}}, "SQL injection", true},
+		{"case insensitive", Filter{VulnClassInclude: []string{"sql"}}, "SQL injection", true},
+		{"exclude match excludes", Filter{VulnClassExclude: []string{"information disclosure"}}, "information disclosure", false},
+		{"no exclude match lets it through", Filter{VulnClassExclude: []string{"information disclosure"}}, "SQL injection", true},
 		// Exclusion takes precedence over inclusion: when both match, the item should be filtered out.
-		{"排除优先于包含", Filter{
+		{"exclude takes precedence over include", Filter{
 			VulnClassInclude: []string{"SQL"},
-			VulnClassExclude: []string{"注入"},
-		}, "SQL注入", false},
+			VulnClassExclude: []string{"injection"},
+		}, "SQL injection", false},
 		// Keywords that are pure whitespace should be ignored; otherwise they would degrade into "matching every string that contains a space".
-		{"空白关键词被忽略", Filter{VulnClassInclude: []string{"", "  "}}, "SQL注入", false},
+		{"blank keyword is ignored", Filter{VulnClassInclude: []string{"", "  "}}, "SQL injection", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

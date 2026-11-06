@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
+	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/limits"
 	"github.com/Autumn-27/artex/manifest"
 	actool "github.com/Autumn-27/norma/tool"
@@ -128,6 +130,20 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 			m := manifestTools.Get(in.Tool)
 			if m == nil {
 				return actool.Errorf(fmt.Sprintf("unknown tool %q; call list_tools for the manifest ids", in.Tool)), nil
+			}
+			// Enforce the task boundary here, on the resolved target.
+			//
+			// The description promises this, and until now nothing did it: the
+			// guard's text scan runs over the raw tool-call arguments, which is
+			// a different question from "is this host excluded". A manifest tool
+			// names its target as a first-class field, so the answer is exact
+			// rather than inferred — this is the strongest place to check it.
+			if ri := agent.RunInfoFrom(ctx); ri.TaskID > 0 {
+				if checker := pgdb.NewTaskScopeChecker(s.m.Assets(), ri.TaskID); checker != nil {
+					if out, reason := checker.Judge(in.Target); out {
+						return actool.Errorf(fmt.Sprintf("out of scope: %s — %s", in.Target, reason)), nil
+					}
+				}
 			}
 			if !binaryPresent(m.Requires) {
 				return actool.Errorf(fmt.Sprintf("%s is declared but not installed in this environment (needs %s)",

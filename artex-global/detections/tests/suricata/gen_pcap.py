@@ -18,8 +18,8 @@ import sys
 
 from scapy.all import Ether, IP, TCP, Raw, wrpcap
 
-# Fixed, private, non-routable endpoints. One source so Suricata's
-# `detection_filter ... track by_src` on sid 1000002 counts per source.
+# Fixed, private, non-routable endpoints, all from one source, so alert counts
+# are a pure function of the flow count.
 SRC_MAC = "02:00:00:00:00:01"
 DST_MAC = "02:00:00:00:00:02"
 SRC_IP = "10.10.10.9"

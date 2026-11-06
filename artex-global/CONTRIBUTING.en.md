@@ -199,8 +199,10 @@ this contract, so if you change only a rule and do not update the tests/layer, t
 
 - **Ground every indicator in an observable fact.** The strings, User-Agents, and behavioral
   thresholds a rule uses must be ones actually found in this repository's source, and must not be
-  inferred. State the source file that is the basis for the rule (for example, the `artex-enrich/1.0`
-  indicator is confirmed in `enrich/enrich.go`). The indicator-match tests
+  inferred. State the source file that is the basis for the rule (for example, the `artex-selfupdate`
+  indicator is confirmed in `selfupdate/github.go`). An indicator the source no longer emits — the
+  enrichment prober's retired User-Agent, for instance, which the masked browser identity replaced — must
+  be removed rather than kept as a rule that can never fire. The indicator-match tests
   ([`detections/tests/indicators/`](detections/tests/indicators/)) check that each indicator is
   still present in both the upstream source and the rule, so if an upstream resync changes a source
   string, the test fails unless you fix the rule along with it. If you change the machine-readable

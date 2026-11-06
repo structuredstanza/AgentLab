@@ -73,7 +73,7 @@ func TestServerHandlersResponses(t *testing.T) {
 			req: func() *http.Request {
 				// MaxTaskSourceCount=8 → 9 items exceeds the limit (returns before the loop).
 				r := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(
-					`{"goal":"목표","source_task_ids":["1","2","3","4","5","6","7","8","9"]}`))
+					"{\"goal\":\"\ubaa9\ud45c\",\"source_task_ids\":[\"1\",\"2\",\"3\",\"4\",\"5\",\"6\",\"7\",\"8\",\"9\"]}"))
 				return r
 			},
 			handler: func(s *Server) http.HandlerFunc { return s.createTask },
@@ -84,7 +84,7 @@ func TestServerHandlersResponses(t *testing.T) {
 			name: "createTask/source-invalid",
 			req: func() *http.Request {
 				r := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(
-					`{"goal":"목표","source_task_ids":["abc"]}`))
+					"{\"goal\":\"\ubaa9\ud45c\",\"source_task_ids\":[\"abc\"]}"))
 				return r
 			},
 			handler: func(s *Server) http.HandlerFunc { return s.createTask },
@@ -96,7 +96,7 @@ func TestServerHandlersResponses(t *testing.T) {
 			req: func() *http.Request {
 				// 999 is not in the tasks map → not found (no DB access, map lookup).
 				r := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(
-					`{"goal":"목표","source_task_ids":["999"]}`))
+					"{\"goal\":\"\ubaa9\ud45c\",\"source_task_ids\":[\"999\"]}"))
 				return r
 			},
 			handler: func(s *Server) http.HandlerFunc { return s.createTask },
@@ -111,7 +111,7 @@ func TestServerHandlersResponses(t *testing.T) {
 				for i := range ids {
 					ids[i] = fmt.Sprintf("%d", i+1)
 				}
-				body := `{"goal":"목표","company_ids":[` + strings.Join(ids, ",") + `]}`
+				body := "{\"goal\":\"\ubaa9\ud45c\",\"company_ids\":[" + strings.Join(ids, ",") + "]}"
 				return httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
 			},
 			handler: func(s *Server) http.HandlerFunc { return s.createTask },
@@ -123,7 +123,7 @@ func TestServerHandlersResponses(t *testing.T) {
 			req: func() *http.Request {
 				// llm_profile_ids:[0] → validateTaskProfileIDs returns before loadProfileConfig (DB).
 				r := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(
-					`{"goal":"목표","llm_profile_ids":[0]}`))
+					"{\"goal\":\"\ubaa9\ud45c\",\"llm_profile_ids\":[0]}"))
 				return r
 			},
 			handler: func(s *Server) http.HandlerFunc { return s.createTask },
@@ -187,13 +187,13 @@ func TestFallbackCommandParsing(t *testing.T) {
 	cases := []struct {
 		name, in, cmd, text string
 	}{
-		{"korean-intent", "의도 SQLi 주입점 먼저 확인", "intent", "SQLi 주입점 먼저 확인"},
-		{"korean-hint", "힌트 로그인 폼부터 보라", "hint", "로그인 폼부터 보라"},
-		{"chinese-intent", "意图 扫描端口", "intent", "扫描端口"}, // Preserve for backward compatibility
-		{"chinese-hint", "提示 看登录", "hint", "看登录"},       // Preserve for backward compatibility
+		{"korean-intent", "\uc758\ub3c4 SQLi \uc8fc\uc785\uc810 \uba3c\uc800 \ud655\uc778", "intent", "SQLi \uc8fc\uc785\uc810 \uba3c\uc800 \ud655\uc778"},
+		{"korean-hint", "\ud78c\ud2b8 \ub85c\uadf8\uc778 \ud3fc\ubd80\ud130 \ubcf4\ub77c", "hint", "\ub85c\uadf8\uc778 \ud3fc\ubd80\ud130 \ubcf4\ub77c"},
+		{"chinese-intent", "\u610f\u56fe \u626b\u63cf\u7aef\u53e3", "intent", "\u626b\u63cf\u7aef\u53e3"}, // Preserve for backward compatibility
+		{"chinese-hint", "\u63d0\u793a \u770b\u767b\u5f55", "hint", "\u770b\u767b\u5f55"},                 // Preserve for backward compatibility
 		{"english-intent", "intent scan ports", "intent", "scan ports"},
 		{"english-hint", "hint try admin:admin", "hint", "try admin:admin"},
-		{"status-korean", "지금 상황 알려줘", "", "지금 상황 알려줘"},
+		{"status-korean", "\uc9c0\uae08 \uc0c1\ud669 \uc54c\ub824\uc918", "", "\uc9c0\uae08 \uc0c1\ud669 \uc54c\ub824\uc918"},
 		{"status-empty", "   ", "", ""},
 	}
 	for _, c := range cases {

@@ -18,7 +18,9 @@ func TestOverviewTextBudgetIsFairAndUTF8Safe(t *testing.T) {
 	}
 
 	budget := overviewTextBudget{remaining: 5}
-	got := budget.take(strings.Repeat("中", 10), 20)
+	// 3-byte runes, so a byte-oriented cut would return fewer than five runes
+	// and the UTF-8 assertion below would have something to catch.
+	got := budget.take(strings.Repeat("\u24d0", 10), 20)
 	if !utf8.ValidString(got) {
 		t.Fatalf("budget truncation produced invalid UTF-8: %q", got)
 	}

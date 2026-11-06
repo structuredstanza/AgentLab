@@ -31,7 +31,7 @@ func TestUpdateTaskMetadataResponsesLocalized(t *testing.T) {
 		// If both name and pinned are removed, there are no fields left to modify.
 		{"no_fields", `{}`, http.StatusBadRequest},
 		{"name_empty", `{"name":"  "}`, http.StatusBadRequest},
-		{"name_too_long", `{"name":"` + strings.Repeat("가", maxTaskNameRunes+1) + `"}`, http.StatusBadRequest},
+		{"name_too_long", `{"name":"` + strings.Repeat("a", maxTaskNameRunes+1) + `"}`, http.StatusBadRequest},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

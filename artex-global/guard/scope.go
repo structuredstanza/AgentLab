@@ -19,10 +19,16 @@ import (
 // boundary actually permits.
 
 var (
-	// A URL with a scheme: take the whole thing so a path rule can match.
-	urlLike = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>,;)\]]+`)
+	// A URL with a scheme: take the whole thing so a path rule can match. `]`
+	// is allowed because a bracketed IPv6 host needs it; without it the match
+	// stops mid-literal and the host is mangled.
+	urlLike = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>,;)]+`)
 	// An IPv4 address or CIDR.
 	ipLike = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b`)
+	// An IPv6 address or CIDR, optionally bracketed. A bare literal was
+	// invisible to the IPv4-only pattern, so an excluded IPv6 range could be
+	// reached by any call that named one.
+	ip6Like = regexp.MustCompile(`\[?[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:/\d{1,3})?\]?`)
 	// A dotted hostname with at least one dot, allowing a leading wildcard-free
 	// label. Anchored on word boundaries so a file path fragment is not read as
 	// a host.
@@ -30,16 +36,20 @@ var (
 )
 
 // assetsIn returns the candidate assets named by a tool call's input.
+//
+// The input is scanned twice: as raw JSON text and as decoded string leaves.
+// Raw text alone is not enough, because the tool decodes the same bytes before
+// executing them — `{"command":"curl http://\u0065vil.example/"}` reads as the
+// host `\u0065vil.example` to a regex over the raw bytes but reaches
+// `evil.example`, so an escaped character silently defeated the boundary.
 func assetsIn(input json.RawMessage) []string {
-	text := string(input)
-	if len(text) == 0 {
-		return nil
-	}
-
 	seen := map[string]bool{}
 	var out []string
 	add := func(v string) {
-		v = strings.ToLower(strings.TrimSpace(strings.Trim(v, `"'.,;:()[]{}`)))
+		// Colons are NOT trimmed: they are part of an IPv6 literal, so trimming
+		// them turned "::1" into "1" and "fe80::" into "fe80", neither of which
+		// can ever match an exclusion.
+		v = strings.ToLower(strings.TrimSpace(strings.Trim(v, `"'.,;()[]{}`)))
 		if v == "" || seen[v] {
 			return
 		}
@@ -47,26 +57,84 @@ func assetsIn(input json.RawMessage) []string {
 		out = append(out, v)
 	}
 
-	// URLs first, and mask them out so their host is not also reported as a
-	// bare hostname (which would let a path rule be bypassed by the host rule).
-	for _, u := range urlLike.FindAllString(text, -1) {
-		add(u)
-		// A boundary may exclude either the whole URL (a path rule) or its
-		// host, so both are candidates; judging only the URL would let a host
-		// exclusion be bypassed by naming any path on it.
-		if host := hostOf(u); host != "" {
+	scan := func(text string) {
+		if text == "" {
+			return
+		}
+		// URLs first, and mask them out so their host is not also reported as a
+		// bare hostname (which would let a path rule be bypassed by the host
+		// rule).
+		for _, u := range urlLike.FindAllString(text, -1) {
+			add(u)
+			// A boundary may exclude either the whole URL (a path rule) or its
+			// host, so both are candidates; judging only the URL would let a
+			// host exclusion be bypassed by naming any path on it.
+			if host := hostOf(u); host != "" {
+				add(host)
+			}
+			text = strings.ReplaceAll(text, u, " ")
+		}
+		for _, ip := range ipLike.FindAllString(text, -1) {
+			if net.ParseIP(strings.SplitN(ip, "/", 2)[0]) != nil {
+				add(ip)
+			}
+		}
+		for _, ip := range ip6Like.FindAllString(text, -1) {
+			// Split the prefix off before parsing: net.ParseIP rejects
+			// "2001:db8::/32", so the CIDR form was dropped entirely and an
+			// excluded IPv6 range was never enforced. The bare address is a
+			// candidate too, so a /128 exclusion still matches its literal.
+			host := strings.Trim(ip, "[]")
+			if addr, _, found := strings.Cut(host, "/"); found {
+				host = addr
+			}
+			if net.ParseIP(strings.Trim(host, "[]")) != nil {
+				add(ip)
+			}
+		}
+		for _, host := range hostLike.FindAllString(text, -1) {
 			add(host)
 		}
-		text = strings.ReplaceAll(text, u, " ")
 	}
-	for _, ip := range ipLike.FindAllString(text, -1) {
-		if net.ParseIP(strings.SplitN(ip, "/", 2)[0]) != nil {
-			add(ip)
+
+	scan(string(input))
+	// Lowercase the decoded leaves: hostLike is case-sensitive, so `API.corp.example`
+	// matched only the `corp.example` fragment and a mixed-case name slipped past
+	// an exact-host exclusion.
+	for _, leaf := range decodedStrings(input) {
+		scan(strings.ToLower(leaf))
+	}
+	return out
+}
+
+// decodedStrings returns every string value in a JSON document, decoded.
+//
+// A tool call's arguments are JSON; the tool unmarshals them and acts on the
+// decoded values, so a boundary that inspects only the encoded bytes can be
+// bypassed with an escape. Anything that is not valid JSON yields nothing here
+// (the raw scan still applies).
+func decodedStrings(input json.RawMessage) []string {
+	var v any
+	if err := json.Unmarshal(input, &v); err != nil {
+		return nil
+	}
+	var out []string
+	var walk func(any)
+	walk = func(node any) {
+		switch t := node.(type) {
+		case string:
+			out = append(out, t)
+		case []any:
+			for _, item := range t {
+				walk(item)
+			}
+		case map[string]any:
+			for _, item := range t {
+				walk(item)
+			}
 		}
 	}
-	for _, host := range hostLike.FindAllString(text, -1) {
-		add(host)
-	}
+	walk(v)
 	return out
 }
 
@@ -78,6 +146,13 @@ func hostOf(raw string) string {
 	}
 	if idx := strings.IndexAny(rest, "/?#"); idx >= 0 {
 		rest = rest[:idx]
+	}
+	// A bracketed IPv6 literal ends at the closing bracket; the colons inside
+	// it are part of the address, not a port separator.
+	if strings.HasPrefix(rest, "[") {
+		if end := strings.Index(rest, "]"); end > 0 {
+			return strings.ToLower(rest[1:end])
+		}
 	}
 	if idx := strings.LastIndex(rest, ":"); idx > 0 && !strings.Contains(rest[idx:], "]") {
 		rest = rest[:idx]

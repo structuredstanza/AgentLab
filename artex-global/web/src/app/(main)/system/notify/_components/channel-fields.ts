@@ -171,7 +171,7 @@ export function parseKV(text: string): Record<string, string> {
 // Users may paste lists containing full-width commas from elsewhere; this is input parsing logic, not display copy.
 export function parseIDs(text: string): number[] {
   return text
-    .split(/[\s,，]+/)
+    .split(/[\s,\uff0c]+/)
     .map((s) => s.trim())
     .filter(Boolean)
     .map((s) => Number(s))
@@ -181,7 +181,7 @@ export function parseIDs(text: string): number[] {
 // Likewise, retain the fullwidth comma "\uFF0C" as a delimiter (input parsing, not display text).
 export function parseKeywords(text: string): string[] {
   return text
-    .split(/[\n,，]+/)
+    .split(/[\n,\uff0c]+/)
     .map((s) => s.trim())
     .filter(Boolean);
 }

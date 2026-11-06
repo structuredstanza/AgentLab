@@ -23,6 +23,7 @@ package limits
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,15 +109,27 @@ func (l *Limiter) Guidance() string {
 }
 
 // reservePerMin is the request budget a run of this manifest costs while it runs.
+//
+// The rate is parsed as a float: tools accept fractional rates (ffuf -rate 1.5)
+// and an integer parse would fail on them, returning 0 and silently disabling
+// the ceiling for exactly the runs that declared one.
 func (l *Limiter) reservePerMin(m *manifest.Manifest, params map[string]string) int {
 	if m == nil || m.Limits.Unit != manifest.RateRPS {
 		return 0
 	}
-	rate, err := strconv.Atoi(strings.TrimSpace(params[m.Limits.Param]))
+	raw := strings.TrimSpace(params[m.Limits.Param])
+	if raw == "" {
+		return 0
+	}
+	rate, err := strconv.ParseFloat(raw, 64)
 	if err != nil || rate <= 0 {
 		return 0
 	}
-	return rate * 60
+	perMin := int(math.Ceil(rate * 60))
+	if perMin <= 0 {
+		return 0
+	}
+	return perMin
 }
 
 // Acquire blocks until the target has room for one more run, and returns the
@@ -128,6 +141,15 @@ func (l *Limiter) Acquire(ctx context.Context, target string, m *manifest.Manife
 	}
 	key := normalize(target)
 	reserve := l.reservePerMin(m, params)
+	// A declared rate above the ceiling is not a reason to refuse the scan
+	// forever. Clamp the reservation to the ceiling so the run is admitted at
+	// the operator's hard cap instead of waiting for a slot that cannot exist:
+	// the shipped tool defaults (ffuf 50 rps, nuclei 150 rps) are 3000-9000
+	// requests a minute against a 100 ceiling, and without this clamp Acquire
+	// would poll until the agent run was cancelled.
+	if max := l.policy.MaxRequestsPerMinute; max > 0 && reserve > max {
+		reserve = max
+	}
 
 	// Poll rather than wake waiters: runs are minutes long and a scan starts at
 	// most a few times a minute, so a short interval costs nothing and avoids a
@@ -183,6 +205,12 @@ func (l *Limiter) Acquire(ctx context.Context, target string, m *manifest.Manife
 
 // normalize keys a target so the same host is counted once whatever form the
 // caller used.
+//
+// The three spellings a scanner can produce for one host — `EXAMPLE.com`,
+// `example.com.`, `example.com` — must collapse to one key, or each gets its
+// own request budget. A bare IPv6 literal has several colons, so only a
+// single-colon host:port pair has its port stripped; a bracketed literal keeps
+// its address without the brackets.
 func normalize(target string) string {
 	t := strings.ToLower(strings.TrimSpace(target))
 	if i := strings.Index(t, "://"); i >= 0 {
@@ -191,8 +219,20 @@ func normalize(target string) string {
 	if i := strings.IndexAny(t, "/?#"); i >= 0 {
 		t = t[:i]
 	}
-	if i := strings.LastIndex(t, ":"); i > 0 && !strings.Contains(t[i+1:], "]") {
-		t = t[:i]
+	if strings.HasPrefix(t, "[") {
+		// [::1] / [::1]:8080 → ::1
+		if end := strings.Index(t, "]"); end > 0 {
+			return strings.TrimSuffix(t[1:end], ".")
+		}
+		return strings.Trim(t, "[]")
 	}
-	return strings.Trim(t, "[]")
+	// One colon is a host:port pair; more is an IPv6 address.
+	if strings.Count(t, ":") == 1 {
+		if i := strings.LastIndex(t, ":"); i > 0 {
+			if _, err := strconv.Atoi(t[i+1:]); err == nil {
+				t = t[:i]
+			}
+		}
+	}
+	return strings.TrimSuffix(t, ".")
 }

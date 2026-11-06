@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -549,7 +550,32 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// restarting from scratch.
 	alreadyRecorded := false
 	if w.tx != nil {
-		_ = s.Resume(opts.SessionID)
+		// A corrupt transcript (a partial trailing line from a crash or a full
+		// disk) makes Resume discard everything it parsed. Ignoring the error
+		// would leave the worker with an empty history, so it would not send
+		// "Continue." and would re-run the whole intent from scratch — every
+		// probe repeated and every fact written twice.
+		//
+		// Failing the run outright is also wrong: the transcript id is
+		// deterministic per intent, so the same file fails on every retry and
+		// the engine parks the intent in a state the frontier never selects
+		// again. That bricks the intent permanently. Repair it instead, and
+		// only start over when the repair itself fails.
+		if err := s.Resume(opts.SessionID); err != nil {
+			log.Printf("[worker %s] intent %d: cannot resume transcript %s: %v", name, intent.ID, opts.SessionID, err)
+			if rerr := repairTranscript(opts.Transcript, opts.SessionID); rerr != nil {
+				log.Printf("[worker %s] intent %d: transcript repair failed: %v", name, intent.ID, rerr)
+			}
+			if rerr := s.Resume(opts.SessionID); rerr != nil {
+				log.Printf("[worker %s] intent %d: transcript %s is unreadable after repair (%v); starting a fresh one", name, intent.ID, opts.SessionID, rerr)
+				if qerr := quarantineTranscript(opts.Transcript, opts.SessionID); qerr != nil {
+					return "", WriteCounts{}, fmt.Errorf("transcript %s is unreadable (%w) and could not be moved aside: %v", opts.SessionID, rerr, qerr)
+				}
+				if rerr := s.Resume(opts.SessionID); rerr != nil {
+					return "", WriteCounts{}, fmt.Errorf("transcript %s is unreadable (%w) even after being moved aside", opts.SessionID, rerr)
+				}
+			}
+		}
 		alreadyRecorded = requestID != "" && hasWorkerChatMessage(s.Messages(), requestID)
 		if len(s.Messages()) > 0 && message == "" {
 			seedUnlockFromHistory(s.Messages(), def.UnlockSkill)

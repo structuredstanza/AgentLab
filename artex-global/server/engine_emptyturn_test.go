@@ -18,7 +18,7 @@ func assistantThinking(text string) llm.Message {
 
 func TestIsThinkingOnlyTurn(t *testing.T) {
 	toolUse := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-		{Type: llm.BlockThinking, Thinking: "先扫端口"},
+		{Type: llm.BlockThinking, Thinking: "scan ports first"},
 		{Type: llm.BlockToolUse, ID: "t1", Name: "run_nuclei"},
 	}}
 	cases := []struct {
@@ -26,24 +26,24 @@ func TestIsThinkingOnlyTurn(t *testing.T) {
 		msgs []llm.Message
 		want bool
 	}{
-		{"仅思考", []llm.Message{llm.UserText("开始"), assistantThinking("想想")}, true},
-		{"思考+工具", []llm.Message{llm.UserText("开始"), toolUse}, false},
-		{"思考+正文", []llm.Message{assistantThinking("想想"), {
+		{"thinking only", []llm.Message{llm.UserText("start"), assistantThinking("think")}, true},
+		{"thinking plus tool", []llm.Message{llm.UserText("start"), toolUse}, false},
+		{"thinking plus body", []llm.Message{assistantThinking("think"), {
 			Role:    llm.RoleAssistant,
-			Content: []llm.ContentBlock{{Type: llm.BlockThinking, Thinking: "x"}, llm.TextBlock("结论")},
+			Content: []llm.ContentBlock{{Type: llm.BlockThinking, Thinking: "x"}, llm.TextBlock("conclusion")},
 		}}, false},
-		{"正文只有空白字符", []llm.Message{{
+		{"body is whitespace only", []llm.Message{{
 			Role:    llm.RoleAssistant,
 			Content: []llm.ContentBlock{{Type: llm.BlockThinking, Thinking: "x"}, llm.TextBlock("  \n ")},
 		}}, true},
-		{"完全空的 assistant 回合", []llm.Message{{Role: llm.RoleAssistant}}, true},
+		{"completely empty assistant turn", []llm.Message{{Role: llm.RoleAssistant}}, true},
 		// Tool results carry the user role, so the check must trace back to the assistant message before them, rather than misjudging based on the nearest message.
-		{"最后一条是工具结果", []llm.Message{toolUse, {
+		{"last message is a tool result", []llm.Message{toolUse, {
 			Role:    llm.RoleUser,
 			Content: []llm.ContentBlock{{Type: llm.BlockToolResult, ToolUseID: "t1"}},
 		}}, false},
-		{"没有 assistant 消息", []llm.Message{llm.UserText("开始")}, false},
-		{"空历史", nil, false},
+		{"no assistant message", []llm.Message{llm.UserText("start")}, false},
+		{"empty history", nil, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -70,9 +70,9 @@ func (f fakeHooks) Stop(context.Context, []llm.Message) (bool, []string, string)
 }
 
 func TestSteerHooksStopNudgesEmptyTurn(t *testing.T) {
-	empty := []llm.Message{assistantThinking("我应该先枚举子域名")}
+	empty := []llm.Message{assistantThinking("I should enumerate subdomains first")}
 
-	t.Run("空转回合注入续跑指令", func(t *testing.T) {
+	t.Run("an empty turn injects a continuation instruction", func(t *testing.T) {
 		h := steerHooks{nudges: &atomic.Int64{}, limit: defaultEmptyTurnNudges, label: "worker-1 · #1"}
 		prevent, blocking, _ := h.Stop(context.Background(), empty)
 		if prevent {
@@ -83,11 +83,11 @@ func TestSteerHooksStopNudgesEmptyTurn(t *testing.T) {
 		}
 	})
 
-	t.Run("有正文或工具时不介入", func(t *testing.T) {
+	t.Run("no intervention when there is a body or a tool", func(t *testing.T) {
 		h := steerHooks{nudges: &atomic.Int64{}, limit: defaultEmptyTurnNudges}
 		normal := []llm.Message{{
 			Role:    llm.RoleAssistant,
-			Content: []llm.ContentBlock{llm.TextBlock("已完成扫描，未发现开放端口")},
+			Content: []llm.ContentBlock{llm.TextBlock("scan complete, no open ports found")},
 		}}
 		if _, blocking, _ := h.Stop(context.Background(), normal); blocking != nil {
 			t.Fatalf("a normal wrap-up was misjudged as a no-op turn: %v", blocking)
@@ -97,7 +97,7 @@ func TestSteerHooksStopNudgesEmptyTurn(t *testing.T) {
 		}
 	})
 
-	t.Run("达到上限后放行收场", func(t *testing.T) {
+	t.Run("let it finish once the limit is reached", func(t *testing.T) {
 		const limit = 5 // The user configured the "empty response retry count" as 5
 		h := steerHooks{nudges: &atomic.Int64{}, limit: limit}
 		for i := 1; i <= limit; i++ {
@@ -111,17 +111,17 @@ func TestSteerHooksStopNudgesEmptyTurn(t *testing.T) {
 	})
 
 	// "Empty response retry count" set to -1 = disable this layer; emptyTurnNudgeLimit resolves to 0.
-	t.Run("配置关闭时不介入", func(t *testing.T) {
+	t.Run("no intervention when the setting is off", func(t *testing.T) {
 		h := steerHooks{nudges: &atomic.Int64{}, limit: 0}
 		if _, blocking, _ := h.Stop(context.Background(), empty); blocking != nil {
 			t.Fatalf("still injecting after being disabled: %v", blocking)
 		}
 	})
 
-	t.Run("inner 决定硬停时不叠加", func(t *testing.T) {
-		h := steerHooks{inner: fakeHooks{prevent: true, msg: "guard 拒绝收场"}, nudges: &atomic.Int64{}, limit: defaultEmptyTurnNudges}
+	t.Run("no stacking when inner decides to hard stop", func(t *testing.T) {
+		h := steerHooks{inner: fakeHooks{prevent: true, msg: "guard refuses to finish"}, nudges: &atomic.Int64{}, limit: defaultEmptyTurnNudges}
 		prevent, blocking, msg := h.Stop(context.Background(), empty)
-		if !prevent || msg != "guard 拒绝收场" || blocking != nil {
+		if !prevent || msg != "guard refuses to finish" || blocking != nil {
 			t.Fatalf("inner's hard stop was rewritten: prevent=%v blocking=%v msg=%q", prevent, blocking, msg)
 		}
 		if n := h.nudges.Load(); n != 0 {
@@ -129,15 +129,15 @@ func TestSteerHooksStopNudgesEmptyTurn(t *testing.T) {
 		}
 	})
 
-	t.Run("inner 已要续跑时不叠加", func(t *testing.T) {
-		h := steerHooks{inner: fakeHooks{blocking: []string{"guard 的续跑理由"}}, nudges: &atomic.Int64{}, limit: defaultEmptyTurnNudges}
+	t.Run("no stacking when inner already asked to continue", func(t *testing.T) {
+		h := steerHooks{inner: fakeHooks{blocking: []string{"guard's continuation reason"}}, nudges: &atomic.Int64{}, limit: defaultEmptyTurnNudges}
 		_, blocking, _ := h.Stop(context.Background(), empty)
-		if len(blocking) != 1 || blocking[0] != "guard 的续跑理由" {
+		if len(blocking) != 1 || blocking[0] != "guard's continuation reason" {
 			t.Fatalf("inner's continuation message was rewritten: %v", blocking)
 		}
 	})
 
-	t.Run("未装计数器时行为不变", func(t *testing.T) {
+	t.Run("behaviour is unchanged without a counter", func(t *testing.T) {
 		h := steerHooks{limit: defaultEmptyTurnNudges} // e.g. a future call site forgets to pass nudges
 		if _, blocking, _ := h.Stop(context.Background(), empty); blocking != nil {
 			t.Fatalf("must not inject without a counter: %v", blocking)

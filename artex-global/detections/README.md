@@ -9,8 +9,6 @@ string or behaviour verified in this repository's source, not inferred.
 
 ## Atomic rules
 
-- **`sigma/artex_enrich_user_agent.yml`** — inbound `artex-enrich/1.0` User-Agent from ARTEX asset
-  enrichment (`enrich/enrich.go`). Target-side, supporting indicator. `level: high`.
 - **`sigma/artex_selfupdate_egress.yml`** — outbound `artex-selfupdate` User-Agent from the self-update
   routine (`selfupdate/github.go`). Host/forensic egress indicator. `level: medium`.
 - **`sigma/artex_guard_audit_framing.yml`** — the platform-guard control marker written to the audit log
@@ -28,12 +26,6 @@ Static strings can be changed; behaviour is harder to hide. These Sigma **correl
 (sections 4.1–4.2 and 4.4). Each references an atomic rule above by its `id`, so convert the whole
 `sigma/` tree — not a single correlation file — to resolve the reference (see below).
 
-- **`sigma/correlation/artex_enrich_scan_velocity.yml`** — a burst of `artex-enrich/1.0` probes from one
-  source in a short window (enrichment runs at concurrency 4 with no rate limit). The velocity the
-  single-request rule misses. `event_count`, `level: high`.
-- **`sigma/correlation/artex_enrich_fanout.yml`** — one source carrying the enrichment User-Agent to many
-  *distinct* hosts: machine-speed fan-out across an asset list, where breadth (not just volume) is the
-  tell. `value_count`, `level: high`.
 - **`sigma/correlation/artex_guard_block_burst.yml`** — repeated platform-guard control markers on one
   host, i.e. an active ARTEX run tripping its guard rather than a document that merely quotes the marker.
   `event_count`, `level: high`.
@@ -50,20 +42,21 @@ it is kept out of this tested rule tree because it cannot be grounded in ARTEX s
 
 ## Network rules (Suricata)
 
-Sigma covers host and log telemetry. The two ARTEX User-Agents observable on the wire both ship as
-[Suricata](https://suricata.io) rules in [`suricata/`](suricata/): the enrichment prober's `artex-enrich/1.0`
-(`enrich/enrich.go`) with a presence signature plus a high-rate enumeration variant (sid 1000001–1000002),
-and the norma SDK WebFetch tool's attack-phase `norma/0.4` (`github.com/Autumn-27/norma/tool/webfetch.go`) with a presence signature
-(sid 1000003). Other worker tools (Bash-run `curl`, `nmap`) use their own User-Agents and carry no
-ARTEX-unique fingerprint, so the network layer is intentionally narrow to these two UAs; see
-[`suricata/README.md`](suricata/README.md) for the scope, the TLS caveat, and how to validate with
-`suricata -T` and a reference pcap.
+Sigma covers host and log telemetry. One ARTEX User-Agent is observable on the wire, and it ships as a
+[Suricata](https://suricata.io) rule in [`suricata/`](suricata/): the norma SDK WebFetch tool's
+attack-phase `norma/0.4` (`github.com/Autumn-27/norma/tool/webfetch.go`), presence signature sid 1000003.
+The enrichment prober carries **no** static target-side fingerprint: it presents the engagement's masked
+browser identity, so it looks like ordinary browser traffic and there is no User-Agent rule for it —
+enrichment is caught by behaviour (see the correlation rules above and the defense guide), not by a wire
+string. Other worker tools (Bash-run `curl`, `nmap`) also use their own User-Agents, so the network layer
+is intentionally narrow to the one remaining UA; see [`suricata/README.md`](suricata/README.md) for the
+scope, the TLS caveat, and how to validate with `suricata -T` and a reference pcap.
 
 ## ATT&CK coverage
 
 The techniques these rules tag are collected into a [MITRE ATT&CK](https://attack.mitre.org/) Navigator
-layer in [`attack/artex_navigator_layer.json`](attack/) — eight techniques across six tactics
-(Reconnaissance, Command and Control, Execution, Impact, Credential Access, Collection), each grounded in a rule's `attack.*` tags and
+layer in [`attack/artex_navigator_layer.json`](attack/) — six techniques across five tactics
+(Command and Control, Execution, Impact, Credential Access, Collection), each grounded in a rule's `attack.*` tags and
 scored by detection strength (ARTEX-specific signature vs. generic hunting lead). Open it in the
 [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) to see which ARTEX behaviour each
 rule covers; see [`attack/README.md`](attack/README.md) for the scoring, the technique-to-rule map, and
@@ -74,8 +67,8 @@ from drifting away from the rule set.
 
 For defenders who want the atomic indicators rather than the detection logic,
 [`indicators/artex_indicators.csv`](indicators/) collects the unique fingerprints ARTEX emits into one
-CSV to drop into a threat-intelligence platform, a SIEM lookup, or a host-triage checklist — the enrichment
-and self-update User-Agents, the guard audit marker, the server/proxy default endpoints, the recording-proxy
+CSV to drop into a threat-intelligence platform, a SIEM lookup, or a host-triage checklist — the self-update
+User-Agent, the guard audit marker, the server/proxy default endpoints, the recording-proxy
 CA certificate, and the PostgreSQL exploration-graph schema fingerprint — each row recording the source file
 it is grounded in and the rule (if any) built on it. The same indicators ship as a
 ready-to-import [MISP](https://www.misp-project.org/) event
@@ -108,9 +101,8 @@ The rules ship with reproducible tests in [`tests/`](tests/), each needing only 
 - **Suricata** ([`tests/suricata/run.sh`](tests/suricata/run.sh)) first validates that the whole rules file
   loads under `suricata -T --init-errors-fatal` (a rule that fails to parse is caught even if no capture
   exercises it), then synthesizes a deterministic capture with scapy, runs `suricata -r` over it, and asserts
-  that the presence rule fires once per probe, the velocity rule trips past its rate threshold, and a
-  benign-User-Agent capture produces zero alerts. No binary capture is committed — the test regenerates it on
-  every run.
+  that the presence rule fires once per request while a benign-User-Agent capture produces zero alerts. No
+  binary capture is committed — the test regenerates it on every run.
 - **Sigma** ([`tests/sigma/run.sh`](tests/sigma/run.sh)) runs the `sigma check` and `sigma convert` validation
   below as an executable test: it asserts 0 errors, that the whole tree compiles to a backend query, that each
   atomic indicator string survives into that query, and that a correlation rule fails to convert on its own —
@@ -129,9 +121,8 @@ The rules ship with reproducible tests in [`tests/`](tests/), each needing only 
   rule set, and each technique must name a rule file that exists. Adding a rule without updating the layer
   (or vice versa) fails the test.
 - **Indicator source-of-truth** ([`tests/indicators/run.sh`](tests/indicators/run.sh)) checks that each rule's
-  pinned indicator is still the string the upstream source emits — `artex-enrich/1.0` in `enrich/enrich.go`,
-  `artex-selfupdate` in `selfupdate/`, the guard marker in `guard/guard.go`, the destructive tokens in
-  `db/db.go` — and is still pinned in the rule. It catches the drift the other three miss: an upstream re-sync
+  pinned indicator is still the string the upstream source emits — `artex-selfupdate` in `selfupdate/`, the
+  guard marker in `guard/guard.go`, the destructive tokens in `db/db.go` — and is still pinned in the rule. It catches the drift the other three miss: an upstream re-sync
   that changes a User-Agent or marker while every rule still compiles and fires. The same test re-reads the
   machine-readable [`indicators/artex_indicators.csv`](indicators/artex_indicators.csv) and asserts every
   published row is still grounded in its source and rule, so the artifact a defender imports cannot drift
@@ -151,7 +142,7 @@ The rules ship with reproducible tests in [`tests/`](tests/), each needing only 
   fails until the two agree.
 - **Sigma backend portability** ([`tests/sigma_backends/run.sh`](tests/sigma_backends/run.sh)) proves the rules
   convert beyond the single Splunk example: the whole tree (atomic + correlation) compiles on Splunk, the
-  Elasticsearch `eql` target, and Grafana Loki, and the five atomic rules still compile on backends that do not
+  Elasticsearch `eql` target, and Grafana Loki, and the four atomic rules still compile on backends that do not
   support Sigma correlations (Elasticsearch `lucene`, the Microsoft `kusto` backend). It backs the per-backend
   support matrix in [Validate and convert](#validate-and-convert) below with a re-runnable check.
 - **SigmaHQ convention lint** ([`tests/sigma_lint/run.sh`](tests/sigma_lint/run.sh)) runs the full SigmaHQ
@@ -175,13 +166,14 @@ Each script exits non-zero on any failed assertion. See [`tests/README.md`](test
 
 ## How to read these honestly
 
-- **Static indicators can be changed.** An operator can set a different User-Agent, so the absence of
-  `artex-enrich/1.0` or `artex-selfupdate` does **not** mean safety. The durable signal is *behaviour* —
-  a single source chaining recon → enumeration → probing → auth/injection attempts, adapting to responses,
-  running without pause. That layer is described in the defense guide (sections 1, 2, and 4.1–4.2); the
-  `sigma/correlation/` rules above ship it as deployable correlations (velocity, fan-out, guard-block
-  burst, and a guard-marker-with-destructive-command multi-stage), and the pure web multi-stage case
-  still needs base rules specific to your environment.
+- **Static indicators can be changed, and one is already gone.** An operator can set a different
+  User-Agent, so the absence of `artex-selfupdate` does **not** mean safety; the enrichment prober has no
+  static User-Agent at all any more (it presents the engagement's masked browser identity), so it has no
+  target-side fingerprint. The durable signal is *behaviour* — a single source chaining recon →
+  enumeration → probing → auth/injection attempts, adapting to responses, running without pause. That
+  layer is described in the defense guide (sections 1, 2, and 4.1–4.2); the `sigma/correlation/` rules
+  above ship it as deployable correlations (guard-block burst and a guard-marker-with-destructive-command
+  multi-stage), and the pure web multi-stage case still needs base rules specific to your environment.
 - **The destructive-command rule is generic hunting.** It mirrors ARTEX's guard deny list, but the same
   commands are run by legitimate administrators. Treat a hit as a lead, allow-list your environment, and
   do not attribute it to ARTEX on its own.
@@ -210,7 +202,7 @@ sigma check --validation-config detections/tests/sigma_lint/validators.yml detec
 
 # compile to a target query language, e.g. Splunk
 sigma plugin install splunk
-sigma convert -t splunk --without-pipeline detections/sigma/artex_enrich_user_agent.yml
+sigma convert -t splunk --without-pipeline detections/sigma/artex_guard_audit_framing.yml
 
 # convert the whole tree so the correlation rules can resolve the atomic rules they reference by id
 sigma convert -t splunk --without-pipeline detections/sigma/
@@ -231,7 +223,7 @@ by [`tests/sigma_backends/run.sh`](tests/sigma_backends/run.sh):
   Grafana Loki (`-t loki`). Convert `detections/sigma/` directly and you get the correlation queries too.
 - **Atomic rules only (correlations not yet supported):** Elasticsearch Lucene (`-t lucene`), OpenSearch
   (`-t opensearch_lucene`), and the Microsoft `kusto` backend that targets Sentinel and Defender XDR
-  (`-t kusto`). On these, convert the five atomic rules and express the correlation window natively in the
+  (`-t kusto`). On these, convert the four atomic rules and express the correlation window natively in the
   product (e.g. a Sentinel scheduled-analytics `summarize ... by bin(TimeGenerated, 30m)`). Pass the whole
   directory and the conversion stops with "Backend does not support correlation rules."
 
@@ -239,7 +231,6 @@ by [`tests/sigma_backends/run.sh`](tests/sigma_backends/run.sh):
 # atomic rules only, e.g. for Microsoft Sentinel / Defender (kusto backend)
 sigma plugin install kusto
 sigma convert -t kusto --without-pipeline \
-  detections/sigma/artex_enrich_user_agent.yml \
   detections/sigma/artex_selfupdate_egress.yml \
   detections/sigma/artex_guard_audit_framing.yml \
   detections/sigma/artex_recording_proxy_ca.yml \

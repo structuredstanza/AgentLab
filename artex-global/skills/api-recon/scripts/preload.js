@@ -189,7 +189,7 @@
   }
 
   // --- Mock helpers ---
-  const NEGATIVE_RE = /未登录|未授权|授权|not\s*login|unauthorized|forbidden/i;
+  const NEGATIVE_RE = /\u672a\u767b\u5f55|\u672a\u6388\u6743|\u6388\u6743|not\s*login|unauthorized|forbidden/i;
   const tier = CONFIG.mockTier || 'L1+L2';
 
   function patchJsonBody(text) {

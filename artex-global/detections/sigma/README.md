@@ -14,9 +14,6 @@ script — is indexed in [`../README.md`](../README.md).
 
 One rule, one observable fact. Convert them individually or as part of the whole tree.
 
-- **[`artex_enrich_user_agent.yml`](artex_enrich_user_agent.yml)** — *ARTEX Asset Enrichment Probe
-  User-Agent*. Inbound `artex-enrich/1.0` User-Agent from asset enrichment (`enrich/enrich.go`).
-  Target-side, supporting indicator. `level: high`.
 - **[`artex_selfupdate_egress.yml`](artex_selfupdate_egress.yml)** — *ARTEX Self-Update Egress
   User-Agent*. Outbound `artex-selfupdate` User-Agent from the self-update routine
   (`selfupdate/github.go`). Host/forensic egress indicator. `level: medium`.
@@ -38,14 +35,6 @@ behaviour-based layer of the defense guide (sections 4.1–4.2 and 4.4). Each re
 above by its `id`, so **convert the whole `sigma/` tree, not a single correlation file**, or the
 reference will not resolve (the [Sigma test](../tests/sigma/) asserts exactly this dependency).
 
-- **[`correlation/artex_enrich_scan_velocity.yml`](correlation/artex_enrich_scan_velocity.yml)** —
-  *Enrichment Scan Velocity*. A burst of `artex-enrich/1.0` probes from one source in a short window
-  (enrichment runs at concurrency 4 with no rate limit) — the velocity the single-request rule misses.
-  `event_count`, `level: high`.
-- **[`correlation/artex_enrich_fanout.yml`](correlation/artex_enrich_fanout.yml)** — *Enrichment
-  Fan-Out*. One source carrying the enrichment User-Agent to many *distinct* hosts: machine-speed breadth
-  across an asset list, where the distinct-host count, not request volume, is the tell. `value_count`,
-  `level: high`.
 - **[`correlation/artex_guard_block_burst.yml`](correlation/artex_guard_block_burst.yml)** —
   *Guard-Block Burst*. Repeated platform-guard control markers on one host — an actively engaged ARTEX
   run tripping its own guard, not a document that merely quotes the marker. `event_count`, `level: high`.
@@ -55,17 +44,20 @@ reference will not resolve (the [Sigma test](../tests/sigma/) asserts exactly th
   otherwise-generic destructive-command signal raises specificity. `temporal`, `level: high`.
 
 Thresholds and windows are conservative defaults — tune them to your baseline. The pure web multi-stage
-case (enumerate → probe → authenticate) still needs base rules specific to your environment, because that
-pattern does not reduce to a single ARTEX-unique User-Agent; a generic behavioural base template to start
-from is in the [defense guide §4.2](../../docs/defense-en.md), kept out of this tested tree because it
-cannot be grounded in ARTEX source.
+case (enumerate → probe → authenticate) still needs base rules specific to your environment: enrichment
+probes present the engagement's masked browser identity and carry no ARTEX-unique User-Agent, so that
+pattern has no static fingerprint to pin. A generic behavioural base template to start from is in the
+[defense guide §4.2](../../docs/defense-en.md), kept out of this tested tree because it cannot be grounded
+in ARTEX source.
 
 ## Scope and honesty — read before deploying
 
-- **Static indicators can be changed.** An operator can set a different User-Agent or clean up the CA
-  file, so the absence of an atomic indicator does **not** mean safety. The durable signal is the
-  behaviour the `correlation/` rules key on — one source chaining recon → enumeration → probing →
-  auth/injection attempts, adapting to responses, running without pause.
+- **Static indicators can be changed, and one is already gone.** An operator can set a different
+  User-Agent or clean up the CA file, so the absence of an atomic indicator does **not** mean safety; the
+  enrichment prober now presents the engagement's masked browser identity, so it has no static
+  target-side fingerprint at all. The durable signal is the behaviour the `correlation/` rules key on —
+  one source chaining recon → enumeration → probing → auth/injection attempts, adapting to responses,
+  running without pause.
 - **The destructive-command rule is generic hunting.** It mirrors ARTEX's guard deny list, but the same
   commands are run by legitimate administrators. Treat a hit as a lead, allow-list your environment, and
   do not attribute it to ARTEX on its own.
@@ -99,7 +91,7 @@ sigma convert -t splunk --without-pipeline detections/sigma/
 
 Backends vary in correlation support, so the `-t` choice matters: Splunk, Elasticsearch EQL, and Grafana
 Loki convert the whole tree, while Elasticsearch Lucene, OpenSearch, and the Microsoft `kusto` backend
-convert the five atomic rules only (express the window natively in the product). The measured per-backend
+convert the four atomic rules only (express the window natively in the product). The measured per-backend
 matrix and the `--without-pipeline` / `-p` field-mapping notes are in [`../README.md`](../README.md), and
 they are reproduced by [`../tests/sigma_backends/`](../tests/sigma_backends/).
 

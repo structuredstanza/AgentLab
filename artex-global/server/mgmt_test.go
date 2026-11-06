@@ -57,7 +57,7 @@ func TestMgmtAPI(t *testing.T) {
 	}
 
 	// valid template using seeded catalog vars → 200
-	code, _ = do("PUT", "/api/agents/planner/prompt", map[string]string{"template": "你是规划者，目标：{{.Goal}}，摘要 {{.AssetSummary}}"})
+	code, _ = do("PUT", "/api/agents/planner/prompt", map[string]string{"template": "you are the planner, goal: {{.Goal}}, summary {{.AssetSummary}}"})
 	if code != 200 {
 		t.Fatalf("valid prompt save: %d", code)
 	}

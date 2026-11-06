@@ -633,7 +633,7 @@ LIMIT $1`, malformedIPAssetsSampled)
 	}
 	warning := fmt.Sprintf(
 		"%d asset(s) have an invalid ip field; IP/CIDR range matching was skipped for them (these assets will not be attributed to a company by network-range rules): %s",
-		total, strings.Join(samples, "、"),
+		total, strings.Join(samples, ", "),
 	)
 	if total > len(samples) {
 		warning += fmt.Sprintf(" and %d more", total)

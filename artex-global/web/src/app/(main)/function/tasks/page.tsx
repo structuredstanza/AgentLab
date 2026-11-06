@@ -2236,11 +2236,11 @@ function DeleteTaskDialog({
           <AlertDialogDescription className="break-words">
             {task.description ? (
               <>
-                「
+                “
                 <span className="break-all">
                   {task.description.length > 80 ? `${task.description.slice(0, 80)}…` : task.description}
                 </span>
-                」{t("deleteDialog.descSuffix")}
+                ”{t("deleteDialog.descSuffix")}
               </>
             ) : (
               t("deleteDialog.descNoTask")

@@ -33,16 +33,16 @@ func TestDoJSONClassifiesHTTPStatus(t *testing.T) {
 		status    int
 		permanent bool
 	}{
-		{"200 成功不算错误", 200, false},
-		{"429 限流可重试", 429, false},
-		{"408 请求超时可重试", 408, false},
-		{"500 服务端错误可重试", 500, false},
-		{"502 网关错误可重试", 502, false},
-		{"503 服务不可用可重试", 503, false},
-		{"400 参数错误永久失败", 400, true},
-		{"401 鉴权失败永久失败", 401, true},
-		{"403 禁止访问永久失败", 403, true},
-		{"404 地址不存在永久失败", 404, true},
+		{"200 success is not an error", 200, false},
+		{"429 rate limit is retryable", 429, false},
+		{"408 request timeout is retryable", 408, false},
+		{"500 server error is retryable", 500, false},
+		{"502 gateway error is retryable", 502, false},
+		{"503 unavailable is retryable", 503, false},
+		{"400 bad request fails permanently", 400, true},
+		{"401 auth failure fails permanently", 401, true},
+		{"403 forbidden fails permanently", 403, true},
+		{"404 not found fails permanently", 404, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

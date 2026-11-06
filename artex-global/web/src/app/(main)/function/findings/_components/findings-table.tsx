@@ -312,11 +312,11 @@ export function FindingsTable({
                           <AlertDialogHeader>
                             <AlertDialogTitle>{t("table.deleteConfirmTitle")}</AlertDialogTitle>
                             <AlertDialogDescription className="break-words">
-                              「
+                              “
                               <span className="break-all">
                                 {f.name || f.vulnclass || f.summary || `#${f.finding_id}`}
                               </span>
-                              」 {t("table.deleteConfirmBody")}
+                              ” {t("table.deleteConfirmBody")}
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>

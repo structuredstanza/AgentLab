@@ -217,10 +217,10 @@ func (s *Server) seedFindingRetester() error {
 	if _, err = tx.Exec(`SELECT pg_advisory_xact_lock(7337741010)`); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE agents SET name='Finding retest' WHERE key=$1 AND name='漏洞复测'`, db.FindingRetestAgentKey); err != nil {
+	if _, err = tx.Exec(`UPDATE agents SET name='Finding retest' WHERE key=$1 AND name=U&'\6F0F\6D1E\590D\6D4B'`, db.FindingRetestAgentKey); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE agents SET description='Started manually from finding details; reads the original evidence and saves an independent retest conclusion.' WHERE key=$1 AND description='从漏洞详情手动启动，读取原证据并保存独立复测结论。'`, db.FindingRetestAgentKey); err != nil {
+	if _, err = tx.Exec(`UPDATE agents SET description='Started manually from finding details; reads the original evidence and saves an independent retest conclusion.' WHERE key=$1 AND description=U&'\4ECE\6F0F\6D1E\8BE6\60C5\624B\52A8\542F\52A8\FF0C\8BFB\53D6\539F\8BC1\636E\5E76\4FDD\5B58\72EC\7ACB\590D\6D4B\7ED3\8BBA\3002'`, db.FindingRetestAgentKey); err != nil {
 		return err
 	}
 	var done string

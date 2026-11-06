@@ -1,6 +1,7 @@
 package db
 
 import (
+	"log"
 	"strings"
 
 	"github.com/Autumn-27/artex/scope"
@@ -42,10 +43,14 @@ func (c *TaskScopeChecker) Judge(asset string) (bool, string) {
 	// explicitly ruled out.
 	rows, err := c.assets.ListTaskScopeWithSources(c.taskID)
 	if err != nil {
-		// A read failure must not become a silent permission grant, but it also
-		// must not stop the engagement: report nothing and let the audit log
-		// carry the failure.
-		return false, ""
+		// "Could not verify" is not "allowed". The previous behaviour returned
+		// false with a comment claiming the audit log would carry the failure,
+		// but nothing logged and nothing recorded, so a transient database
+		// error silently permitted every call — and /api/audit showed an
+		// ordinary allow. Refuse the call instead and say why; the worker sees
+		// the reason and can retry once the database recovers.
+		log.Printf("[scope] task %d: cannot read the task scope, refusing the call: %v", c.taskID, err)
+		return true, "the task scope could not be read, so this call was not verified: " + err.Error()
 	}
 	for _, row := range rows {
 		if !strings.EqualFold(row.Effect, "exclude") {
@@ -60,15 +65,35 @@ func (c *TaskScopeChecker) Judge(asset string) (bool, string) {
 
 // matchesScopeRow compares one stored scope row against a candidate asset,
 // reusing the same matcher the rules use so the two cannot disagree.
+//
+// A root_domain row covers its whole subtree — that is what the kind means
+// everywhere else in the system (`a.root_domain = ts.domain` in SQL, and the
+// tool description's "a whole root domain, including all subdomains"). Passing
+// the bare apex as the pattern made hostnameMatch require exact equality, so
+// excluding corp.example blocked corp.example and allowed api.corp.example.
 func matchesScopeRow(row TaskScope, asset string) bool {
 	pattern := ""
 	switch row.Kind {
-	case "root_domain", "subdomain":
+	case "root_domain":
+		if row.Domain == "" {
+			return false
+		}
+		pattern = "*." + row.Domain
+		// The apex itself is part of the subtree.
+		if strings.EqualFold(strings.TrimSuffix(scope.ParseAsset(asset).Host, "."), strings.TrimSuffix(row.Domain, ".")) {
+			return true
+		}
+	case "subdomain":
 		pattern = row.Domain
 	case "ip", "cidr":
 		pattern = row.Net
 	default:
-		pattern = row.Value
+		// company / icp / keyword are matched in SQL against asset columns; the
+		// guard's host matcher cannot express them. AddAgentScope refuses to
+		// store one as an exclusion, so reaching this means a row was written by
+		// hand or restored from an archive.
+		log.Printf("[scope] task %d: ignoring %q scope row #%d as an exclusion: this kind cannot be enforced by the tool guard", row.TaskID, row.Kind, row.ID)
+		return false
 	}
 	if pattern == "" {
 		return false

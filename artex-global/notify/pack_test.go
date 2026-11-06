@@ -33,11 +33,11 @@ func TestMarkdownBodyPacksWholeItemsWithinByteLimit(t *testing.T) {
 	}
 	// should include only the first kept entries.
 	for i := 0; i < kept; i++ {
-		if !strings.Contains(body, "漏洞"+itoa(i+1)) {
+		if !strings.Contains(body, "finding"+itoa(i+1)) {
 			t.Fatalf("item %d should be in this message:\n%s", i+1, body)
 		}
 	}
-	if strings.Contains(body, "漏洞"+itoa(kept+1)) {
+	if strings.Contains(body, "finding"+itoa(kept+1)) {
 		t.Fatalf("item %d should not appear (it belongs to the next batch)", kept+1)
 	}
 }
@@ -122,18 +122,18 @@ func TestMarkdownEscapesUntrustedContent(t *testing.T) {
 			name: "newline and link in title",
 			item: Item{
 				Severity: "high",
-				Name:     "登录口 SQL 注入\n[紧急：点此验证账号](http://attacker.tld)",
+				Name:     "login SQL injection\n[urgent: verify account here](http://attacker.tld)",
 			},
 			// Newlines must be collapsed (otherwise they could forge new list items or blockquotes);
 			// Square and round brackets must be escaped (otherwise they become clickable external links).
-			must:  []string{`\[紧急：点此验证账号\]`, `\(http://attacker.tld\)`},
-			wrong: []string{"\n[紧急", "\n\n[紧急"},
+			must:  []string{`\[urgent: verify account here\]`, `\(http://attacker.tld\)`},
+			wrong: []string{"\n[urgent", "\n\n[urgent"},
 		},
 		{
 			name: "image beacon in title",
 			item: Item{
 				Severity: "high",
-				Name:     "漏洞 ![](http://attacker.tld/beacon)",
+				Name:     "finding ![](http://attacker.tld/beacon)",
 			},
 			must:  []string{`\!`, `\(http://attacker.tld/beacon\)`},
 			wrong: []string{"![]("},
@@ -142,18 +142,18 @@ func TestMarkdownEscapesUntrustedContent(t *testing.T) {
 			name: "emphasis and quote in asset name",
 			item: Item{
 				Severity: "high",
-				Name:     "普通标题",
-				Assets:   []string{"a.com/*注入*>引用"},
+				Name:     "ordinary title",
+				Assets:   []string{"a.com/*injection*>reference"},
 			},
-			must:  []string{`\*注入\*`, `\>`},
-			wrong: []string{"*注入*"},
+			must:  []string{`\*injection\*`, `\>`},
+			wrong: []string{"*injection*"},
 		},
 		{
 			name: "backticks and pipe in summary",
 			item: Item{
 				Severity: "high",
-				Name:     "标题",
-				Summary:  "`code` | 表格",
+				Name:     "title",
+				Summary:  "`code` | table",
 			},
 			must:  []string{"\\`code\\`", `\|`},
 			wrong: []string{"`code`"},
@@ -193,7 +193,7 @@ func TestMarkdownEscapeBackslashFirst(t *testing.T) {
 // markdown escapes must not leak into Telegram's HTML output (this once happened in the shared title function
 // Escaping was applied, yet the resulting Telegram message shows visible backslashes such as `\(1\)`.
 func TestTelegramTitleHasNoMarkdownEscapes(t *testing.T) {
-	m := Message{Items: []Item{{Severity: "high", Name: "alert(1) *重点*"}}}
+	m := Message{Items: []Item{{Severity: "high", Name: "alert(1) *emphasis*"}}}
 	text, _ := telegramHTML(m)
 	if strings.Contains(text, `\(`) || strings.Contains(text, `\*`) {
 		t.Fatalf("the Telegram body contains markdown backslash escapes:\n%s", text)

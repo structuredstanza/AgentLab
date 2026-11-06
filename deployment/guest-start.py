@@ -409,6 +409,16 @@ def app_env(dsn, admin_pw):
         "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy,
         "no_proxy": "localhost,127.0.0.1,::1,host.microsandbox.internal",
         "NO_PROXY": "localhost,127.0.0.1,::1,host.microsandbox.internal",
+        # The masking egress proxy the backend's own outbound requests (asset
+        # enrichment probes) must exit through, and the CA it signs with. These
+        # are explicit rather than inferred from HTTP_PROXY, because a generic
+        # proxy variable is not a guarantee that the identity proxy is the one
+        # used: the recording MITM also honours them, and a direct dial with a
+        # browser User-Agent still leaves with this process's TLS fingerprint.
+        # With no reachable masking proxy the backend fails those probes closed
+        # instead of going direct.
+        "ARTEX_EGRESS_PROXY": proxy,
+        "ARTEX_EGRESS_CA": EGRESS_CA,
         "SSL_CERT_FILE": EGRESS_CA,
         "CURL_CA_BUNDLE": EGRESS_CA,
         "REQUESTS_CA_BUNDLE": EGRESS_CA,

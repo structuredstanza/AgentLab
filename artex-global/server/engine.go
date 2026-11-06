@@ -1300,7 +1300,14 @@ func taskExecutionPaused(cause error) bool {
 	}
 	switch abort.Code {
 	case "paused_by_user", "paused_by_orchestrator", "paused_on_reload", "paused_race_guard",
-		"queued_for_admission", "llm_unavailable_queued", "task_deleted":
+		"queued_for_admission", "llm_unavailable_queued", "task_deleted",
+		// A graceful shutdown cancels every run with this cause. Treating it as a
+		// pause returns the intent to the frontier, which is what AbortShutdown
+		// promises ("leftover running intents are reset to open and re-executed
+		// after restart"). Without it the run falls through to the default
+		// classifier and is written as "blocked", which Frontier never selects,
+		// so every restart would silently discard the work in flight.
+		"shutdown":
 		return true
 	default:
 		return false

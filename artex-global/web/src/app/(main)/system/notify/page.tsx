@@ -146,7 +146,7 @@ export default function NotifyPage() {
       }
       if (d.kind === "list") {
         out[d.key] = String(raw ?? "")
-          .split(/[\s,，]+/)
+          .split(/[\s,\uff0c]+/)
           .map((s) => s.trim())
           .filter(Boolean);
         continue;

@@ -16,8 +16,8 @@ Coverage here means "this repository ships a detection that tags this technique"
 fully covered". The score is deliberately honest about detection strength:
 
 - **100 — ARTEX-specific signature or behaviour.** A static indicator unique to ARTEX (the
-  `artex-enrich/1.0` / `artex-selfupdate` User-Agents, the guard audit marker) or a behaviour rule built
-  on one (enrichment velocity / fan-out, guard-block burst).
+  `artex-selfupdate` User-Agent, the guard audit marker) or a behaviour rule built on one (guard-block
+  burst).
 - **50–65 — generic hunting lead.** Destructive-command hunting mirrored from the ARTEX guard deny list.
   The same commands are run by legitimate administrators, so these fire on benign activity too; treat a
   hit as a lead, not an attribution. 65 marks the case where a correlation rule raises specificity by
@@ -25,13 +25,8 @@ fully covered". The score is deliberately honest about detection strength:
 
 ## Techniques covered
 
-Eight techniques across six tactics. Each maps to the rule(s) that tag it:
+Six techniques across five tactics. Each maps to the rule(s) that tag it:
 
-- **Reconnaissance — T1595 (Active Scanning), T1592 (Gather Victim Host Information).**
-  [`sigma/artex_enrich_user_agent.yml`](../sigma/artex_enrich_user_agent.yml),
-  [`sigma/correlation/artex_enrich_scan_velocity.yml`](../sigma/correlation/artex_enrich_scan_velocity.yml),
-  [`sigma/correlation/artex_enrich_fanout.yml`](../sigma/correlation/artex_enrich_fanout.yml), and the
-  [Suricata rules](../suricata/artex.rules) (sid 1000001 / 1000002).
 - **Command and Control — T1105 (Ingress Tool Transfer).**
   [`sigma/artex_selfupdate_egress.yml`](../sigma/artex_selfupdate_egress.yml).
 - **Execution — T1059 (Command and Scripting Interpreter).**
@@ -58,10 +53,11 @@ Eight techniques across six tactics. Each maps to the rule(s) that tag it:
 ## Scope and honesty
 
 - **Coverage is not completeness.** A technique scored here means a rule tags it, not that every variant
-  of the technique is detected. Only two ARTEX-unique User-Agents are visible on the wire — the enrichment
-  prober (`artex-enrich/1.0`) in the reconnaissance phase and the norma SDK WebFetch tool (`norma/0.4`) in
-  the attack phase — while the rest of the attack traffic follows tool-default fingerprints; the durable
-  detection is behavioural
+  of the technique is detected. Only one ARTEX-unique User-Agent is visible on the wire — the norma SDK
+  WebFetch tool (`norma/0.4`) in the attack phase — and the enrichment prober has no static fingerprint at
+  all: it presents the engagement's masked browser identity, so it is indistinguishable from ordinary
+  browser traffic at the target and is not scored as a reconnaissance signature here. The rest of the
+  attack traffic follows tool-default fingerprints; the durable detection is behavioural
   (see the [English defense guide](../../docs/defense-en.md), sections 1–2 and 4.1–4.2). The pure web multi-stage
   case still needs base rules specific to your environment.
 - **Static indicators can be changed.** An operator can set a different User-Agent, so the absence of a

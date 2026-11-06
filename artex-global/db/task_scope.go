@@ -6,6 +6,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+
+	"github.com/Autumn-27/artex/scope"
 )
 
 // TaskScope is one row of a task's test scope — the coverage denominator and the
@@ -79,18 +81,26 @@ func (s *AssetStore) upsertTaskScopeResult(ts TaskScope) (bool, error) {
 	if src == "" {
 		src = "auto"
 	}
+	// The effect column defaults to 'include'; only an explicit exclusion is
+	// written, because that is the value the guard enforces. Without this the
+	// column could only ever be set by hand-written SQL, so the boundary the
+	// schema and the changelog advertise was unreachable.
+	effect := strings.TrimSpace(ts.Effect)
+	if effect == "" {
+		effect = "include"
+	}
 	query := `
-INSERT INTO task_scope(task_id, kind, company_id, domain, net, value, source, reason)
-VALUES ($1,$2,$3,$4,$5::cidr,$6,$7,NULLIF($8,''))
+INSERT INTO task_scope(task_id, kind, company_id, domain, net, value, source, reason, effect)
+VALUES ($1,$2,$3,$4,$5::cidr,$6,$7,NULLIF($8,''),$9)
 ON CONFLICT DO NOTHING`
 	var (
 		result sql.Result
 		err    error
 	)
 	if s.tx != nil {
-		result, err = s.tx.Exec(query, ts.TaskID, ts.Kind, companyVal, domainVal, netVal, valueVal, src, ts.Reason)
+		result, err = s.tx.Exec(query, ts.TaskID, ts.Kind, companyVal, domainVal, netVal, valueVal, src, ts.Reason, effect)
 	} else {
-		result, err = s.db.Exec(query, ts.TaskID, ts.Kind, companyVal, domainVal, netVal, valueVal, src, ts.Reason)
+		result, err = s.db.Exec(query, ts.TaskID, ts.Kind, companyVal, domainVal, netVal, valueVal, src, ts.Reason, effect)
 	}
 	if err != nil {
 		return false, err
@@ -130,13 +140,24 @@ func (s *AssetStore) AddAutoScope(taskID int64, assetType, domain, rawURL, ip st
 
 // AddAgentScope parses a (kind,value) pair and records it as task scope.
 // source is "agent" when called from an LLM tool, "manual" from the UI.
+// effect is "include" (empty means include) or "exclude"; an exclusion is the
+// only value the tool guard enforces, so it is the one an operator uses to
+// declare a host off-limits rather than merely out of the current plan.
 // company: value = company name or id (must already exist). root_domain/subdomain:
 // value = a domain. ip/cidr: value = an IP or CIDR (bare IP → /32,/128).
-func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source string) (TaskScope, error) {
+func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source, effect string) (TaskScope, error) {
 	if source == "" {
 		source = "agent"
 	}
-	ts := TaskScope{TaskID: taskID, Kind: kind, Source: source, Reason: reason}
+	effect = strings.ToLower(strings.TrimSpace(effect))
+	switch effect {
+	case "":
+		effect = "include"
+	case "include", "exclude":
+	default:
+		return TaskScope{}, fmt.Errorf("unsupported effect: %s (include/exclude)", effect)
+	}
+	ts := TaskScope{TaskID: taskID, Kind: kind, Source: source, Reason: reason, Effect: effect}
 	if taskID <= 0 {
 		return ts, fmt.Errorf("task_id is required")
 	}
@@ -203,10 +224,43 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 	default:
 		return ts, fmt.Errorf("unsupported kind: %s (company/root_domain/subdomain/ip/cidr/icp/keyword)", kind)
 	}
+	// An exclusion that can never match is worse than no exclusion: the
+	// operator believes the host is off-limits and the guard silently never
+	// fires. icp/keyword/company rows are matched by SQL against asset
+	// columns, not by the guard's host matcher, so they cannot express an
+	// exclusion — and accepting one would leave the model believing a company
+	// is out of reach while its hosts stay callable.
+	if effect == "exclude" {
+		switch kind {
+		case "icp", "keyword", "company":
+			return ts, fmt.Errorf("kind %q cannot be an exclusion: it is matched against asset attributes, not by the tool guard; exclude a root_domain, subdomain, ip or cidr instead", kind)
+		}
+	}
+	// Reject a rule that could never match an asset (policy text filed as scope,
+	// e.g. "class:dos-flooding"). scope.Problem existed for this and was never
+	// called, so a stored rule could look like a boundary while matching nothing.
+	if pattern := scopeRulePattern(ts); pattern != "" {
+		if err := scope.Problem(pattern); err != nil {
+			return ts, err
+		}
+	}
 	if err := s.upsertTaskScope(ts); err != nil {
 		return ts, err
 	}
 	return ts, nil
+}
+
+// scopeRulePattern returns the string a scope row matches on, for the kinds the
+// guard evaluates as host patterns. Kinds matched in SQL (icp, keyword, company)
+// return "" and are validated elsewhere.
+func scopeRulePattern(ts TaskScope) string {
+	switch ts.Kind {
+	case "root_domain", "subdomain":
+		return ts.Domain
+	case "ip", "cidr":
+		return ts.Net
+	}
+	return ""
 }
 
 // DeleteTaskScope removes a single scope row by id, scoped to the given task.
@@ -289,22 +343,35 @@ func (s *AssetStore) CoverageEnabled(taskID int64) bool {
 	return enabled
 }
 
-// task_scope→assets match predicate, reused by the count / by-type / untested queries. $1=taskID.
+// scopeAssetMatch is the single task_scope→assets predicate. It is shared by the
+// coverage/untested queries and by the agent's list_assets context, because two
+// copies drifted: only one of them matched an ip/cidr row against `a.domain`,
+// so a service on an IP literal (which stores its address in `domain` and
+// leaves `ip` NULL) appeared in list_assets but was never counted as covered
+// and never appeared in the untested backlog — coverage reported complete while
+// an in-scope asset had never been tested.
+//
+// Aliases are fixed: `a` is assets, `ts` is task_scope.
+const scopeAssetMatch = `(ts.kind='company'     AND a.company_id = ts.company_id)
+    OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
+    OR (ts.kind='subdomain'   AND a.domain = ts.domain)
+    OR (ts.kind IN ('ip','cidr') AND (ts.net >>= try_inet(a.ip) OR ts.net >>= try_inet(a.domain)))
+    OR (ts.kind='icp' AND (
+         lower(regexp_replace(COALESCE(a.icp,''), '[[:space:]]+', '', 'g')) = ts.value
+         OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
+       ))`
+
+// covTargetCTE is the coverage/untested set. $1=taskID, $2=explorationID.
+//
+// Only include rows contribute a target. An exclusion row names a host the
+// guard refuses, so counting its assets would tell the agent to test what it is
+// forbidden to touch and hold coverage below 100% forever.
 const covTargetCTE = `
 target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
   FROM assets a
-  JOIN task_scope ts ON ts.task_id = $1 AND (
-       (ts.kind='company'     AND a.company_id = ts.company_id)
-    OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
-    OR (ts.kind='subdomain'   AND a.domain = ts.domain)
-    OR (ts.kind IN ('ip','cidr') AND ts.net >>= try_inet(a.ip))
-    OR (ts.kind='icp' AND (
-         lower(regexp_replace(COALESCE(a.icp,''), '[[:space:]]+', '', 'g')) = ts.value
-         OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
-       ))
-  )
+  JOIN task_scope ts ON ts.task_id = $1 AND ts.effect='include' AND (` + scopeAssetMatch + `)
 ),
 tested AS (
   SELECT DISTINCT ea.asset_id

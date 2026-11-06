@@ -12,7 +12,7 @@ import (
 func (s *Server) pgListCommands(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	page := atoiDefault(q.Get("page"), 0)
-	size := atoiDefault(q.Get("size"), 50)
+	size := atoiClamp(q.Get("size"), 50, maxCommandPageSize)
 	keyword := q.Get("q")
 
 	records, total, err := s.m.PG().ListCommands(commandTaskFilter(q.Get("task")), keyword, page, size)
@@ -58,7 +58,7 @@ func commandTaskFilter(v string) *int64 {
 func (s *Server) pgListLLMRecords(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	page := atoiDefault(q.Get("page"), 0)
-	size := atoiDefault(q.Get("size"), 50)
+	size := atoiClamp(q.Get("size"), 50, maxCommandPageSize)
 	model := q.Get("model")
 	session := q.Get("session")
 	task := q.Get("task")

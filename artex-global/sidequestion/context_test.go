@@ -93,7 +93,11 @@ func TestSideBudgetCountsContentNotJSONCharacters(t *testing.T) {
 		t.Fatal("snapshot mutated")
 	}
 	baseline := EstimateInputTokens(llm.CompletionRequest{Messages: []llm.Message{llm.UserText("x")}})
-	if EstimateInputTokens(llm.CompletionRequest{Messages: []llm.Message{llm.UserText("x")}, System: []string{strings.Repeat("中", 3000)}, Tools: fixture().Tools}) <= baseline+3000 {
+	// A 3-byte rune repeated: the estimate must count content, so an estimator
+	// that measured the JSON-escaped form (\uXXXX is six ASCII characters per
+	// rune) would report a wildly different number. Written as an escape so the
+	// source stays ASCII while the value keeps the multibyte content.
+	if EstimateInputTokens(llm.CompletionRequest{Messages: []llm.Message{llm.UserText("x")}, System: []string{strings.Repeat("\u4e2d", 3000)}, Tools: fixture().Tools}) <= baseline+3000 {
 		t.Fatal("system/schema/CJK omitted")
 	}
 }
@@ -104,9 +108,9 @@ func TestSideLongExchangeAndSnapshotCompactionAreBounded(t *testing.T) {
 			snap := Snapshot{Request: fixture(), Model: Model{WindowTokens: 32000}}
 			var history []Exchange
 			if hugeHistory {
-				history = []Exchange{{Ordinal: 1, Question: "earlier", Answer: strings.Repeat("历史依据ABC", 14000), Status: "completed"}}
+				history = []Exchange{{Ordinal: 1, Question: "earlier", Answer: strings.Repeat("\u5386\u53f2\u4f9d\u636eABC", 14000), Status: "completed"}}
 			} else {
-				snap.Request.Messages = append([]llm.Message{llm.UserText(strings.Repeat("old tool evidence 中文", 9000))}, snap.Request.Messages...)
+				snap.Request.Messages = append([]llm.Message{llm.UserText(strings.Repeat("old tool evidence \u4e2d\u6587", 9000))}, snap.Request.Messages...)
 			}
 			original := mustJSON(t, snap)
 			calls, answers := 0, 0
@@ -224,7 +228,10 @@ func TestSideSummaryCancellationAndFailureDoNotAdvanceMemory(t *testing.T) {
 				case "truncated":
 					return assistant("partial"), "length", usage, nil
 				case "too-large":
-					return assistant(strings.Repeat("中", 5000)), "end_turn", usage, nil
+					// Multibyte, as an escape: the point is an answer whose
+					// token count exceeds the budget, and a rune-heavy answer
+					// also exercises the UTF-8-safe path.
+					return assistant(strings.Repeat("\u4e2d", 5000)), "end_turn", usage, nil
 				case "tool":
 					return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "forbidden", Name: "Bash"}}}, "tool_use", usage, nil
 				}

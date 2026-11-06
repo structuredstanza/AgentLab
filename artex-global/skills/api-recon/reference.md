@@ -49,7 +49,7 @@ Trace the chain `isLogin = f(getUser())` → `getUser = decode(storage.read(KEY)
 ```bash
 grep -rhoaE '.{0,60}(interceptors\.response|axios|request\.use).{0,120}' js | head
 grep -rhoaE '.{0,40}(response_code|errcode|errno|\bcode\b|\bret\b|\bstatus\b)\s*[=!]==?\s*[\-0-9]{1,4}.{0,60}' js | head -20
-grep -rhoaE '.{0,40}(未登录|请重新登录|登录已过期|unauthorized|登录失效|授权|token.{0,10}invalid).{0,40}' js | head
+grep -rhoaP '.{0,40}(\x{672a}\x{767b}\x{5f55}|\x{8bf7}\x{91cd}\x{65b0}\x{767b}\x{5f55}|\x{767b}\x{5f55}\x{5df2}\x{8fc7}\x{671f}|unauthorized|\x{767b}\x{5f55}\x{5931}\x{6548}|\x{6388}\x{6743}|token.{0,10}invalid).{0,40}' js | head
 grep -rhoaE '.{0,30}(location\.href|router\.(push|replace)|navigate)\([^)]*login[^)]*\)' js | head
 ```
 

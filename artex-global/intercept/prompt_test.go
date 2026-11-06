@@ -22,7 +22,7 @@ func TestParseVerdict(t *testing.T) {
 func TestParseVerdictRejectsIncompleteOrAmbiguousReplies(t *testing.T) {
 	valid := `{"decision":"allow","comment":"Action: read file; Consequence: returns content; Matched rule: A5"}`
 	for _, reply := range []string{
-		"", "ALLOW", "DENY:命中D4", "放行:ALLOW", "ASK:归属不明",
+		"", "ALLOW", "DENY: matched D4", "allow: ALLOW", "ASK: ownership unclear",
 		`{"decision":"allow"}`, `{"decision":"approve","comment":"Action: read; Consequence: returns content; Matched rule: A5"}`,
 		`{"decision":"allow","comment":null}`, `{"decision":"allow","comment":123}`,
 		strings.Replace(valid, "Action: read file", "Action: ", 1),
@@ -35,8 +35,8 @@ func TestParseVerdictRejectsIncompleteOrAmbiguousReplies(t *testing.T) {
 		// A fence the model never closed is what a reply truncated at MaxTokens
 		// looks like; completing it would invent a verdict.
 		"```json\n" + valid[:len(valid)-1],
-		"```json\n" + valid + "\n```\n此外我建议后续人工复核。",
-		"我的裁决是：\n" + valid,
+		"```json\n" + valid + "\n```\nI also suggest a later human re-check.",
+		"My verdict is:\n" + valid,
 	} {
 		if got := ParseVerdict(reply); got.Action != "" {
 			t.Errorf("accepted incomplete/ambiguous verdict: %q => %+v", reply, got)

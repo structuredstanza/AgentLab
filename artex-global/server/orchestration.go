@@ -491,8 +491,13 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 	}
 	for _, t := range platTools {
 		schema, _ := json.Marshal(t.InputSchema())
-		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, autoAgents)
+		bindings := autoAgents
+		if b := manifestToolAgents(t.Name()); b != nil {
+			bindings = b
+		}
+		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, bindings)
 	}
+	s.seedManifestToolBindings()
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
 	s.seedPlannerListAssetsBinding()
@@ -521,6 +526,48 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 // SeedTool is first-insert-only, so a new param (e.g. spawn_task's llm_profile) never
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
+
+// manifestToolAgents returns the default agent binding for a platform tool, or
+// nil to fall back to the platform default (Auto only).
+//
+// run_tool and list_tools are how an agent uses a declared tool instead of
+// hand-building a Bash command line. Binding them only to "auto" left every
+// worker with Bash as its sole execution path, while run_tool's own description
+// and the recon-orchestration skill told the model to prefer run_tool over Bash
+// — an instruction it had no way to follow. The planner gets them so an intent
+// can name a manifest id; the worker gets them because the worker is what
+// actually runs the scan.
+func manifestToolAgents(name string) json.RawMessage {
+	switch name {
+	case "run_tool", "list_tools":
+		return json.RawMessage(`["auto","worker","planner"]`)
+	}
+	return nil
+}
+
+// seedManifestToolBindings backfills the run_tool / list_tools bindings onto
+// worker and planner ONCE (guarded by a settings flag).
+//
+// SeedTool is first-insert-only, so changing the seed above fixes new databases
+// and leaves every existing one with the old "auto"-only binding — the exact
+// state in which a worker is told to prefer run_tool and cannot call it. Fresh
+// DBs already have the new binding and this is a no-op there. One-shot so an
+// operator who deliberately unbinds them later is not overridden.
+func (s *Server) seedManifestToolBindings() {
+	const flag = "manifest_tool_bindings_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	keys := []string{"run_tool", "list_tools"}
+	for _, agentKey := range []string{"worker", "planner"} {
+		if err := s.m.pg.AddAgentToToolBinding(agentKey, keys); err != nil {
+			log.Printf("[tools] failed to backfill %s bindings onto %s: %v", keys, agentKey, err)
+			return // leave the flag unset so it retries next startup
+		}
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+	log.Printf("[tools] bound run_tool/list_tools to worker and planner (one-time; workers previously had Bash only)")
+}
 
 // unbindGoalMetDefault removes goal_met's default "planner" binding ONCE (guarded by
 // a settings flag), so existing DBs match the new default of NO agent. goal_met bypasses
@@ -672,16 +719,16 @@ const reporterToolCallMessage = "A vulnerability was just recorded by report_fin
 	"evidence_version must be passed, otherwise the report stays permanently marked as pending update. Do not mix the two ID types."
 
 // Legacy trigger message (0.3.8 and earlier). Only records that are still byte-for-byte identical to it are overwritten by the migration; user-modified ones are left as they are.
-const reporterToolCallMessageV1 = "上面刚有一个漏洞被 report_finding 登记。请从触发上下文里取出 finding_id" +
-	"（工具返回 \"finding recorded: <id>\" 里的数字）与任务 id，按你的职责撰写该漏洞的详细报告，" +
-	"最后调用 update_finding_report(finding_id, report) 保存。"
+const reporterToolCallMessageV1 = "\u4e0a\u9762\u521a\u6709\u4e00\u4e2a\u6f0f\u6d1e\u88ab report_finding \u767b\u8bb0\u3002\u8bf7\u4ece\u89e6\u53d1\u4e0a\u4e0b\u6587\u91cc\u53d6\u51fa finding_id" +
+	"\uff08\u5de5\u5177\u8fd4\u56de \"finding recorded: <id>\" \u91cc\u7684\u6570\u5b57\uff09\u4e0e\u4efb\u52a1 id\uff0c\u6309\u4f60\u7684\u804c\u8d23\u64b0\u5199\u8be5\u6f0f\u6d1e\u7684\u8be6\u7ec6\u62a5\u544a\uff0c" +
+	"\u6700\u540e\u8c03\u7528 update_finding_report(finding_id, report) \u4fdd\u5b58\u3002"
 
 // Previous default message (the version current before the English conversion). Again, migrate only records that are unchanged verbatim.
-const reporterToolCallMessageV2 = "上面刚有一个漏洞被 report_finding 登记。请读取返回 JSON 的 finding_id（独立漏洞记录 ID）与 finding_node_id（探索节点 ID），" +
-	"先用 get_finding_traffic(finding_id) 读取当前证据清单及其 version（空清单是正常情况，照常写报告）；" +
-	"若运行指引启用自动绑定，在读取前先核实并关联本次漏洞的流量。节点详情使用 finding_node_id。" +
-	"最后调用 update_finding_report(finding_id=finding_node_id, report, evidence_version=实际读取版本) 保存，" +
-	"evidence_version 必须传，否则报告会被永久标记为待更新。不要混用两种编号。"
+const reporterToolCallMessageV2 = "\u4e0a\u9762\u521a\u6709\u4e00\u4e2a\u6f0f\u6d1e\u88ab report_finding \u767b\u8bb0\u3002\u8bf7\u8bfb\u53d6\u8fd4\u56de JSON \u7684 finding_id\uff08\u72ec\u7acb\u6f0f\u6d1e\u8bb0\u5f55 ID\uff09\u4e0e finding_node_id\uff08\u63a2\u7d22\u8282\u70b9 ID\uff09\uff0c" +
+	"\u5148\u7528 get_finding_traffic(finding_id) \u8bfb\u53d6\u5f53\u524d\u8bc1\u636e\u6e05\u5355\u53ca\u5176 version\uff08\u7a7a\u6e05\u5355\u662f\u6b63\u5e38\u60c5\u51b5\uff0c\u7167\u5e38\u5199\u62a5\u544a\uff09\uff1b" +
+	"\u82e5\u8fd0\u884c\u6307\u5f15\u542f\u7528\u81ea\u52a8\u7ed1\u5b9a\uff0c\u5728\u8bfb\u53d6\u524d\u5148\u6838\u5b9e\u5e76\u5173\u8054\u672c\u6b21\u6f0f\u6d1e\u7684\u6d41\u91cf\u3002\u8282\u70b9\u8be6\u60c5\u4f7f\u7528 finding_node_id\u3002" +
+	"\u6700\u540e\u8c03\u7528 update_finding_report(finding_id=finding_node_id, report, evidence_version=\u5b9e\u9645\u8bfb\u53d6\u7248\u672c) \u4fdd\u5b58\uff0c" +
+	"evidence_version \u5fc5\u987b\u4f20\uff0c\u5426\u5219\u62a5\u544a\u4f1a\u88ab\u6c38\u4e45\u6807\u8bb0\u4e3a\u5f85\u66f4\u65b0\u3002\u4e0d\u8981\u6df7\u7528\u4e24\u79cd\u7f16\u53f7\u3002"
 
 // upgradeReporterTriggerMessage refreshes reporter trigger messages in old databases that still contain the default text to the new version.
 // seedReporterAgent is guarded by reporter_agent_seed_v1 and only writes the trigger when a new agent is created, so
@@ -719,8 +766,8 @@ const reporterAgentName = "Reporter"
 const reporterAgentDescription = "Writes detailed vulnerability reports: triggered automatically when a vulnerability is recorded. It reviews the evidence and execution history, then saves a Markdown report on that vulnerability."
 
 // Shipped labels before the English pass; used only to recognise untouched seeded rows.
-const reporterAgentNameV1 = "보고서 작성"
-const reporterAgentDescriptionV1 = "취약점 상세 보고서 작성: 취약점을 발견하면 자동으로 트리거되어, 증거와 실행 과정을 조회한 뒤 Markdown 보고서를 작성해 해당 취약점에 기록합니다."
+const reporterAgentNameV1 = "\ubcf4\uace0\uc11c \uc791\uc131"
+const reporterAgentDescriptionV1 = "\ucde8\uc57d\uc810 \uc0c1\uc138 \ubcf4\uace0\uc11c \uc791\uc131: \ucde8\uc57d\uc810\uc744 \ubc1c\uacac\ud558\uba74 \uc790\ub3d9\uc73c\ub85c \ud2b8\ub9ac\uac70\ub418\uc5b4, \uc99d\uac70\uc640 \uc2e4\ud589 \uacfc\uc815\uc744 \uc870\ud68c\ud55c \ub4a4 Markdown \ubcf4\uace0\uc11c\ub97c \uc791\uc131\ud574 \ud574\ub2f9 \ucde8\uc57d\uc810\uc5d0 \uae30\ub85d\ud569\ub2c8\ub2e4."
 
 // seedReporterAgent seeds a "Reporter" custom agent (builtin=false, editable/deletable in the UI):
 // Binds update_finding_report plus task query tools and attaches a "fire when report_finding is called"

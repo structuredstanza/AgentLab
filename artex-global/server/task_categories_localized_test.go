@@ -36,7 +36,7 @@ func TestTaskCategoryResponses(t *testing.T) {
 		return decodeErrorField(t, rec.Body.Bytes())
 	}
 	decodeCase("name-empty", `{"name":"   "}`)
-	decodeCase("name-too-long", `{"name":"`+strings.Repeat("가", db.MaxTaskCategoryNameRunes+1)+`"}`)
+	decodeCase("name-too-long", `{"name":"`+strings.Repeat("a", db.MaxTaskCategoryNameRunes+1)+`"}`)
 	// The body exceeds maxTaskCategoryRequestBytes, so MaxBytesReader errors mid-decode.
 	decodeCase("too-large", `{"name":"`+strings.Repeat("a", maxTaskCategoryRequestBytes+1)+`"}`)
 

@@ -44,7 +44,7 @@ export function mentionSearch(query: string) {
 
 export function mentionToken(item: ChatMention) {
   const label = item.label
-    .replace(/[[\]]/g, (char) => (char === "[" ? "（" : "）"))
+    .replace(/[[\]]/g, (char) => (char === "[" ? "(" : ")"))
     .replace(/\s+/g, " ")
     .slice(0, 100);
   return `@[${item.kind}#${item.id} ${label}]`;
@@ -65,7 +65,7 @@ export interface SelectedMention {
 export function selectedMentions(value: string): SelectedMention[] {
   return [
     ...value.matchAll(
-      /@\[(finding|asset|company|endpoint|ip|app|root_domain|subdomain|service|漏洞|资产|企业|接口|IP|应用|域名|子域名|服务)#([0-9]+)(?: ([^\]\r\n]*))?\]/g,
+      /@\[(finding|asset|company|endpoint|ip|app|root_domain|subdomain|service|\u6f0f\u6d1e|\u8d44\u4ea7|\u4f01\u4e1a|\u63a5\u53e3|IP|\u5e94\u7528|\u57df\u540d|\u5b50\u57df\u540d|\u670d\u52a1)#([0-9]+)(?: ([^\]\r\n]*))?\]/g,
     ),
   ].map((match) => ({
     token: match[0],

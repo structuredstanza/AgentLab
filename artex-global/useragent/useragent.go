@@ -18,27 +18,46 @@ import (
 const Default = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 var (
-	once  sync.Once
-	value string
+	mu     sync.RWMutex
+	value  string
+	loaded bool
 )
 
 // Get returns the identity every outbound request should present.
 func Get() string {
-	once.Do(func() {
+	mu.RLock()
+	if loaded {
+		v := value
+		mu.RUnlock()
+		return v
+	}
+	mu.RUnlock()
+	mu.Lock()
+	defer mu.Unlock()
+	if !loaded {
 		value = strings.TrimSpace(os.Getenv("ARTEX_USER_AGENT"))
 		if value == "" {
 			value = Default
 		}
-	})
+		loaded = true
+	}
 	return value
 }
 
 // Set overrides the identity, for a caller that already resolved it.
+//
+// Guarded by the same lock as Get: a plain sync.Once let Set write the value
+// while another goroutine read it, and marking the Once done without reading
+// the environment let a concurrent first Get return an empty identity.
 func Set(ua string) {
-	if ua = strings.TrimSpace(ua); ua != "" {
-		once.Do(func() {})
-		value = ua
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return
 	}
+	mu.Lock()
+	value = ua
+	loaded = true
+	mu.Unlock()
 }
 
 // SetIfAbsent sets the header only when the caller has not chosen one.

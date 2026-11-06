@@ -75,7 +75,7 @@ func TestRecordKeepsBodiesInIndex(t *testing.T) {
 
 	tr.record(newFlow("api.example.com", "POST", "/v1/login",
 		[]byte(`{"user":"admin","password":"P@ssw0rd"}`),
-		[]byte(`{"token":"abc123","note":"内网测试账号"}`)))
+		[]byte(`{"token":"abc123","note":"internal test account"}`)))
 
 	// The URL-mirroring tree is gone: no host directory, no nested path segments.
 	if _, err := os.Stat(filepath.Join(dir, "api.example.com")); !os.IsNotExist(err) {
@@ -101,7 +101,7 @@ func TestRecordKeepsBodiesInIndex(t *testing.T) {
 			t.Fatalf("request body is missing %q, actual:\n%s", want, req)
 		}
 	}
-	for _, want := range []string{"HTTP 200", `"token":"abc123"`, "内网测试账号"} {
+	for _, want := range []string{"HTTP 200", `"token":"abc123"`, "internal test account"} {
 		if !strings.Contains(resp, want) {
 			t.Fatalf("response body is missing %q, actual:\n%s", want, resp)
 		}
@@ -119,7 +119,9 @@ func TestFullTextSearchMatchesBodies(t *testing.T) {
 	const host = "api.example.com"
 	tr.record(newFlow(host, "POST", "/v1/login",
 		[]byte(`{"user":"admin","password":"P@ssw0rd"}`),
-		[]byte(`{"token":"abc123","note":"内网测试账号"}`)))
+		// The tag is CJK written as escapes: the source stays ASCII while the
+		// unicode61 tokenizer still has to index a multi-byte token.
+		[]byte("{\"token\":\"abc123\",\"note\":\"internal test account\",\"tag\":\"\u5185\u7f51\u6d4b\u8bd5\"}")))
 	tr.record(newFlow(host, "GET", "/v1/health", nil, []byte(`{"status":"ok"}`)))
 
 	hits := func(term string) int {
@@ -137,7 +139,7 @@ func TestFullTextSearchMatchesBodies(t *testing.T) {
 	if n := hits("ssw0r"); n != 1 {
 		t.Fatalf("substring search for ssw0r matched %d rows, expected 1", n)
 	}
-	if n := hits("内网测试"); n != 1 {
+	if n := hits("\u5185\u7f51\u6d4b\u8bd5"); n != 1 {
 		t.Fatalf("Chinese search matched %d rows, expected 1", n)
 	}
 	if n := hits("nonexistent-marker"); n != 0 {
@@ -463,7 +465,10 @@ func TestNormalizeSearchHost(t *testing.T) {
 
 // TestTruncateUTF8 guards the preview cut: never split a multi-byte rune.
 func TestTruncateUTF8(t *testing.T) {
-	s := "内网测试账号"
+	// Written as escapes so the source stays ASCII while the fixture keeps a
+	// 2-byte and a 3-byte rune: with pure ASCII every byte cut is a valid
+	// prefix, so the assertion below could never fail.
+	s := "internal t\u00e9st \u24d0ccount"
 	for n := 0; n <= len(s); n++ {
 		got := truncateUTF8([]byte(s), n)
 		if !strings.HasPrefix(s, got) {

@@ -2005,13 +2005,17 @@ func (s *Server) taskScopeAdd(w http.ResponseWriter, r *http.Request) {
 		Kind   string `json:"kind"`
 		Value  string `json:"value"`
 		Reason string `json:"reason"`
+		// Effect is "include" (default) or "exclude". An exclusion is the value
+		// the tool guard enforces, so this is how an operator declares a host
+		// off-limits rather than merely out of the current plan.
+		Effect string `json:"effect"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, "invalid JSON")
 		return
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	ts, err := as.AddAgentScope(taskID, body.Kind, body.Value, body.Reason, "manual")
+	ts, err := as.AddAgentScope(taskID, body.Kind, body.Value, body.Reason, "manual", body.Effect)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -2054,7 +2058,7 @@ func (s *Server) frontier(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, []any{})
 		return
 	}
-	fr, _ := t.Store.Frontier(atoiDefault(r.URL.Query().Get("limit"), 100))
+	fr, _ := t.Store.Frontier(atoiClamp(r.URL.Query().Get("limit"), 100, maxActivityLimit))
 	writeJSON(w, 200, taskNodeDTOs(fr))
 }
 
@@ -2794,7 +2798,7 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since := int64(atoiDefault(r.URL.Query().Get("since"), 0))
-	limit := atoiDefault(r.URL.Query().Get("limit"), 300)
+	limit := atoiClamp(r.URL.Query().Get("limit"), 300, maxActivityLimit)
 	var intentPtr *int64
 	if iv := r.URL.Query().Get("intent"); iv != "" {
 		if n, err := strconv.ParseInt(iv, 10, 64); err == nil {
@@ -3976,10 +3980,10 @@ func fallbackCommand(msg string) (cmd, text string) {
 	m := strings.TrimSpace(msg)
 	lower := strings.ToLower(m)
 	switch {
-	case strings.HasPrefix(m, "意图") || strings.HasPrefix(m, "의도") || strings.HasPrefix(lower, "intent"):
-		return "intent", strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(m, "意图"), "의도"), "intent"))
-	case strings.HasPrefix(m, "提示") || strings.HasPrefix(m, "힌트") || strings.HasPrefix(lower, "hint"):
-		return "hint", strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(m, "提示"), "힌트"), "hint"))
+	case strings.HasPrefix(m, "\u610f\u56fe") || strings.HasPrefix(m, "\uc758\ub3c4") || strings.HasPrefix(lower, "intent"):
+		return "intent", strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(m, "\u610f\u56fe"), "\uc758\ub3c4"), "intent"))
+	case strings.HasPrefix(m, "\u63d0\u793a") || strings.HasPrefix(m, "\ud78c\ud2b8") || strings.HasPrefix(lower, "hint"):
+		return "hint", strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(m, "\u63d0\u793a"), "\ud78c\ud2b8"), "hint"))
 	default:
 		return "", m
 	}
@@ -4113,3 +4117,31 @@ func atoiDefault(s string, d int) int {
 	}
 	return d
 }
+
+// atoiClamp parses a query-string integer and bounds it to [1, max].
+//
+// A page-size or row-limit parameter reaches SQL LIMIT verbatim, so an
+// unbounded value is a one-request memory exhaustion: the activity endpoint
+// materialises every row with its metadata blob, and the token cookie is
+// SameSite=Lax, so a cross-site top-level GET carries it. Anything that is not
+// a positive integer falls back to def.
+func atoiClamp(s string, def, max int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return def
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
+const (
+	// maxActivityLimit bounds an exploration activity or frontier page. Rows
+	// carry their metadata JSON, so the cost per row is not small.
+	maxActivityLimit = 1000
+	// maxConversationMessages bounds one page of conversation transcript.
+	maxConversationMessages = 500
+	// maxCommandPageSize bounds a page of tool-call or LLM records.
+	maxCommandPageSize = 200
+)
