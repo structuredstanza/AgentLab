@@ -3,6 +3,7 @@
 !/.gitignore
 !/.dockerignore
 !/README.md
+!/AGENTS.md
 !/lab
 !/deployment/
 !/artex-global/
@@ -27,5 +28,5 @@
 *.db-*
 *.log
 
-# graft's local graph cache — regenerable, not committed (run `graft build`).
-/graft/
+
+graphify-out/
