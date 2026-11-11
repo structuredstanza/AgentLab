@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatCurrency, getInitials } from "./utils";
+import { formatCurrency, getInitials } from "@/lib/utils";
 
 describe("getInitials", () => {
   it("takes the first letter of each word, uppercased", () => {

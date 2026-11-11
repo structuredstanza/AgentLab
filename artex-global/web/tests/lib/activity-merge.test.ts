@@ -1,8 +1,11 @@
-import { mergeActivities } from "./activity-merge.ts";
-import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 
-const activity = (seq, kind = "tool_use", extra = {}) => ({
+import { mergeActivities } from "@/lib/activity-merge";
+import type { Activity, ActivityKind } from "@/lib/types";
+
+import assert from "node:assert/strict";
+
+const activity = (seq: number, kind: ActivityKind = "tool_use", extra: Partial<Activity> = {}): Activity => ({
   seq,
   kind,
   worker: "auto",
@@ -37,14 +40,15 @@ test("replayed results and duplicate entries do not double-count usage", () => {
   const rows = mergeActivities([result, result], [result, result]);
   assert.equal(rows.length, 1);
   assert.equal(
-    rows.reduce((sum, item) => sum + item.input_tokens, 0),
+    rows.reduce((sum, item) => sum + (item.input_tokens ?? 0), 0),
     120,
   );
 });
 
 test("merging does not mutate either response and keeps distinct IDs", () => {
-  const first = Object.freeze([Object.freeze(activity(199))]);
-  const second = Object.freeze([Object.freeze(activity(198)), Object.freeze(activity(200))]);
+  // Frozen at runtime to prove nothing is mutated; the cast only drops `readonly` for the parameter type.
+  const first = Object.freeze([Object.freeze(activity(199))]) as Activity[];
+  const second = Object.freeze([Object.freeze(activity(198)), Object.freeze(activity(200))]) as Activity[];
   assert.deepEqual(
     mergeActivities(first, second).map((item) => item.seq),
     [198, 199, 200],

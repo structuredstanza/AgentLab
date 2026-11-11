@@ -1,6 +1,8 @@
-import { activeMention, mentionSearch, mentionToken, selectedMentions } from "./chat-mentions.ts";
+import { test } from "vitest";
+
+import { activeMention, mentionSearch, mentionToken, selectedMentions } from "@/lib/chat-mentions";
+
 import assert from "node:assert/strict";
-import test from "node:test";
 
 test("mention trigger supports kind aliases and cursor placement without hijacking email", () => {
   assert.equal(activeMention("user@example.com", 16), null);
@@ -20,8 +22,8 @@ test("categories, aliases, IP and keyword search", () => {
 });
 
 test("tokens roundtrip labels and removing one reference preserves its neighbors", () => {
-  const first = mentionToken({ kind: "finding", id: 12, label: "title[1]\ndescription" });
-  const second = mentionToken({ kind: "ip", id: 13, label: "192.0.2.1" });
+  const first = mentionToken({ kind: "finding", id: 12, label: "title[1]\ndescription", description: "" });
+  const second = mentionToken({ kind: "ip", id: 13, label: "192.0.2.1", description: "" });
   const value = `analyze ${first} and ${second}`;
   const selected = selectedMentions(value);
   assert.equal(selected.length, 2);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { statusMeta } from "./status";
+import { statusMeta } from "@/lib/status";
 
 describe("statusMeta", () => {
   it("maps each domain's status to its tone", () => {

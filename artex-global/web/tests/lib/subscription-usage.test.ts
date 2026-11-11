@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { formatAllocationReset, markUsageStale } from "./subscription-usage";
-import type { LLMProfileUsage } from "./types";
+import { formatAllocationReset, markUsageStale } from "@/lib/subscription-usage";
+import type { LLMProfileUsage } from "@/lib/types";
 
 describe("markUsageStale", () => {
   it("marks the cached response stale without changing measured remaining fractions", () => {
@@ -14,7 +14,15 @@ describe("markUsageStale", () => {
         plan: "Pro",
         fetched_at: "2026-10-30T12:00:00.000Z",
         stale: false,
-        windows: [{ id: "five_hour", label: "5-Hour Session", used_fraction: 1 - remaining, remaining_fraction: remaining, resets_at: null }],
+        windows: [
+          {
+            id: "five_hour",
+            label: "5-Hour Session",
+            used_fraction: 1 - remaining,
+            remaining_fraction: remaining,
+            resets_at: null,
+          },
+        ],
       };
 
       const stale = markUsageStale(usage);

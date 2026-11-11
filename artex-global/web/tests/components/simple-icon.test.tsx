@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { siGithub } from "simple-icons";
 import { describe, expect, it } from "vitest";
 
-import { SimpleIcon } from "./simple-icon";
+import { SimpleIcon } from "@/components/simple-icon";
 
 describe("SimpleIcon", () => {
   it("renders an accessible svg from a simple-icons record", () => {
