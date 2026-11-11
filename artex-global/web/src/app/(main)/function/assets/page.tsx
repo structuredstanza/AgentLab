@@ -79,7 +79,7 @@ function MethodBadge({ method }: { method: string }) {
   return (
     <span
       className={cn(
-        "inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none",
+        "inline-block rounded px-1.5 py-0.5 font-mono font-semibold text-[10px] leading-none",
         METHOD_COLOR[m] ?? "bg-muted text-muted-foreground",
       )}
     >
@@ -318,10 +318,10 @@ export default function AssetsPage() {
     <div className="flex h-[calc(100vh-6rem)] min-h-0 flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+          <h1 className="font-semibold text-xl tracking-tight">{t("title")}</h1>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-muted-foreground">
+          <span className="text-muted-foreground text-sm">
             {t.rich("totalAssets", {
               count: totalAssets,
               n: (chunks) => <span className="tabular-nums">{chunks}</span>,
@@ -346,7 +346,7 @@ export default function AssetsPage() {
               <TabsTrigger key={tt.key} value={tt.key}>
                 <tt.icon className="size-3.5" />
                 {t(`tab.${tt.labelKey}`)}
-                <span className="ml-1 tabular-nums text-muted-foreground">{tabCounts[tt.key]}</span>
+                <span className="ml-1 text-muted-foreground tabular-nums">{tabCounts[tt.key]}</span>
               </TabsTrigger>
             ))}
           </TabsList>
@@ -374,7 +374,7 @@ export default function AssetsPage() {
                           <span className="font-medium">{c.name}</span>
                         </div>
                       </TableCell>
-                      <TableCell className="text-right tabular-nums text-sm">{c.asset_count}</TableCell>
+                      <TableCell className="text-right text-sm tabular-nums">{c.asset_count}</TableCell>
                       <TableCell>
                         {c.scope?.length ? (
                           <div className="flex flex-wrap gap-1">
@@ -385,7 +385,7 @@ export default function AssetsPage() {
                             ))}
                           </div>
                         ) : (
-                          <span className="text-xs text-muted-foreground">{t("noScope")}</span>
+                          <span className="text-muted-foreground text-xs">{t("noScope")}</span>
                         )}
                       </TableCell>
                       <TableCell className="text-right">
@@ -410,7 +410,7 @@ export default function AssetsPage() {
                   ))}
                   {companies.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
+                      <TableCell colSpan={4} className="py-10 text-center text-muted-foreground text-sm">
                         {t("companyEmpty")}
                       </TableCell>
                     </TableRow>
@@ -441,7 +441,7 @@ export default function AssetsPage() {
                 <TableCell className="w-8 pr-0">
                   <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
                 </TableCell>
-                <TableCell className="font-mono text-xs font-medium">{a.domain}</TableCell>
+                <TableCell className="font-medium font-mono text-xs">{a.domain}</TableCell>
                 <TableCell className="text-xs">{a.icp || "—"}</TableCell>
                 <TableCell className="text-xs">
                   {companyName(a.company_id) || <span className="text-muted-foreground">{t("unassigned")}</span>}
@@ -482,7 +482,7 @@ export default function AssetsPage() {
                 <TableCell className="w-8 pr-0">
                   <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
                 </TableCell>
-                <TableCell className="font-mono text-xs font-medium">{a.ip}</TableCell>
+                <TableCell className="font-medium font-mono text-xs">{a.ip}</TableCell>
                 <TableCell className="font-mono text-xs">{a.c_segment || "—"}</TableCell>
                 <TableCell>
                   <Chips items={a.bound_domains ?? []} mono />
@@ -529,7 +529,7 @@ export default function AssetsPage() {
                 <TableCell className="w-8 pr-0">
                   <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
                 </TableCell>
-                <TableCell className="font-mono text-xs font-medium">{a.domain}</TableCell>
+                <TableCell className="font-medium font-mono text-xs">{a.domain}</TableCell>
                 <TableCell className="font-mono text-xs">{a.root_domain || "—"}</TableCell>
                 <TableCell className="text-xs">{a.record_type || "—"}</TableCell>
                 <TableCell className="max-w-xs truncate font-mono text-xs">
@@ -571,7 +571,7 @@ export default function AssetsPage() {
                 <TableCell className="w-8 pr-0">
                   <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
                 </TableCell>
-                <TableCell className="text-xs font-medium">{a.app_name || "—"}</TableCell>
+                <TableCell className="font-medium text-xs">{a.app_name || "—"}</TableCell>
                 <TableCell className="font-mono text-xs">{a.bundle_id || "—"}</TableCell>
                 <TableCell className="text-xs">{a.category || "—"}</TableCell>
                 <TableCell className="text-xs">{a.app_icp || "—"}</TableCell>
@@ -652,7 +652,7 @@ export default function AssetsPage() {
                   <TableCell className="font-mono text-xs tabular-nums">{a.port || "—"}</TableCell>
                   <TableCell>
                     {a.status_code != null ? (
-                      <span className={cn("font-mono text-xs font-semibold tabular-nums", statusTone(a.status_code))}>
+                      <span className={cn("font-mono font-semibold text-xs tabular-nums", statusTone(a.status_code))}>
                         {a.status_code}
                       </span>
                     ) : (
@@ -667,7 +667,7 @@ export default function AssetsPage() {
                   </TableCell>
                   <TableCell>
                     {(a.auth ?? []).length === 0 ? (
-                      <span className="text-xs text-muted-foreground">—</span>
+                      <span className="text-muted-foreground text-xs">—</span>
                     ) : (
                       (a.auth ?? []).map((authItem, i) => {
                         const item = authItem as Record<string, string>;
@@ -805,7 +805,7 @@ export default function AssetsPage() {
                   />
                   <span className="text-sm leading-snug">
                     {t("deleteCompanyDialog.alsoDeleteAssets")}
-                    <span className="block text-xs text-muted-foreground">
+                    <span className="block text-muted-foreground text-xs">
                       {t("deleteCompanyDialog.alsoDeleteHint")}
                     </span>
                   </span>
@@ -870,7 +870,7 @@ function AssetCard({
 
   return (
     <Card className="flex min-h-0 flex-1 flex-col overflow-hidden py-0">
-      <div className="min-h-0 flex-1 overflow-auto scrollbar-thin scrollbar-track-transparent">
+      <div className="scrollbar-thin scrollbar-track-transparent min-h-0 flex-1 overflow-auto">
         <Table>
           <TableHeader className="sticky top-0 z-10 bg-card">
             <TableRow>
@@ -893,7 +893,7 @@ function AssetCard({
               childRows
             ) : (
               <TableRow>
-                <TableCell colSpan={cols.length} className="py-12 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={cols.length} className="py-12 text-center text-muted-foreground text-sm">
                   {loaded ? t("emptyData") : t("loading")}
                 </TableCell>
               </TableRow>
@@ -902,7 +902,7 @@ function AssetCard({
         </Table>
       </div>
       {total > 0 && (
-        <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
+        <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-muted-foreground text-xs">
           <Select value={String(size)} onValueChange={(v) => onSize(Number(v))}>
             <SelectTrigger size="sm" className="h-7 w-24">
               <SelectValue />
@@ -954,7 +954,7 @@ function AssetCard({
 
 function Chips({ items, mono }: { items: string[]; mono?: boolean }) {
   const clean = items.filter(Boolean);
-  if (clean.length === 0) return <span className="text-xs text-muted-foreground">—</span>;
+  if (clean.length === 0) return <span className="text-muted-foreground text-xs">—</span>;
   return (
     <div className="flex flex-wrap gap-1">
       {clean.map((s, i) => (

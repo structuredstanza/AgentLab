@@ -2,14 +2,7 @@
 
 import * as React from "react";
 
-import {
-  CpuIcon,
-  FlaskConicalIcon,
-  KeyboardIcon,
-  RadioTowerIcon,
-  SearchIcon,
-  ShieldAlertIcon,
-} from "lucide-react";
+import { CpuIcon, FlaskConicalIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
@@ -22,7 +15,6 @@ import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { type ChatSendMode, setChatSendMode, useChatSendMode, useChatSendModeOptions } from "@/lib/chat-send-mode";
 import type { Settings } from "@/lib/types";
-
 
 export default function SystemSettingsPage() {
   const t = useTranslations("settingsPage");
@@ -271,7 +263,7 @@ export default function SystemSettingsPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+        <h1 className="font-semibold text-xl tracking-tight">{t("title")}</h1>
         <p className="text-muted-foreground text-sm">{t("subtitle")}</p>
       </div>
 
@@ -280,7 +272,6 @@ export default function SystemSettingsPage() {
           multi-column automatically balances filling by content height. Card spacing uses mb rather than gap, because under multi-column layout
           column-gap only controls column spacing, so row spacing must be provided by the child elements themselves. */}
       <div className="columns-1 gap-4 md:gap-6 lg:columns-2">
-
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -290,7 +281,7 @@ export default function SystemSettingsPage() {
             <CardDescription>{t.rich("trafficCapture.desc", richTags)}</CardDescription>
           </CardHeader>
           <CardContent className="flex items-center justify-between gap-4">
-            <Label htmlFor="traffic-capture" className="text-sm font-normal text-muted-foreground">
+            <Label htmlFor="traffic-capture" className="font-normal text-muted-foreground text-sm">
               {trafficCapture ? t("trafficCapture.on") : t("trafficCapture.off")}
             </Label>
             <Switch
@@ -313,7 +304,7 @@ export default function SystemSettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="flex items-center justify-between gap-4">
-            <Label htmlFor="agent-traffic-binding" className="text-sm font-normal text-muted-foreground">
+            <Label htmlFor="agent-traffic-binding" className="font-normal text-muted-foreground text-sm">
               {agentTrafficBinding ? t("agentBinding.on") : t("agentBinding.off")}
             </Label>
             <Switch
@@ -335,7 +326,7 @@ export default function SystemSettingsPage() {
             <CardDescription>{t.rich("globalProxy.desc", richTags)}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            <Label htmlFor="global-proxy" className="text-sm font-normal text-muted-foreground">
+            <Label htmlFor="global-proxy" className="font-normal text-muted-foreground text-sm">
               {t("globalProxy.addrLabel")}
             </Label>
             <div className="flex items-center gap-2">
@@ -367,7 +358,7 @@ export default function SystemSettingsPage() {
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <div className="flex items-center justify-between gap-4">
-              <Label htmlFor="inject-planner" className="text-sm font-normal text-muted-foreground">
+              <Label htmlFor="inject-planner" className="font-normal text-muted-foreground text-sm">
                 {t("constraints.injectPlanner")}
                 {injectPlanner ? t("onSuffix") : t("offSuffix")}
               </Label>
@@ -379,7 +370,7 @@ export default function SystemSettingsPage() {
               />
             </div>
             <div className="flex items-center justify-between gap-4">
-              <Label htmlFor="inject-worker" className="text-sm font-normal text-muted-foreground">
+              <Label htmlFor="inject-worker" className="font-normal text-muted-foreground text-sm">
                 {t("constraints.injectWorker")}
                 {injectWorker ? t("onSuffix") : t("offSuffix")}
               </Label>
@@ -402,7 +393,7 @@ export default function SystemSettingsPage() {
             <CardDescription>{t.rich("experimental.desc", richTags)}</CardDescription>
           </CardHeader>
           <CardContent className="flex items-center justify-between gap-4">
-            <Label htmlFor="noa-compaction" className="text-sm font-normal text-muted-foreground">
+            <Label htmlFor="noa-compaction" className="font-normal text-muted-foreground text-sm">
               {t("experimental.noaLabel")}
               {noaCompaction ? t("onSuffix") : t("offSuffix")}
             </Label>
@@ -425,7 +416,7 @@ export default function SystemSettingsPage() {
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <div className="flex items-center justify-between gap-4">
-              <Label htmlFor="web-search" className="text-sm font-normal text-muted-foreground">
+              <Label htmlFor="web-search" className="font-normal text-muted-foreground text-sm">
                 {webSearch ? t("webSearch.on") : t("webSearch.off")}
               </Label>
               <Switch
@@ -441,7 +432,7 @@ export default function SystemSettingsPage() {
 
             {webSearch && (
               <div className="flex items-center justify-between gap-4">
-                <Label className="text-sm font-normal text-muted-foreground">{t("webSearch.sourceLabel")}</Label>
+                <Label className="font-normal text-muted-foreground text-sm">{t("webSearch.sourceLabel")}</Label>
                 <Select
                   value={backend}
                   disabled={!loaded || saving}
@@ -464,8 +455,8 @@ export default function SystemSettingsPage() {
             )}
 
             {webSearch && backend === "deepseek" && (
-              <div className="border-border/60 bg-muted/30 flex flex-col gap-2 rounded-md border p-3">
-                <p className="text-sm font-medium">{t("webSearch.deepseekTitle")}</p>
+              <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-3">
+                <p className="font-medium text-sm">{t("webSearch.deepseekTitle")}</p>
                 <p className="text-muted-foreground text-xs leading-relaxed">
                   {t.rich("webSearch.deepseekDesc1", richTags)}
                 </p>
@@ -478,9 +469,9 @@ export default function SystemSettingsPage() {
 
             {webSearch && backend === "brave-free" && (
               <div className="flex flex-col gap-2">
-                <Label htmlFor="brave-key" className="text-sm font-normal text-muted-foreground">
+                <Label htmlFor="brave-key" className="font-normal text-muted-foreground text-sm">
                   {t("webSearch.braveKeyLabel")}
-                  {braveKeySet && <span className="ml-2 text-xs text-emerald-500">{t("configured")}</span>}
+                  {braveKeySet && <span className="ml-2 text-emerald-500 text-xs">{t("configured")}</span>}
                 </Label>
                 <div className="flex items-center gap-2">
                   <Input
@@ -502,16 +493,16 @@ export default function SystemSettingsPage() {
                     {t("save")}
                   </Button>
                 </div>
-                {braveNeedsKey && <p className="text-xs text-amber-500">{t("webSearch.braveNeedsKey")}</p>}
+                {braveNeedsKey && <p className="text-amber-500 text-xs">{t("webSearch.braveNeedsKey")}</p>}
                 <p className="text-muted-foreground text-xs">{t("webSearch.braveQuota")}</p>
               </div>
             )}
 
             {webSearch && backend === "tavily" && (
               <div className="flex flex-col gap-2">
-                <Label htmlFor="tavily-key" className="text-sm font-normal text-muted-foreground">
+                <Label htmlFor="tavily-key" className="font-normal text-muted-foreground text-sm">
                   {t("webSearch.tavilyKeyLabel")}
-                  {tavilyKeySet && <span className="ml-2 text-xs text-emerald-500">{t("configured")}</span>}
+                  {tavilyKeySet && <span className="ml-2 text-emerald-500 text-xs">{t("configured")}</span>}
                 </Label>
                 <div className="flex items-center gap-2">
                   <Input
@@ -534,7 +525,7 @@ export default function SystemSettingsPage() {
                   </Button>
                 </div>
                 {webSearch && backend === "tavily" && !tavilyKeySet && (
-                  <p className="text-xs text-amber-500">{t("webSearch.tavilyNeedsKey")}</p>
+                  <p className="text-amber-500 text-xs">{t("webSearch.tavilyNeedsKey")}</p>
                 )}
                 <p className="text-muted-foreground text-xs">{t("webSearch.tavilyGetKey")}</p>
               </div>
@@ -542,7 +533,7 @@ export default function SystemSettingsPage() {
 
             {webSearch && (
               <div className="flex flex-col gap-2">
-                <Label htmlFor="ws-proxy" className="text-sm font-normal text-muted-foreground">
+                <Label htmlFor="ws-proxy" className="font-normal text-muted-foreground text-sm">
                   {t("webSearch.proxyLabel")}
                 </Label>
                 <div className="flex items-center gap-2">
@@ -641,7 +632,7 @@ export default function SystemSettingsPage() {
             <CardDescription>{t.rich("sendKey.desc", richTags)}</CardDescription>
           </CardHeader>
           <CardContent className="flex items-center justify-between gap-4">
-            <Label htmlFor="chat-send-mode" className="text-sm font-normal text-muted-foreground">
+            <Label htmlFor="chat-send-mode" className="font-normal text-muted-foreground text-sm">
               {t("sendKey.label")}
             </Label>
             <Select value={sendMode} onValueChange={(v) => setChatSendMode(v as ChatSendMode)}>

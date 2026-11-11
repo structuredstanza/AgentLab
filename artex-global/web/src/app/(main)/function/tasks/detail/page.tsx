@@ -43,6 +43,7 @@ import type { LLMProfile, Task } from "@/lib/types";
 import { AssetsTab } from "./_tabs/assets-tab";
 import { BroadcastTab } from "./_tabs/broadcast-tab";
 import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
+import { CredentialsTab } from "./_tabs/credentials-tab";
 import { FindingsTab } from "./_tabs/findings-tab";
 import { GraphTab } from "./_tabs/graph-tab";
 import { InterceptTab } from "./_tabs/intercept-tab";
@@ -50,7 +51,6 @@ import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
-import { CredentialsTab } from "./_tabs/credentials-tab";
 
 const TAB_VALUES = [
   "sessions",
@@ -366,10 +366,10 @@ function TaskDetailInner() {
               <ArrowLeftIcon />
             </Link>
           </Button>
-          <h1 className="min-w-0 flex-1 truncate text-sm font-semibold" title={task.name || task.description}>
+          <h1 className="min-w-0 flex-1 truncate font-semibold text-sm" title={task.name || task.description}>
             {task.name || task.description}
           </h1>
-          <code className="hidden rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground sm:inline">
+          <code className="hidden rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs sm:inline">
             {task.id}
           </code>
           <Separator orientation="vertical" className="mx-1 hidden h-4 sm:block" />
@@ -406,9 +406,9 @@ function TaskDetailInner() {
             {controlLabel}
           </Button>
         </div>
-        <p className="truncate text-xs text-muted-foreground">{task.goal}</p>
+        <p className="truncate text-muted-foreground text-xs">{task.goal}</p>
         {needsOperator && task.blocked_reason ? (
-          <p className="truncate text-xs text-violet-600 dark:text-violet-400" title={task.blocked_reason}>
+          <p className="truncate text-violet-600 text-xs dark:text-violet-400" title={task.blocked_reason}>
             {t("blocked.reason", { reason: task.blocked_reason })}
           </p>
         ) : null}
@@ -419,7 +419,7 @@ function TaskDetailInner() {
               <TabsTrigger key={value} value={value}>
                 {t(`tabs.${value}`)}
                 {value === "intercept" && interceptPendingCount > 0 && (
-                  <span className="ml-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold leading-none text-white">
+                  <span className="ml-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 font-semibold text-[10px] text-white leading-none">
                     {interceptPendingCount > 99 ? "99+" : interceptPendingCount}
                   </span>
                 )}

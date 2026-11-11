@@ -697,8 +697,7 @@
           "cidr": "CIDR range"
         }
       }
-    }
-    ,
+    },
     "credentials": {
       "title": "Task test accounts",
       "description": "Credentials declared for this task and accounts recorded by its agent. Passwords are masked until explicitly revealed.",

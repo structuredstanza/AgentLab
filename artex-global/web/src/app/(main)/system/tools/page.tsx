@@ -186,7 +186,7 @@ function ToolEditor({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4">
         {trafficGated && (
-          <div className="border-amber-500/40 bg-amber-500/10 text-muted-foreground rounded-md border px-3 py-2 text-xs">
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-muted-foreground text-xs">
             {t.rich("trafficGatedNote", { b: (c) => <b>{c}</b> })}
           </div>
         )}
@@ -203,7 +203,7 @@ function ToolEditor({
                     onCheckedChange={() => toggleAgent(ag.key)}
                   />
                   {ag.name}
-                  <span className="text-muted-foreground font-mono text-xs">{ag.key}</span>
+                  <span className="font-mono text-muted-foreground text-xs">{ag.key}</span>
                 </label>
               ))}
               {agents.length === 0 && <span className="text-muted-foreground text-xs">{t("noAgents")}</span>}
@@ -236,11 +236,11 @@ function ToolEditor({
             <div
               key={(r.parentKey ?? "") + "." + r.name}
               className={
-                r.parentKey ? "border-l-2 border-muted ml-3 pl-3 grid gap-2 py-2" : "grid gap-2 rounded-md border p-3"
+                r.parentKey ? "ml-3 grid gap-2 border-muted border-l-2 py-2 pl-3" : "grid gap-2 rounded-md border p-3"
               }
             >
               <div className="flex flex-wrap items-center gap-2">
-                {r.parentKey && <span className="text-muted-foreground font-mono text-[10px]">↳</span>}
+                {r.parentKey && <span className="font-mono text-[10px] text-muted-foreground">↳</span>}
                 <span className="font-mono text-sm">{r.name}</span>
                 <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
                   {r.type || "?"}
@@ -250,11 +250,11 @@ function ToolEditor({
                     {t("required")}
                   </Badge>
                 )}
-                {r.parentKey && <span className="text-muted-foreground text-[10px]">{t("itemsSubfield")}</span>}
+                {r.parentKey && <span className="text-[10px] text-muted-foreground">{t("itemsSubfield")}</span>}
               </div>
               <div className="grid gap-2">
                 <div className="grid gap-1">
-                  <Label className="text-muted-foreground text-[11px]">{t("rowDesc")}</Label>
+                  <Label className="text-[11px] text-muted-foreground">{t("rowDesc")}</Label>
                   <Input
                     className="text-xs"
                     value={r.description}
@@ -262,7 +262,7 @@ function ToolEditor({
                   />
                 </div>
                 <div className="grid gap-1">
-                  <Label className="text-muted-foreground text-[11px]">{t("rowDefault")}</Label>
+                  <Label className="text-[11px] text-muted-foreground">{t("rowDefault")}</Label>
                   <Input
                     className="text-xs"
                     placeholder={r.scalar ? t("defaultEmptyHint") : t("scalarOnly")}
@@ -297,10 +297,10 @@ function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="hover:border-primary/50 hover:bg-muted/40 focus-visible:ring-ring flex flex-col gap-2 rounded-lg border p-4 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
+      className="flex flex-col gap-2 rounded-lg border p-4 text-left transition-colors hover:border-primary/50 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-sm font-medium">{tool.key}</span>
+        <span className="font-medium font-mono text-sm">{tool.key}</span>
         {tool.system ? (
           <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
             {t("badgeSystem")}
@@ -316,7 +316,7 @@ function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
           </Badge>
         )}
         {!tool.enabled && (
-          <Badge variant="outline" className="text-destructive px-1.5 py-0 text-[10px]">
+          <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-destructive">
             {t("badgeDisabled")}
           </Badge>
         )}
@@ -328,9 +328,9 @@ function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
           {t("callsBadge", { count: tool.calls ?? 0 })}
         </Badge>
       </div>
-      <p className="text-muted-foreground line-clamp-1 h-4 text-xs">{tool.description || t("noDescription")}</p>
+      <p className="line-clamp-1 h-4 text-muted-foreground text-xs">{tool.description || t("noDescription")}</p>
       <div className="mt-auto flex flex-wrap gap-1 pt-1">
-        {tool.agents.length === 0 && <span className="text-muted-foreground text-[10px]">{t("noBoundAgents")}</span>}
+        {tool.agents.length === 0 && <span className="text-[10px] text-muted-foreground">{t("noBoundAgents")}</span>}
         {tool.agents.map((a) => (
           <Badge key={a} variant="outline" className="px-1.5 py-0 text-[10px]">
             {a}
@@ -397,11 +397,11 @@ export default function ToolsPage() {
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+          <h1 className="font-semibold text-xl tracking-tight">{t("title")}</h1>
           <p className="text-muted-foreground text-sm">{t("subtitle")}</p>
         </div>
         <div className="relative w-64">
-          <SearchIcon className="text-muted-foreground absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2" />
+          <SearchIcon className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="h-8 pl-8 text-sm"
             placeholder={t("searchPlaceholder")}
@@ -429,7 +429,7 @@ export default function ToolsPage() {
             </CardHeader>
             <CardContent>
               {systemTools.length === 0 ? (
-                <p className="text-muted-foreground py-6 text-center text-sm">
+                <p className="py-6 text-center text-muted-foreground text-sm">
                   {query.trim() ? t("systemNoMatch") : t("systemEmpty")}
                 </p>
               ) : (
@@ -462,7 +462,7 @@ export default function ToolsPage() {
             </CardHeader>
             <CardContent>
               {customTools.length === 0 ? (
-                <p className="text-muted-foreground py-6 text-center text-sm">
+                <p className="py-6 text-center text-muted-foreground text-sm">
                   {query.trim() ? t("customNoMatch") : t("customEmpty")}
                 </p>
               ) : (
@@ -735,7 +735,7 @@ function CustomToolDialog({
     <Sheet open={!!edit} onOpenChange={(o) => !o && onClose()}>
       <SheetContent
         side="right"
-        className="flex flex-col gap-0 p-0 data-[side=right]:w-[45vw] data-[side=right]:sm:max-w-[45vw] data-[side=right]:min-w-[480px]"
+        className="flex flex-col gap-0 p-0 data-[side=right]:w-[45vw] data-[side=right]:min-w-[480px] data-[side=right]:sm:max-w-[45vw]"
       >
         <SheetHeader className="px-4">
           <SheetTitle>{sheetTitle}</SheetTitle>
@@ -840,7 +840,7 @@ function CustomToolDialog({
                 <div className="grid gap-1.5">
                   <Label className="text-xs">{t("proxyLabel")}</Label>
                   <Input
-                    className="font-mono text-xs w-56"
+                    className="w-56 font-mono text-xs"
                     value={ex.proxy}
                     onChange={(e) => setEx({ ...ex, proxy: e.target.value })}
                   />
@@ -893,7 +893,7 @@ function CustomToolDialog({
                 <label key={a.key} className="flex items-center gap-2 text-sm">
                   <Checkbox checked={bound.includes(a.key)} onCheckedChange={() => toggleAgent(a.key)} />
                   {a.name}
-                  <span className="text-muted-foreground font-mono text-xs">{a.key}</span>
+                  <span className="font-mono text-muted-foreground text-xs">{a.key}</span>
                 </label>
               ))}
             </div>
@@ -912,7 +912,7 @@ function CustomToolDialog({
 
           {kind !== "shell" && (
             <div className="grid gap-1.5 rounded-md border p-3">
-              <Label className="text-xs font-medium">{t("testSectionLabel")}</Label>
+              <Label className="font-medium text-xs">{t("testSectionLabel")}</Label>
               <Textarea
                 className="font-mono text-xs"
                 rows={2}
@@ -928,7 +928,7 @@ function CustomToolDialog({
               {testResult && (
                 <pre
                   className={
-                    "max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-xs " +
+                    "max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-xs" +
                     (testResult.is_error ? "text-destructive" : "")
                   }
                 >

@@ -38,7 +38,7 @@ export function FindingLineageView({ findingId }: { findingId: string }) {
   }, [findingId]);
 
   if (loaded && nodes.length === 0) {
-    return <p className="text-muted-foreground p-6 text-sm">{t("lineage.empty")}</p>;
+    return <p className="p-6 text-muted-foreground text-sm">{t("lineage.empty")}</p>;
   }
 
   return (

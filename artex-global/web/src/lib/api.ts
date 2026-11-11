@@ -63,16 +63,18 @@ import type {
   KnowledgeQuery,
   KnowledgeStats,
   KnowledgeUsage,
+  LLMAuthMethod,
+  LLMModelInfo,
   LLMPoolStatus,
   LLMProfile,
   LLMProfileUsage,
-  LLMRefusalFallbackStep,
-  LLMUsageResponse,
   LLMRecordDetail,
   LLMRecordItem,
+  LLMRefusalFallbackStep,
   LLMRetryOverride,
   LLMRetryPolicy,
   LLMTask,
+  LLMUsageResponse,
   MCPServer,
   MCPTool,
   MemoryPreview,
@@ -100,8 +102,9 @@ import type {
   TaskAssetScopeMutation,
   TaskCategory,
   TaskConstraint,
+  TaskCredential,
+  TaskCredentialInput,
   TaskGoal,
-  LLMAuthMethod,
   TaskLLMResolutions,
   TaskNode,
   TaskScopeRow,
@@ -115,12 +118,9 @@ import type {
   TrafficEvidenceRole,
   TrafficHost,
   TrafficResp,
-  TaskCredential,
-  TaskCredentialInput,
   UsageStats,
   WorkspaceFile,
   WorkspaceListing,
-  LLMModelInfo,
 } from "@/lib/types";
 
 // ApiError is an API error that carries the HTTP status code. Server error messages are translated depending on the display language,
@@ -1017,7 +1017,8 @@ export const api = {
     refusal_fallback?: LLMRefusalFallbackStep[];
   }) => post<{ id: number }>("/llm/profiles", p),
   startLLMOAuth: (id: number) => post<LLMOAuthStart>(`/llm/profiles/${id}/oauth/start`, {}),
-  pollLLMOAuth: (id: number, session_id: string) => post<LLMOAuthPoll>(`/llm/profiles/${id}/oauth/poll`, { session_id }),
+  pollLLMOAuth: (id: number, session_id: string) =>
+    post<LLMOAuthPoll>(`/llm/profiles/${id}/oauth/poll`, { session_id }),
   inputLLMOAuth: (id: number, session_id: string, value: string) =>
     post<{ status?: string }>(`/llm/profiles/${id}/oauth/input`, { session_id, value }),
   cancelLLMOAuthSession: (id: number, session_id: string) =>
@@ -1382,8 +1383,7 @@ export const api = {
     }),
   // Usage is per entry: there is no batch form, so the UI loads it when a row
   // is opened instead of firing one request per row of the page.
-  knowledgeUsage: (id: number, limit = 20) =>
-    get<KnowledgeUsage>(`/knowledge/${id}/usage?limit=${clampLimit(limit)}`),
+  knowledgeUsage: (id: number, limit = 20) => get<KnowledgeUsage>(`/knowledge/${id}/usage?limit=${clampLimit(limit)}`),
 
   reflections: (query: ReflectionQuery = {}) =>
     get<ReflectionPage>(`/reflections${reflectionQuery(query)}`).then((r) => ({
@@ -1399,10 +1399,8 @@ export const api = {
   deleteReflection: (id: number) => del<{ ok: boolean }>(`/reflections/${id}`),
   // graduate writes a task-scoped candidate owned by the reflection's task; the
   // operator still promotes it, so nothing crosses a task boundary here.
-  graduateReflection: (
-    id: number,
-    body: { kind: KnowledgeKind; title?: string; tags?: string[] },
-  ) => post<{ entry: KnowledgeEntry; redactions: number }>(`/reflections/${id}/graduate`, body),
+  graduateReflection: (id: number, body: { kind: KnowledgeKind; title?: string; tags?: string[] }) =>
+    post<{ entry: KnowledgeEntry; redactions: number }>(`/reflections/${id}/graduate`, body),
 
   memoryPreview: (taskId: number) => get<MemoryPreview>(`/memory/preview?task_id=${taskId}`),
 };

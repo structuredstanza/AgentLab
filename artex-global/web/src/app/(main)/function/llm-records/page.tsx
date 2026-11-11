@@ -121,14 +121,14 @@ function StatusBadge({ status }: { status: string }) {
   const t = useTranslations("llmRecords");
   if (status === "ok") {
     return (
-      <Badge variant="secondary" className="text-xs text-emerald-600">
+      <Badge variant="secondary" className="text-emerald-600 text-xs">
         OK
       </Badge>
     );
   }
   if (status === "refused") {
     return (
-      <Badge variant="outline" className="text-xs text-amber-600" data-status="refused">
+      <Badge variant="outline" className="text-amber-600 text-xs" data-status="refused">
         {t("statusRefused")}
       </Badge>
     );
@@ -315,7 +315,7 @@ export default function LLMRecordsPage() {
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <RadioIcon className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+          <h1 className="font-semibold text-xl tracking-tight">{t("title")}</h1>
           <Badge variant="secondary">{total}</Badge>
         </div>
       </div>
@@ -388,7 +388,7 @@ export default function LLMRecordsPage() {
           <label
             htmlFor="llm-rec-toggle"
             className={cn(
-              "cursor-pointer text-xs font-medium select-none",
+              "cursor-pointer select-none font-medium text-xs",
               recEnabled ? "text-foreground" : "text-muted-foreground",
             )}
           >
@@ -396,7 +396,7 @@ export default function LLMRecordsPage() {
           </label>
         </div>
 
-        <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="ml-auto flex items-center gap-2 text-muted-foreground text-xs">
           <span className="tabular-nums">
             {rangeStart}–{rangeEnd} / {total}
           </span>
@@ -450,7 +450,7 @@ export default function LLMRecordsPage() {
                   </TableRow>
                 ) : records.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-12 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={8} className="py-12 text-center text-muted-foreground text-sm">
                       {t("empty")}
                     </TableCell>
                   </TableRow>
@@ -461,12 +461,12 @@ export default function LLMRecordsPage() {
                       className={cn("cursor-pointer", selected?.id === rec.id && "bg-accent hover:bg-accent")}
                       onClick={() => setSelected(rec)}
                     >
-                      <TableCell className="text-xs text-muted-foreground tabular-nums">{fmtTime(rec.ts)}</TableCell>
-                      <TableCell className="text-xs font-mono text-muted-foreground">
+                      <TableCell className="text-muted-foreground text-xs tabular-nums">{fmtTime(rec.ts)}</TableCell>
+                      <TableCell className="font-mono text-muted-foreground text-xs">
                         {rec.task_id ? `#${rec.task_id}` : "-"}
                       </TableCell>
                       <TableCell>
-                        <Badge variant="outline" className="text-xs font-mono">
+                        <Badge variant="outline" className="font-mono text-xs">
                           {rec.worker || "-"}
                         </Badge>
                       </TableCell>
@@ -474,7 +474,7 @@ export default function LLMRecordsPage() {
                         <span className="text-xs">{rec.profile_name || "-"}</span>
                       </TableCell>
                       <TableCell>
-                        <span className="text-xs font-mono">{rec.model || "-"}</span>
+                        <span className="font-mono text-xs">{rec.model || "-"}</span>
                       </TableCell>
                       <TableCell>
                         <span className={cn("text-xs", rec.latency_ms > 30000 && "text-amber-500")}>
@@ -502,27 +502,27 @@ export default function LLMRecordsPage() {
           <Card className="flex h-[42%] min-h-0 flex-col overflow-hidden py-0">
             {/* Detail header */}
             <div className="flex items-center gap-2 border-b px-3 py-2">
-              <Badge variant="outline" className="text-xs font-mono">
+              <Badge variant="outline" className="font-mono text-xs">
                 #{selected.id}
               </Badge>
-              <Badge variant="outline" className="text-xs font-mono">
+              <Badge variant="outline" className="font-mono text-xs">
                 {selected.profile_name || "-"}
               </Badge>
-              <Badge variant="outline" className="text-xs font-mono">
+              <Badge variant="outline" className="font-mono text-xs">
                 {selected.model || "-"}
               </Badge>
               {selected.task_id && (
-                <Badge variant="outline" className="text-xs font-mono">
+                <Badge variant="outline" className="font-mono text-xs">
                   {t("taskBadge", { id: selected.task_id })}
                 </Badge>
               )}
-              <span className="text-xs text-muted-foreground">{fmtTime(selected.ts)}</span>
+              <span className="text-muted-foreground text-xs">{fmtTime(selected.ts)}</span>
               <span className={cn("text-xs", selected.latency_ms > 30000 && "text-amber-500")}>
                 {fmtLatency(selected.latency_ms)}
               </span>
               <StatusBadge status={selected.status} />
               {/* Toggle the original-text view. Older records have no original text, so in that case do not silently fall back; disable the toggle instead, to avoid showing something that looks like "the original is the same as the parsed output."
-                  */}
+               */}
               <Button
                 variant={showRaw ? "secondary" : "ghost"}
                 size="sm"
@@ -540,38 +540,38 @@ export default function LLMRecordsPage() {
             {/* Request / Response split */}
             <div className="grid min-h-0 flex-1 grid-cols-2 divide-x">
               <div className="flex min-h-0 min-w-0 flex-col">
-                <div className="flex items-center gap-2 border-b py-0.5 pr-1.5 pl-3 text-[11px] font-medium text-muted-foreground">
+                <div className="flex items-center gap-2 border-b py-0.5 pr-1.5 pl-3 font-medium text-[11px] text-muted-foreground">
                   <span>Request{showRaw && ` · ${t("raw")}`}</span>
                   <CopyButton text={reqText || ""} />
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
                   {detailLoading ? (
-                    <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2 p-3 text-muted-foreground text-xs">
                       <Loader2Icon className="size-3.5 animate-spin" />
                       {t("loading")}
                     </div>
                   ) : (
-                    <pre className="p-3 font-mono text-xs break-all whitespace-pre-wrap">
+                    <pre className="whitespace-pre-wrap break-all p-3 font-mono text-xs">
                       {reqText || t("emptyContent")}
                     </pre>
                   )}
                 </div>
               </div>
               <div className="flex min-h-0 min-w-0 flex-col">
-                <div className="flex items-center gap-2 border-b py-0.5 pr-1.5 pl-3 text-[11px] font-medium text-muted-foreground">
+                <div className="flex items-center gap-2 border-b py-0.5 pr-1.5 pl-3 font-medium text-[11px] text-muted-foreground">
                   <span>Response{showRaw && ` · ${t("raw")}(SSE)`}</span>
                   <CopyButton text={respText || ""} />
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
                   {detailLoading ? (
-                    <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2 p-3 text-muted-foreground text-xs">
                       <Loader2Icon className="size-3.5 animate-spin" />
                       {t("loading")}
                     </div>
                   ) : (
                     <pre
                       className={cn(
-                        "p-3 font-mono text-xs break-all whitespace-pre-wrap",
+                        "whitespace-pre-wrap break-all p-3 font-mono text-xs",
                         selected.status !== "ok" && selected.status !== "refused" && "text-red-600 dark:text-red-400",
                       )}
                     >

@@ -125,7 +125,6 @@ import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
 import type {
   AssetInterceptRuleInput,
-  TaskCredentialInput,
   ChatAttachment,
   Company,
   DeleteTaskOptions,
@@ -135,6 +134,7 @@ import type {
   TaskArchive,
   TaskArchiveState,
   TaskCategory,
+  TaskCredentialInput,
   TaskStatus,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -828,7 +828,7 @@ export default function TasksPage() {
           <CardContent className="flex flex-col gap-4 px-0 pt-6">
             <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
               <div className="relative w-full sm:max-w-xs">
-                <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+                <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   placeholder={t("filter.searchPlaceholder")}
                   value={query}
@@ -840,7 +840,7 @@ export default function TasksPage() {
                     type="button"
                     onClick={() => setQuery("")}
                     aria-label={t("filter.clearSearch")}
-                    className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
+                    className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   >
                     <XIcon className="size-4" />
                   </button>
@@ -953,11 +953,11 @@ export default function TasksPage() {
             </div>
 
             {tasks.length === 0 ? (
-              <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
+              <div className="mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-muted-foreground text-sm lg:mx-6">
                 {t("empty.noTasks")}
               </div>
             ) : filtered.length === 0 ? (
-              <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
+              <div className="mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-muted-foreground text-sm lg:mx-6">
                 {t("empty.noMatch")}
               </div>
             ) : (
@@ -986,7 +986,7 @@ export default function TasksPage() {
                         onSort={sortTasksBy}
                       />
                       <TableHead>{t("table.name")}</TableHead>
-                      <TableHead className="hidden @5xl:table-cell">{t("table.description")}</TableHead>
+                      <TableHead className="@5xl:table-cell hidden">{t("table.description")}</TableHead>
                       <TableHead>{t("table.target")}</TableHead>
                       <SortableTaskHead
                         field="status"
@@ -995,19 +995,19 @@ export default function TasksPage() {
                         direction={sortDirection}
                         onSort={sortTasksBy}
                       />
-                      <TableHead className="hidden text-center @3xl:table-cell">{t("table.goalProgress")}</TableHead>
+                      <TableHead className="@3xl:table-cell hidden text-center">{t("table.goalProgress")}</TableHead>
                       <TableHead className="text-center" title={t("table.findingsTitle")}>
                         {t("table.findings")}{" "}
-                        <span className="text-muted-foreground font-normal">{t("table.findingsSub")}</span>
+                        <span className="font-normal text-muted-foreground">{t("table.findingsSub")}</span>
                       </TableHead>
-                      <TableHead className="hidden text-center @4xl:table-cell">{t("table.runningWorker")}</TableHead>
+                      <TableHead className="@4xl:table-cell hidden text-center">{t("table.runningWorker")}</TableHead>
                       <SortableTaskHead
                         field="created"
                         label={t("table.created")}
                         activeField={sortField}
                         direction={sortDirection}
                         align="right"
-                        className="hidden @6xl:table-cell"
+                        className="@6xl:table-cell hidden"
                         onSort={sortTasksBy}
                       />
                       <SortableTaskHead
@@ -1016,10 +1016,10 @@ export default function TasksPage() {
                         activeField={sortField}
                         direction={sortDirection}
                         align="right"
-                        className="hidden @6xl:table-cell"
+                        className="@6xl:table-cell hidden"
                         onSort={sortTasksBy}
                       />
-                      <TableHead className="hidden text-right @7xl:table-cell">Token</TableHead>
+                      <TableHead className="@7xl:table-cell hidden text-right">Token</TableHead>
                       <TableHead className="text-right">{t("table.actions")}</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1236,16 +1236,16 @@ const TaskRow = React.memo(function TaskRow({
         />
       </TableCell>
       <TableCell>
-        <code className="bg-muted rounded px-1.5 py-0.5 font-mono text-xs">{task.id}</code>
+        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{task.id}</code>
       </TableCell>
       <TableCell className="font-medium">
         <div className="flex max-w-xs items-center gap-2">
           <TaskNameEditor task={task} onRename={onRename} />
           {task.active && <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />}
-          {taskIsPinned(task) && <PinIcon className="text-primary size-4 shrink-0" aria-label={t("row.pinnedBadge")} />}
+          {taskIsPinned(task) && <PinIcon className="size-4 shrink-0 text-primary" aria-label={t("row.pinnedBadge")} />}
         </div>
       </TableCell>
-      <TableCell className="text-muted-foreground hidden max-w-40 @5xl:table-cell">
+      <TableCell className="@5xl:table-cell hidden max-w-40 text-muted-foreground">
         <Link
           href={`/function/tasks/detail?id=${encodeURIComponent(task.id)}`}
           className="block truncate rounded-sm hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -1254,13 +1254,13 @@ const TaskRow = React.memo(function TaskRow({
           {task.description}
         </Link>
       </TableCell>
-      <TableCell className="text-muted-foreground max-w-40 truncate" title={task.goal}>
+      <TableCell className="max-w-40 truncate text-muted-foreground" title={task.goal}>
         {task.goal}
       </TableCell>
       <TableCell>
         <StatusBadge domain="task" value={task.status} dot />
       </TableCell>
-      <TableCell className="text-muted-foreground hidden text-center text-xs tabular-nums @3xl:table-cell">
+      <TableCell className="@3xl:table-cell hidden text-center text-muted-foreground text-xs tabular-nums">
         {typeof task.goals_total === "number" && task.goals_total > 0 ? (
           `${task.goals_met}/${task.goals_total}`
         ) : (
@@ -1274,7 +1274,7 @@ const TaskRow = React.memo(function TaskRow({
           if (!f || total === 0) return <span className="text-muted-foreground">0</span>;
           const seg = (n: number, cls: string) => <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>;
           return (
-            <span className="font-medium whitespace-nowrap" title={t("table.findingsTitle")}>
+            <span className="whitespace-nowrap font-medium" title={t("table.findingsTitle")}>
               {seg(f.critical, "text-rose-600 dark:text-rose-400")}
               <span className="text-muted-foreground">/</span>
               {seg(f.high, "text-red-600 dark:text-red-400")}
@@ -1286,17 +1286,17 @@ const TaskRow = React.memo(function TaskRow({
           );
         })()}
       </TableCell>
-      <TableCell className="hidden text-center text-xs tabular-nums @4xl:table-cell">
+      <TableCell className="@4xl:table-cell hidden text-center text-xs tabular-nums">
         {task.in_flight && task.in_flight > 0 ? (
-          <span className="text-foreground font-medium">{task.in_flight}</span>
+          <span className="font-medium text-foreground">{task.in_flight}</span>
         ) : (
           <span className="text-muted-foreground">0</span>
         )}
       </TableCell>
-      <TableCell className="text-muted-foreground hidden text-right text-xs whitespace-nowrap tabular-nums @6xl:table-cell">
+      <TableCell className="@6xl:table-cell hidden whitespace-nowrap text-right text-muted-foreground text-xs tabular-nums">
         {fmtDateTime(task.created_unix)}
       </TableCell>
-      <TableCell className="hidden text-right text-xs whitespace-nowrap tabular-nums @6xl:table-cell">
+      <TableCell className="@6xl:table-cell hidden whitespace-nowrap text-right text-xs tabular-nums">
         {(() => {
           const secs = taskDuration(task, nowSec);
           if (secs <= 0) return <span className="text-muted-foreground">—</span>;
@@ -1308,7 +1308,7 @@ const TaskRow = React.memo(function TaskRow({
         })()}
       </TableCell>
       <TableCell
-        className="hidden text-right text-xs whitespace-nowrap tabular-nums @7xl:table-cell"
+        className="@7xl:table-cell hidden whitespace-nowrap text-right text-xs tabular-nums"
         title={
           task.tokens
             ? t("row.tokenTitle", {
@@ -1974,7 +1974,7 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
                         <span className="truncate font-medium">
                           {archive.task_name || archive.task_description || t("taskRef", { id: archive.task_id })}
                         </span>
-                        <span className="text-muted-foreground truncate text-xs">
+                        <span className="truncate text-muted-foreground text-xs">
                           #{archive.task_id} · {archive.task_description}
                         </span>
                       </div>
@@ -1985,7 +1985,7 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
                     <TableCell className="text-muted-foreground">
                       {archive.category_name || t("archive.uncategorized")}
                     </TableCell>
-                    <TableCell className="text-muted-foreground whitespace-nowrap text-xs">
+                    <TableCell className="whitespace-nowrap text-muted-foreground text-xs">
                       {archiveDate(archive.archived_at || archive.requested_at)}
                     </TableCell>
                     <TableCell
@@ -2402,9 +2402,9 @@ function BulkDeleteTasksDialog({
           <AlertDialogTitle>{t("bulkDelete.title", { count: ids.length })}</AlertDialogTitle>
           <AlertDialogDescription>{t("bulkDelete.description")}</AlertDialogDescription>
         </AlertDialogHeader>
-        <div className="text-muted-foreground flex flex-wrap gap-1 text-xs">
+        <div className="flex flex-wrap gap-1 text-muted-foreground text-xs">
           {ids.slice(0, 30).map((id) => (
-            <code key={id} className="bg-muted rounded px-1.5 py-0.5 font-mono">
+            <code key={id} className="rounded bg-muted px-1.5 py-0.5 font-mono">
               #{id}
             </code>
           ))}
@@ -2488,10 +2488,10 @@ function SourceTaskPicker({
               <ComboboxItem key={taskID} value={taskID} disabled={atLimit && !value.includes(taskID)}>
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">
+                    <p className="truncate font-medium text-sm">
                       #{taskID} · {task?.description ?? t("sourcePicker.unknownTask")}
                     </p>
-                    {task?.goal && <p className="text-muted-foreground truncate text-xs">{task.goal}</p>}
+                    {task?.goal && <p className="truncate text-muted-foreground text-xs">{task.goal}</p>}
                   </div>
                   {task && <StatusBadge domain="task" value={task.status} />}
                 </div>
@@ -2622,7 +2622,7 @@ function CategoryPicker({
               {t("categoryPicker.create", { name: trimmed })}
             </button>
           ) : (
-            <div className="px-2 py-2 text-sm text-muted-foreground">{t("categoryPicker.hint")}</div>
+            <div className="px-2 py-2 text-muted-foreground text-sm">{t("categoryPicker.hint")}</div>
           ))}
       </ComboboxContent>
     </Combobox>
@@ -2708,12 +2708,12 @@ function CompanyPicker({
                     <span className="min-w-0 flex-1 truncate font-medium">
                       {company?.name ?? t("companyPicker.fallback", { id: companyID })}
                     </span>
-                    <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                    <span className="shrink-0 text-muted-foreground text-xs tabular-nums">
                       {t("companyPicker.assetCount", { count: company?.asset_count ?? 0 })}
                     </span>
                   </div>
                   {company && (
-                    <span className="text-muted-foreground truncate text-xs" title={companyScopeSummary(t, company)}>
+                    <span className="truncate text-muted-foreground text-xs" title={companyScopeSummary(t, company)}>
                       {companyScopeSummary(t, company)}
                     </span>
                   )}
@@ -2775,7 +2775,7 @@ function DraggableCategoryTask({ task, disabled, moving }: { task: Task; disable
 
   return (
     <Item ref={setNodeRef} variant="outline" size="sm" className={cn(isDragging && "opacity-40")}>
-      <ItemMedia className="group-has-data-[slot=item-description]/item:self-center group-has-data-[slot=item-description]/item:translate-y-0">
+      <ItemMedia className="group-has-data-[slot=item-description]/item:translate-y-0 group-has-data-[slot=item-description]/item:self-center">
         {moving ? (
           <Spinner />
         ) : (
@@ -2783,7 +2783,7 @@ function DraggableCategoryTask({ task, disabled, moving }: { task: Task; disable
             type="button"
             size="icon-xs"
             variant="ghost"
-            className="touch-none cursor-grab active:cursor-grabbing"
+            className="cursor-grab touch-none active:cursor-grabbing"
             disabled={disabled}
             {...listeners}
             {...attributes}
@@ -2815,7 +2815,7 @@ function CategoryTaskDragPreview({ task }: { task: Task }) {
   const t = useTranslations("tasksPage");
   return (
     <Item variant="outline" size="sm" className="w-80 bg-background shadow-lg">
-      <ItemMedia className="group-has-data-[slot=item-description]/item:self-center group-has-data-[slot=item-description]/item:translate-y-0">
+      <ItemMedia className="group-has-data-[slot=item-description]/item:translate-y-0 group-has-data-[slot=item-description]/item:self-center">
         <GripVerticalIcon className="size-4 text-muted-foreground" />
       </ItemMedia>
       <ItemContent className="min-w-0">
@@ -3276,7 +3276,9 @@ function CreateTaskSheet({
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
-        credentials: credentials.filter((c) => c.domain.trim() && c.username.trim()).map((c) => ({ ...c, domain: c.domain.trim(), username: c.username.trim(), note: c.note?.trim() ?? "" })),
+        credentials: credentials
+          .filter((c) => c.domain.trim() && c.username.trim())
+          .map((c) => ({ ...c, domain: c.domain.trim(), username: c.username.trim(), note: c.note?.trim() ?? "" })),
       });
       toast.success(t("create.createdToast"));
       setName("");
@@ -3431,14 +3433,72 @@ function CreateTaskSheet({
               <div className="grid gap-2">
                 {credentials.map((credential, index) => (
                   <div key={index} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
-                    <Input aria-label={t("create.credentialDomain")} placeholder={t("create.credentialDomain")} value={credential.domain} onChange={(event) => setCredentials((items) => items.map((item, i) => i === index ? { ...item, domain: event.target.value } : item))} />
-                    <Input aria-label={t("create.credentialUsername")} placeholder={t("create.credentialUsername")} value={credential.username} onChange={(event) => setCredentials((items) => items.map((item, i) => i === index ? { ...item, username: event.target.value } : item))} />
-                    <Input aria-label={t("create.credentialPassword")} placeholder={t("create.credentialPassword")} type="password" autoComplete="new-password" value={credential.password} onChange={(event) => setCredentials((items) => items.map((item, i) => i === index ? { ...item, password: event.target.value } : item))} />
-                    <Button type="button" variant="ghost" size="icon" aria-label={t("create.credentialRemove")} onClick={() => setCredentials((items) => items.filter((_, i) => i !== index))}><Trash2Icon /></Button>
-                    <Input className="sm:col-span-4" aria-label={t("create.credentialNote")} placeholder={t("create.credentialNote")} value={credential.note ?? ""} onChange={(event) => setCredentials((items) => items.map((item, i) => i === index ? { ...item, note: event.target.value } : item))} />
+                    <Input
+                      aria-label={t("create.credentialDomain")}
+                      placeholder={t("create.credentialDomain")}
+                      value={credential.domain}
+                      onChange={(event) =>
+                        setCredentials((items) =>
+                          items.map((item, i) => (i === index ? { ...item, domain: event.target.value } : item)),
+                        )
+                      }
+                    />
+                    <Input
+                      aria-label={t("create.credentialUsername")}
+                      placeholder={t("create.credentialUsername")}
+                      value={credential.username}
+                      onChange={(event) =>
+                        setCredentials((items) =>
+                          items.map((item, i) => (i === index ? { ...item, username: event.target.value } : item)),
+                        )
+                      }
+                    />
+                    <Input
+                      aria-label={t("create.credentialPassword")}
+                      placeholder={t("create.credentialPassword")}
+                      type="password"
+                      autoComplete="new-password"
+                      value={credential.password}
+                      onChange={(event) =>
+                        setCredentials((items) =>
+                          items.map((item, i) => (i === index ? { ...item, password: event.target.value } : item)),
+                        )
+                      }
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label={t("create.credentialRemove")}
+                      onClick={() => setCredentials((items) => items.filter((_, i) => i !== index))}
+                    >
+                      <Trash2Icon />
+                    </Button>
+                    <Input
+                      className="sm:col-span-4"
+                      aria-label={t("create.credentialNote")}
+                      placeholder={t("create.credentialNote")}
+                      value={credential.note ?? ""}
+                      onChange={(event) =>
+                        setCredentials((items) =>
+                          items.map((item, i) => (i === index ? { ...item, note: event.target.value } : item)),
+                        )
+                      }
+                    />
                   </div>
                 ))}
-                <Button type="button" size="sm" variant="outline" className="w-fit" onClick={() => setCredentials((items) => [...items, { domain: "", username: "", password: "", note: "" }])}><PlusIcon className="size-4" />{t("create.credentialAdd")}</Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="w-fit"
+                  onClick={() =>
+                    setCredentials((items) => [...items, { domain: "", username: "", password: "", note: "" }])
+                  }
+                >
+                  <PlusIcon className="size-4" />
+                  {t("create.credentialAdd")}
+                </Button>
               </div>
             </Field>
             <Field>
@@ -3460,10 +3520,10 @@ function CreateTaskSheet({
 
             {/* Advanced parameters are collapsed by default: timeout, heartbeat, and first intent. They take up space only when expanded, so the common path stays clean. */}
             <Collapsible>
-              <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 text-sm font-medium">
-                <ChevronRightIcon className="text-muted-foreground size-4 transition-transform group-data-[state=open]:rotate-90" />
+              <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 font-medium text-sm">
+                <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
                 {t("create.advanced")}
-                <span className="text-muted-foreground ml-auto text-xs font-normal">{t("create.advancedSub")}</span>
+                <span className="ml-auto font-normal text-muted-foreground text-xs">{t("create.advancedSub")}</span>
               </CollapsibleTrigger>
               <CollapsibleContent className="grid gap-5 pt-5">
                 <div className="grid gap-2">
@@ -3527,11 +3587,7 @@ function CreateTaskSheet({
                 </div>
                 <div className="grid gap-2">
                   <label htmlFor="llm-rotate" className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      id="llm-rotate"
-                      checked={llmRotate}
-                      onCheckedChange={(v) => setLLMRotate(!!v)}
-                    />
+                    <Checkbox id="llm-rotate" checked={llmRotate} onCheckedChange={(v) => setLLMRotate(!!v)} />
                     {t("create.llmRotateLabel")}
                   </label>
                   <p className="text-muted-foreground text-xs">{t("create.llmRotateHint")}</p>

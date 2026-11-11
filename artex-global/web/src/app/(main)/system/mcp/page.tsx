@@ -366,7 +366,7 @@ export default function MCPPage() {
               <div key={t.name} className="py-2.5">
                 <code className="font-mono text-sm">{t.name}</code>
                 {t.description && (
-                  <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{t.description}</p>
+                  <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">{t.description}</p>
                 )}
               </div>
             ))}
@@ -379,7 +379,7 @@ export default function MCPPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">MCP</h1>
+        <h1 className="font-semibold text-xl tracking-tight">MCP</h1>
         <p className="text-muted-foreground text-sm">{t("subtitle")}</p>
       </div>
 
@@ -387,7 +387,7 @@ export default function MCPPage() {
         <button
           type="button"
           onClick={openAdd}
-          className="text-foreground/70 border-foreground/70 hover:bg-muted/60 hover:shadow-sm flex min-h-[116px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed transition"
+          className="flex min-h-[116px] flex-col items-center justify-center gap-2 rounded-xl border border-foreground/70 border-dashed text-foreground/70 transition hover:bg-muted/60 hover:shadow-sm"
         >
           <PlusIcon className="size-6" />
           <span className="text-sm">{t("addCard")}</span>
@@ -397,25 +397,31 @@ export default function MCPPage() {
           <Card
             key={s.id}
             onClick={() => openEdit(s)}
-            className="hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm"
+            className="cursor-pointer gap-3 transition hover:border-primary/60 hover:shadow-sm"
           >
             <CardHeader>
               <div className="flex items-center gap-2">
-                <ServerIcon className="text-muted-foreground size-4 shrink-0" />
+                <ServerIcon className="size-4 shrink-0 text-muted-foreground" />
                 <CardTitle className="truncate text-base">{s.name}</CardTitle>
                 <Badge variant="outline" className="shrink-0 uppercase">
                   {s.transport}
                 </Badge>
                 {s.last_connect_ok === false ? (
-                  <Badge variant="destructive" className="max-w-55 truncate font-normal" title={s.last_connect_err ?? t("connectFailed")}>
-                    {t("statusDown", { err: s.last_connect_err ? s.last_connect_err.slice(0, 60) : t("connectFailed") })}
+                  <Badge
+                    variant="destructive"
+                    className="max-w-55 truncate font-normal"
+                    title={s.last_connect_err ?? t("connectFailed")}
+                  >
+                    {t("statusDown", {
+                      err: s.last_connect_err ? s.last_connect_err.slice(0, 60) : t("connectFailed"),
+                    })}
                   </Badge>
                 ) : s.last_connect_ok === true ? (
                   <Badge variant="secondary" className="font-normal">
                     {t("statusOk", { time: s.last_connect_at ? new Date(s.last_connect_at).toLocaleTimeString() : "" })}
                   </Badge>
                 ) : (
-                  <Badge variant="outline" className="text-muted-foreground font-normal">
+                  <Badge variant="outline" className="font-normal text-muted-foreground">
                     {t("statusNotConnected")}
                   </Badge>
                 )}

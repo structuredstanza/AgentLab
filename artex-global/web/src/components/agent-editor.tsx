@@ -302,7 +302,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   }
 
   if (loaded && !detail) {
-    return <div className="text-muted-foreground p-6 text-center text-sm">{tr("notFound", { key: agentKey })}</div>;
+    return <div className="p-6 text-center text-muted-foreground text-sm">{tr("notFound", { key: agentKey })}</div>;
   }
   // config is meaningless for the conversational main agent and the fixed-budget
   // goals decomposer; every other agent (workers, custom assistants) honors it.
@@ -355,7 +355,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                         ))}
                       </SelectContent>
                     </Select>
-                    <span className="text-muted-foreground max-w-md text-xs">{tr("llm.hint")}</span>
+                    <span className="max-w-md text-muted-foreground text-xs">{tr("llm.hint")}</span>
                   </div>
                 </div>
               )}
@@ -435,7 +435,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                     <button
                       type="button"
                       onClick={() => setPrompt((p) => `${p}{{.${v.name}}}`)}
-                      className="hover:bg-muted inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-1 font-mono text-xs"
+                      className="inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-1 font-mono text-xs hover:bg-muted"
                     >
                       {`{{.${v.name}}}`}
                       <Badge variant="secondary" className="px-1 py-0 text-[10px]">
@@ -447,7 +447,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                     <p className="font-medium">
                       {agentLabels.varLabel(agentKey, !!detail?.agent?.builtin, v.name, v.description)}
                     </p>
-                    <p className="text-muted-foreground mt-1">{tr("prompt.example", { example: v.example })}</p>
+                    <p className="mt-1 text-muted-foreground">{tr("prompt.example", { example: v.example })}</p>
                   </TooltipContent>
                 </Tooltip>
               ))}
@@ -499,15 +499,15 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                   key={ver.version}
                   className="flex items-center gap-2 rounded-md px-1 py-0.5 text-xs hover:bg-muted/50"
                 >
-                  <span className="font-mono shrink-0">v{ver.version}</span>
+                  <span className="shrink-0 font-mono">v{ver.version}</span>
                   {i === 0 && (
-                    <Badge variant="secondary" className="px-1.5 py-0 shrink-0">
+                    <Badge variant="secondary" className="shrink-0 px-1.5 py-0">
                       {tr("version.current")}
                     </Badge>
                   )}
-                  <span className="text-muted-foreground truncate flex-1">{ver.note}</span>
+                  <span className="flex-1 truncate text-muted-foreground">{ver.note}</span>
                   {ver.ts && (
-                    <span className="text-muted-foreground/60 shrink-0 tabular-nums">
+                    <span className="shrink-0 text-muted-foreground/60 tabular-nums">
                       {new Date(ver.ts).toLocaleDateString(getDateLocale(), {
                         month: "2-digit",
                         day: "2-digit",
@@ -556,10 +556,10 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                   )}
                 </DialogDescription>
               </DialogHeader>
-              <pre className="bg-muted max-h-[55vh] overflow-auto whitespace-pre-wrap rounded-md p-3 font-mono text-xs">
+              <pre className="max-h-[55vh] overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-xs">
                 {viewVer?.template_text || tr("version.empty")}
               </pre>
-              <div className="flex gap-2 justify-end">
+              <div className="flex justify-end gap-2">
                 {viewVer && viewVer.version !== versions[0]?.version && (
                   <Button
                     variant="outline"
@@ -670,7 +670,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
               <Separator />
               <div className="grid gap-1.5">
                 <Label className="text-muted-foreground text-xs">{tr("wrapup.defaultLabel")}</Label>
-                <pre className="text-muted-foreground max-h-40 overflow-y-auto rounded-md border bg-muted/30 p-2 text-xs whitespace-pre-wrap">
+                <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border bg-muted/30 p-2 text-muted-foreground text-xs">
                   {wrapupDefault}
                 </pre>
               </div>
@@ -726,7 +726,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
               {ttWrapupDefault && (
                 <div className="grid gap-1.5">
                   <Label className="text-muted-foreground text-xs">{tr("wrapup.defaultLabel")}</Label>
-                  <pre className="text-muted-foreground max-h-40 overflow-y-auto rounded-md border bg-muted/30 p-2 text-xs whitespace-pre-wrap">
+                  <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border bg-muted/30 p-2 text-muted-foreground text-xs">
                     {ttWrapupDefault}
                   </pre>
                 </div>
@@ -738,13 +738,13 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
 
       {/* MCP visibility */}
       <TabsContent value="mcp" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        <p className="text-muted-foreground mb-3 text-xs">{tr("mcp.desc")}</p>
+        <p className="mb-3 text-muted-foreground text-xs">{tr("mcp.desc")}</p>
         <div className="grid gap-2">
           {mcp.map((m) => (
             <label key={m.id} className="flex items-center gap-2 rounded-md border p-2 text-sm">
               <Checkbox checked={mcpVisible.includes(m.id)} onCheckedChange={() => toggleMcp(m.id)} />
               {m.name}
-              <span className="text-muted-foreground ml-auto text-xs">{m.transport}</span>
+              <span className="ml-auto text-muted-foreground text-xs">{m.transport}</span>
             </label>
           ))}
           {mcp.length === 0 && <span className="text-muted-foreground text-xs">{tr("mcp.none")}</span>}
@@ -753,13 +753,13 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
 
       {/* Skill visibility */}
       <TabsContent value="skill" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        <p className="text-muted-foreground mb-3 text-xs">{tr("skill.desc")}</p>
+        <p className="mb-3 text-muted-foreground text-xs">{tr("skill.desc")}</p>
         <div className="grid gap-2">
           {skills.map((s) => (
             <label key={s.name} className="flex items-center gap-2 rounded-md border p-2 text-sm">
               <Checkbox checked={skillVisible.includes(s.name)} onCheckedChange={() => toggleSkill(s.name)} />
               <span className="font-mono text-xs">{s.name}</span>
-              {s.description && <span className="text-muted-foreground ml-auto truncate text-xs">{s.description}</span>}
+              {s.description && <span className="ml-auto truncate text-muted-foreground text-xs">{s.description}</span>}
             </label>
           ))}
           {skills.length === 0 && <span className="text-muted-foreground text-xs">{tr("skill.none")}</span>}
@@ -768,7 +768,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
 
       {/* Tools binding */}
       <TabsContent value="tools" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        <p className="text-muted-foreground mb-3 text-xs">{tr("tools.desc")}</p>
+        <p className="mb-3 text-muted-foreground text-xs">{tr("tools.desc")}</p>
         <div className="grid gap-2">
           {tools.map((t) => {
             const isTraffic = TRAFFIC_TOOL_KEYS.has(t.key);
@@ -790,15 +790,15 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                   </Badge>
                 )}
                 {!t.enabled && (
-                  <Badge variant="outline" className="text-destructive px-1 py-0 text-[9px]">
+                  <Badge variant="outline" className="px-1 py-0 text-[9px] text-destructive">
                     {tr("tools.disabledBadge")}
                   </Badge>
                 )}
                 {gated ? (
-                  <span className="text-muted-foreground ml-auto text-xs">{tr("tools.needCapture")}</span>
+                  <span className="ml-auto text-muted-foreground text-xs">{tr("tools.needCapture")}</span>
                 ) : (
                   t.description && (
-                    <span className="text-muted-foreground ml-auto line-clamp-1 max-w-[55%] text-xs">
+                    <span className="ml-auto line-clamp-1 max-w-[55%] text-muted-foreground text-xs">
                       {t.description}
                     </span>
                   )
@@ -866,7 +866,7 @@ function DiffView({ oldText, newText }: { oldText: string; newText: string }) {
             l.type === "same" && "text-muted-foreground",
           )}
         >
-          <span className="select-none mr-1 opacity-50">{l.type === "del" ? "-" : l.type === "add" ? "+" : " "}</span>
+          <span className="mr-1 select-none opacity-50">{l.type === "del" ? "-" : l.type === "add" ? "+" : " "}</span>
           {l.text}
         </div>
       ))}
@@ -1263,7 +1263,7 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
                       <span className="min-w-0">
                         <span className="font-medium">{tool.key}</span>
                         {tool.description && (
-                          <span className="text-muted-foreground line-clamp-1"> {tool.description}</span>
+                          <span className="line-clamp-1 text-muted-foreground"> {tool.description}</span>
                         )}
                       </span>
                     </label>
@@ -1327,12 +1327,12 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="font-medium">{condLabel(t)}</span>
                 {!t.enabled && (
-                  <Badge variant="outline" className="text-destructive px-1 py-0 text-[9px]">
+                  <Badge variant="outline" className="px-1 py-0 text-[9px] text-destructive">
                     {tr("tools.disabledBadge")}
                   </Badge>
                 )}
               </div>
-              <div className="text-muted-foreground grid gap-0.5 text-xs">
+              <div className="grid gap-0.5 text-muted-foreground text-xs">
                 {t.interval_sec > 0 && t.interval_message && (
                   <div className="line-clamp-1">{tr("triggers.detail.interval", { msg: t.interval_message })}</div>
                 )}

@@ -395,7 +395,7 @@ function SessionItem({
       >
         {icon ?? <span className="size-3.5 shrink-0" />}
         {s.intent_id && (
-          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground tabular-nums">
             #{s.intent_id}
           </span>
         )}
@@ -405,7 +405,7 @@ function SessionItem({
           </Badge>
         )}
         <span
-          className={cn("min-w-0 flex-1 truncate text-sm font-medium", deleted && "text-muted-foreground line-through")}
+          className={cn("min-w-0 flex-1 truncate font-medium text-sm", deleted && "text-muted-foreground line-through")}
         >
           {displayTitle}
         </span>
@@ -416,12 +416,12 @@ function SessionItem({
         )}
         {hasPending && <ShieldAlertIcon className="size-3.5 shrink-0 text-amber-500" />}
         {!active && unread ? (
-          <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 text-[10px] font-medium tabular-nums text-blue-600 dark:text-blue-400">
+          <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 font-medium text-[10px] text-blue-600 tabular-nums dark:text-blue-400">
             {unread > 99 ? "99+" : unread}
           </span>
         ) : null}
         {s.live && (
-          <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+          <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 font-medium text-[10px] text-blue-600 dark:text-blue-400">
             <span className="size-1 animate-pulse rounded-full bg-blue-500" />
             {t("item.live")}
           </span>
@@ -475,11 +475,11 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
           {displayAssets.map((asset) => (
             <div key={`${asset.intent_id}-${asset.asset_id}`} className="min-w-0">
               <div className="break-all font-mono text-xs">{asset.label.trim() || `#${asset.asset_id}`}</div>
-              <div className="mt-0.5 text-xs text-muted-foreground">
+              <div className="mt-0.5 text-muted-foreground text-xs">
                 {taskAssetTypeLabel(asset.type)} · {taskAssetSourceLabel(asset.source)}
                 {asset.inherited ? ` · from source task #${asset.source_task_id}` : ""}
               </div>
-              <div className="mt-0.5 [overflow-wrap:anywhere] text-xs">{asset.source_summary}</div>
+              <div className="mt-0.5 text-xs [overflow-wrap:anywhere]">{asset.source_summary}</div>
             </div>
           ))}
         </div>
@@ -1642,7 +1642,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                 onClick={() => setListOpen((open) => !open)}
                 aria-expanded={listOpen}
                 aria-controls="session-list-panel"
-                className="flex min-w-0 flex-1 items-center gap-1 text-left text-xs font-medium text-muted-foreground lg:pointer-events-none"
+                className="flex min-w-0 flex-1 items-center gap-1 text-left font-medium text-muted-foreground text-xs lg:pointer-events-none"
               >
                 <ChevronDownIcon
                   className={cn("size-3.5 shrink-0 transition-transform lg:hidden", !listOpen && "-rotate-90")}
@@ -1654,7 +1654,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                       · {activeDisplayTitle}
                     </span>
                     {hiddenUnread > 0 && (
-                      <span className="inline-flex min-w-4 shrink-0 items-center justify-center rounded-full bg-blue-500/15 px-1 text-[10px] font-medium tabular-nums text-blue-600 lg:hidden dark:text-blue-400">
+                      <span className="inline-flex min-w-4 shrink-0 items-center justify-center rounded-full bg-blue-500/15 px-1 font-medium text-[10px] text-blue-600 tabular-nums lg:hidden dark:text-blue-400">
                         {hiddenUnread > 99 ? "99+" : hiddenUnread}
                       </span>
                     )}
@@ -1686,7 +1686,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
             {taskTokens && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                  <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1 text-muted-foreground text-xs">
                     <span>{t("taskTotal")}</span>
                     <span>·</span>
                     <TokenMetrics
@@ -1711,7 +1711,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
             id="session-list-panel"
             type="auto"
             className={cn(
-              "min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!",
+              "[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 flex-1",
               !listOpen && "max-lg:hidden",
             )}
           >
@@ -1722,7 +1722,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                 const Meta = roleMeta[role];
                 return (
                   <div key={role} className="flex flex-col gap-0.5">
-                    <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-muted-foreground">
+                    <div className="flex items-center gap-1.5 px-2 py-1 font-medium text-muted-foreground text-xs">
                       <Meta.icon className="size-3.5" />
                       {t(`role.${role}`)}
                       {role === "mainagent" && (
@@ -1773,7 +1773,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                         type="button"
                         onClick={loadOlderIntents}
                         disabled={loadingOlderIntents}
-                        className="mt-0.5 flex items-center justify-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50"
+                        className="mt-0.5 flex items-center justify-center gap-1 rounded-md px-2 py-1 text-muted-foreground text-xs hover:bg-accent/50"
                       >
                         {loadingOlderIntents ? (
                           <Loader2Icon className="size-3.5 animate-spin" />
@@ -1787,7 +1787,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                 );
               })}
               {mainLoaded && !workerSessions.length && (
-                <div className="px-2 py-1 text-xs text-muted-foreground">{t("worker.noRunning")}</div>
+                <div className="px-2 py-1 text-muted-foreground text-xs">{t("worker.noRunning")}</div>
               )}
             </div>
           </ScrollArea>
@@ -1798,7 +1798,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
           side={side}
           label={active.role === "worker" ? `Worker #${active.intent_id} · ${activeDisplayTitle}` : activeDisplayTitle}
         >
-          <div className="flex min-h-0 flex-1 min-w-0 flex-col overflow-hidden rounded-lg border bg-card">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-2 sm:px-4 sm:py-2.5">
               {(() => {
                 const isWorker = active.role === "worker";
@@ -1806,7 +1806,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                 // Worker: the intent moved into the transcript as a message, so the
                 // header shows a stable generic label (intent JSON stays on hover).
                 const title = isWorker ? t("worker.execSession") : active.title;
-                const titleEl = <span className="min-w-0 truncate text-sm font-medium">{title}</span>;
+                const titleEl = <span className="min-w-0 truncate font-medium text-sm">{title}</span>;
                 return meta?.json ? (
                   <Tooltip>
                     <TooltipTrigger asChild>{titleEl}</TooltipTrigger>
@@ -1854,7 +1854,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                 <Badge variant="outline">{t("header.sourceTask", { id: active.source_task_id })}</Badge>
               )}
               {active.live && (
-                <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+                <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 font-medium text-[10px] text-blue-600 dark:text-blue-400">
                   <span className="size-1 animate-pulse rounded-full bg-blue-500" />
                   {t("sse.live")}
                 </span>
@@ -1864,7 +1864,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                   {t("header.olderHistoryLabel")}
                 </span>
               )}
-              <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-x-3 gap-y-1 text-xs text-muted-foreground max-sm:w-full max-sm:flex-wrap">
+              <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-x-3 gap-y-1 text-muted-foreground text-xs max-sm:w-full max-sm:flex-wrap">
                 {tokenTotal.any && (
                   <Tooltip>
                     {/* On mobile, use short labels (In/Buffer/Out): long labels would wrap this line onto two rows and further compress the record area. */}
@@ -1909,7 +1909,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
               const dm = active.role === "worker" ? sessionMeta.get(active.id) : undefined;
               if (!dm?.deleted) return null;
               return (
-                <div className="flex items-start gap-2 border-b border-destructive/30 bg-destructive/5 px-4 py-2.5 text-xs">
+                <div className="flex items-start gap-2 border-destructive/30 border-b bg-destructive/5 px-4 py-2.5 text-xs">
                   <Trash2Icon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
                   <div className="min-w-0">
                     <span className="font-medium text-destructive">{t("deletedNotice.heading")}</span>
@@ -1938,21 +1938,21 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
             to block so wide/unbreakable steps (long commands, code, URLs) can't blow
             out the width and defeat the truncation below — the transcript wraps to
             the panel instead of overflowing horizontally. */}
-            <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
+            <ScrollArea type="auto" className="[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1">
               <div className="min-w-0 max-w-full p-4" ref={contentRef}>
                 {activeState?.loadingMore && (
-                  <div className="flex items-center justify-center gap-2 pb-2 text-xs text-muted-foreground">
+                  <div className="flex items-center justify-center gap-2 pb-2 text-muted-foreground text-xs">
                     <Loader2Icon className="size-3.5 animate-spin" />
                     {t("transcript.loadingMore")}
                   </div>
                 )}
                 {showLoader ? (
-                  <div className="flex items-center gap-2 pl-9 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2 pl-9 text-muted-foreground text-xs">
                     <Loader2Icon className="size-3.5 animate-spin" />
                     {t("transcript.loadingActivity")}
                   </div>
                 ) : activeState?.error ? (
-                  <div className="flex items-center gap-2 pl-9 text-xs text-red-500">
+                  <div className="flex items-center gap-2 pl-9 text-red-500 text-xs">
                     <CircleXIcon className="size-3.5" />
                     {t("transcript.loadError", { error: activeState.error })}
                     <Button
@@ -1973,7 +1973,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                     focusedSeq={focusHistory.ready ? approvalFocus.state?.source?.seq : undefined}
                   />
                 ) : (
-                  <div className="pl-9 text-xs text-muted-foreground">
+                  <div className="pl-9 text-muted-foreground text-xs">
                     {isMain ? t("transcript.emptyMain") : t("transcript.emptyWorker")}
                   </div>
                 )}
@@ -2098,7 +2098,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                   <InputGroupAddon align="block-end">
                     <span
                       className={cn(
-                        "px-1 text-[10px] tabular-nums text-muted-foreground",
+                        "px-1 text-[10px] text-muted-foreground tabular-nums",
                         workerMessageCharCount(workerMessage) > MAX_WORKER_MESSAGE_CHARS && "text-destructive",
                       )}
                     >
@@ -2184,7 +2184,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
           <AlertDialogContent className="max-w-[min(32rem,calc(100vw-2rem))]">
             <AlertDialogHeader>
               <AlertDialogTitle>{t("deleteDialog.title", { id: cancelIntent?.intent_id ?? "" })}</AlertDialogTitle>
-              <AlertDialogDescription className="break-words whitespace-normal">
+              <AlertDialogDescription className="whitespace-normal break-words">
                 {deleteMode === "hard"
                   ? t.rich("deleteDialog.hardDesc", { s: (c) => <strong>{c}</strong> })
                   : t.rich("deleteDialog.softDesc", { s: (c) => <strong>{c}</strong> })}
@@ -2201,7 +2201,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                   )}
                 >
                   <div className="font-medium">{t("deleteDialog.softLabel")}</div>
-                  <div className="text-xs text-muted-foreground">{t("deleteDialog.softHint")}</div>
+                  <div className="text-muted-foreground text-xs">{t("deleteDialog.softHint")}</div>
                 </button>
                 <button
                   type="button"
@@ -2212,11 +2212,11 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
                   )}
                 >
                   <div className="font-medium">{t("deleteDialog.hardLabel")}</div>
-                  <div className="text-xs text-muted-foreground">{t("deleteDialog.hardHint")}</div>
+                  <div className="text-muted-foreground text-xs">{t("deleteDialog.hardHint")}</div>
                 </button>
               </div>
               <div className="grid gap-2">
-                <label htmlFor="cancel-reason" className="text-sm font-medium">
+                <label htmlFor="cancel-reason" className="font-medium text-sm">
                   {t("deleteDialog.reasonLabel")}
                 </label>
                 <Textarea
@@ -2247,7 +2247,7 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
           <AlertDialogContent className="max-w-[min(32rem,calc(100vw-2rem))]">
             <AlertDialogHeader>
               <AlertDialogTitle>{t("newSession.title")}</AlertDialogTitle>
-              <AlertDialogDescription className="break-words whitespace-normal">
+              <AlertDialogDescription className="whitespace-normal break-words">
                 {t("newSession.desc")}
               </AlertDialogDescription>
             </AlertDialogHeader>

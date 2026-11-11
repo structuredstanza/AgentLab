@@ -54,7 +54,7 @@ function fmtTime(value?: string) {
 function source(row: InterceptApprovalRow) {
   if (row.decision_source) return row.decision_source;
   if (row.rule_id) return "rule";
-  return (row.reason?.startsWith("[\u6a21\u578b]") || row.reason?.startsWith("[Model]")) ? "model" : "unknown";
+  return row.reason?.startsWith("[\u6a21\u578b]") || row.reason?.startsWith("[Model]") ? "model" : "unknown";
 }
 
 function originLabel(row: InterceptApprovalRow, t: Translator) {

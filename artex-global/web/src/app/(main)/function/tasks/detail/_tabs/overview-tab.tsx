@@ -84,7 +84,7 @@ function StatCard({
         </CardDescription>
         <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
       </CardHeader>
-      {sub && <CardContent className="text-xs text-muted-foreground">{sub}</CardContent>}
+      {sub && <CardContent className="text-muted-foreground text-xs">{sub}</CardContent>}
     </Card>
   );
 }
@@ -428,12 +428,12 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
-            <div className="text-xs font-medium text-muted-foreground">{t("desc.descLabel")}</div>
-            <p className="text-sm whitespace-pre-wrap break-words">{task?.description?.trim() || "—"}</p>
+            <div className="font-medium text-muted-foreground text-xs">{t("desc.descLabel")}</div>
+            <p className="whitespace-pre-wrap break-words text-sm">{task?.description?.trim() || "—"}</p>
           </div>
           <div className="flex flex-col gap-1.5">
-            <div className="text-xs font-medium text-muted-foreground">{t("desc.goalLabel")}</div>
-            <p className="text-sm whitespace-pre-wrap break-words">{task?.goal?.trim() || "—"}</p>
+            <div className="font-medium text-muted-foreground text-xs">{t("desc.goalLabel")}</div>
+            <p className="whitespace-pre-wrap break-words text-sm">{task?.goal?.trim() || "—"}</p>
           </div>
         </CardContent>
       </Card>
@@ -444,7 +444,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <ListChecksIcon className="size-4 text-primary" /> {t("goals.title")}
-            <span className="text-muted-foreground text-xs font-normal">
+            <span className="font-normal text-muted-foreground text-xs">
               {t("goals.hint", { count: goals.length })}
             </span>
           </CardTitle>
@@ -475,7 +475,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             <Button size="sm" variant="outline" disabled={goalBusy || !goalText.trim()} onClick={() => void addGoal()}>
               <PlusIcon className="size-3.5" /> {t("add")}
             </Button>
-            {goalErr && <span className="text-xs text-red-500">{goalErr}</span>}
+            {goalErr && <span className="text-red-500 text-xs">{goalErr}</span>}
           </div>
           {/* Goal list */}
           {goals.length > 0 ? (
@@ -529,7 +529,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                     <StatusBadge domain="goal" value={g.state} />
                     <span className="min-w-0 flex-1 break-words">{g.text}</span>
                     {g.vulnclass && (
-                      <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-xs">
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">
                         {g.vulnclass}
                       </span>
                     )}
@@ -567,7 +567,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <ShieldAlertIcon className="size-4 text-amber-500" /> {t("constraints.title")}
-            <span className="text-muted-foreground text-xs font-normal">
+            <span className="font-normal text-muted-foreground text-xs">
               {t("constraints.hint", { count: constraints.length })}
             </span>
           </CardTitle>
@@ -601,7 +601,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             >
               <PlusIcon className="size-3.5" /> {t("add")}
             </Button>
-            {conErr && <span className="text-xs text-red-500">{conErr}</span>}
+            {conErr && <span className="text-red-500 text-xs">{conErr}</span>}
           </div>
           {/* Constraint list */}
           {constraints.length > 0 ? (
@@ -692,12 +692,12 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <TargetIcon className="size-4 text-emerald-500" /> {t("coverage.title")}
-              <span className="text-muted-foreground text-xs font-normal">{t("coverage.rough")}</span>
+              <span className="font-normal text-muted-foreground text-xs">{t("coverage.rough")}</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-semibold tabular-nums">
+              <span className="font-semibold text-2xl tabular-nums">
                 {coverage.pct != null ? Math.round(coverage.pct * 100) + "%" : "—"}
               </span>
               <span className="text-muted-foreground text-sm">
@@ -708,9 +708,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             {coverage.by_type.length > 0 && (
               <div className="flex flex-wrap gap-1.5 text-xs">
                 {coverage.by_type.map((b) => (
-                  <span key={b.type} className="bg-muted rounded px-1.5 py-0.5">
+                  <span key={b.type} className="rounded bg-muted px-1.5 py-0.5">
                     <span className="text-muted-foreground">{b.type}</span>{" "}
-                    <span className="tabular-nums font-medium">
+                    <span className="font-medium tabular-nums">
                       {b.tested}/{b.total}
                     </span>
                   </span>
@@ -725,7 +725,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <CoinsIcon className="size-4 text-amber-500" /> {t("tokens.title")}
-            <span className="text-muted-foreground text-xs font-normal">
+            <span className="font-normal text-muted-foreground text-xs">
               {t("tokens.hint", { calls: tokenTotals.calls })}
             </span>
           </CardTitle>
@@ -758,7 +758,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="text-muted-foreground border-b text-left text-xs">
+                    <tr className="border-b text-left text-muted-foreground text-xs">
                       <th className="py-1.5 pr-3 font-medium">{t("tokens.colModel")}</th>
                       <th className="py-1.5 pr-3 text-right font-medium">{t("tokens.colCalls")}</th>
                       <th className="py-1.5 pr-3 text-right font-medium">{t("tokens.input")}</th>
@@ -777,7 +777,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                         <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.input_tokens)}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.output_tokens)}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.cache_read_tokens)}</td>
-                        <td className="py-1.5 text-right tabular-nums text-emerald-500">
+                        <td className="py-1.5 text-right text-emerald-500 tabular-nums">
                           {cacheHitRate(m.cache_read_tokens, m.input_tokens)}
                         </td>
                       </tr>
@@ -796,7 +796,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <ShieldCheckIcon className="size-4 text-emerald-500" /> {t("scope.title")}
-            <span className="text-muted-foreground text-xs font-normal">
+            <span className="font-normal text-muted-foreground text-xs">
               {t("scope.hint", { count: scope.length })}
             </span>
           </CardTitle>
@@ -845,20 +845,20 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             >
               <PlusIcon className="size-3.5" /> {t("add")}
             </Button>
-            {scopeErr && <span className="text-xs text-red-500">{scopeErr}</span>}
+            {scopeErr && <span className="text-red-500 text-xs">{scopeErr}</span>}
           </div>
           {/* Scope list */}
           {scope.length > 0 ? (
             <div className="flex flex-col gap-1.5">
               {scope.map((row) => (
                 <div key={row.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                  <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-xs">
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">
                     {t(`scope.kind.${row.kind}`)}
                   </span>
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">
                     {scopeValue(row, (id) => t("scope.companyFallback", { id }))}
                   </span>
-                  <span className="text-muted-foreground shrink-0 text-xs">{t(`scope.source.${row.source}`)}</span>
+                  <span className="shrink-0 text-muted-foreground text-xs">{t(`scope.source.${row.source}`)}</span>
                   {row.task_id.toString() === taskId ? (
                     <Button
                       size="sm"
@@ -869,7 +869,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                       <Trash2Icon className="size-3.5 text-red-500" />
                     </Button>
                   ) : (
-                    <span className="text-muted-foreground shrink-0 text-xs">{t("scope.inherited")}</span>
+                    <span className="shrink-0 text-muted-foreground text-xs">{t("scope.inherited")}</span>
                   )}
                 </div>
               ))}
@@ -888,7 +888,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <div>
-            <div className="text-xs text-muted-foreground">{t("heartbeat.engineState")}</div>
+            <div className="text-muted-foreground text-xs">{t("heartbeat.engineState")}</div>
             <StatusBadge
               domain="engine"
               value={stats?.engine_mode ?? task?.engine_mode ?? "idle"}
@@ -897,25 +897,25 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             />
           </div>
           <div>
-            <div className="text-xs text-muted-foreground">{t("heartbeat.runningWorker")}</div>
-            <div className="mt-1 text-lg font-semibold tabular-nums">{running.length}</div>
+            <div className="text-muted-foreground text-xs">{t("heartbeat.runningWorker")}</div>
+            <div className="mt-1 font-semibold text-lg tabular-nums">{running.length}</div>
           </div>
           <div>
-            <div className="text-xs text-muted-foreground">{t("heartbeat.lastActivity")}</div>
+            <div className="text-muted-foreground text-xs">{t("heartbeat.lastActivity")}</div>
             <div className="mt-1 inline-flex items-center gap-1 text-sm">
               <ClockIcon className="size-3.5" />
               {task?.last_activity ? new Date(task.last_activity).toLocaleTimeString(getDateLocale()) : "—"}
             </div>
           </div>
           <div>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-muted-foreground text-xs">
               {t("heartbeat.goals", { met: task?.goals_met ?? 0, total: task?.goals_total ?? 0 })}
             </div>
             <Progress value={goalsPct} className="mt-2" />
           </div>
           {task?.completed_unix && task.completed_unix > 0 ? (
             <div>
-              <div className="text-xs text-muted-foreground">{t("heartbeat.completedAt")}</div>
+              <div className="text-muted-foreground text-xs">{t("heartbeat.completedAt")}</div>
               <div className="mt-1 inline-flex items-center gap-1 text-sm">
                 <ClockIcon className="size-3.5" />
                 {new Date(task.completed_unix * 1000).toLocaleString(getDateLocale())}
@@ -940,7 +940,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 <span className="min-w-0 flex-1 truncate">{i.payload}</span>
               </div>
             ))}
-            {running.length === 0 && <p className="text-sm text-muted-foreground">{t("running.empty")}</p>}
+            {running.length === 0 && <p className="text-muted-foreground text-sm">{t("running.empty")}</p>}
           </CardContent>
         </Card>
 
@@ -952,20 +952,20 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-3 text-sm">
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-red-600">{taskFindings.length}</div>
-              <div className="text-xs text-muted-foreground">{t("attention.confirmedVuln")}</div>
+              <div className="font-semibold text-2xl text-red-600 tabular-nums">{taskFindings.length}</div>
+              <div className="text-muted-foreground text-xs">{t("attention.confirmedVuln")}</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-blue-600">{running.length}</div>
-              <div className="text-xs text-muted-foreground">{t("attention.executing")}</div>
+              <div className="font-semibold text-2xl text-blue-600 tabular-nums">{running.length}</div>
+              <div className="text-muted-foreground text-xs">{t("attention.executing")}</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums">{open.length}</div>
-              <div className="text-xs text-muted-foreground">{t("attention.frontierPending")}</div>
+              <div className="font-semibold text-2xl tabular-nums">{open.length}</div>
+              <div className="text-muted-foreground text-xs">{t("attention.frontierPending")}</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-red-600">{blocked.length}</div>
-              <div className="text-xs text-muted-foreground">{t("attention.blockedIntent")}</div>
+              <div className="font-semibold text-2xl text-red-600 tabular-nums">{blocked.length}</div>
+              <div className="text-muted-foreground text-xs">{t("attention.blockedIntent")}</div>
             </div>
           </CardContent>
         </Card>
@@ -983,7 +983,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 <span className="min-w-0 flex-1 truncate">{f.summary}</span>
               </div>
             ))}
-            {taskFindings.length === 0 && <p className="text-sm text-muted-foreground">{t("recent.empty")}</p>}
+            {taskFindings.length === 0 && <p className="text-muted-foreground text-sm">{t("recent.empty")}</p>}
           </CardContent>
         </Card>
       </div>
@@ -995,7 +995,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
             <CardTitle className="flex items-center gap-2 text-sm">
               <AlertTriangleIcon className="size-4 text-red-500" /> {t("blocked.title")}
-              <span className="text-xs font-normal text-muted-foreground">
+              <span className="font-normal text-muted-foreground text-xs">
                 {t("blocked.hint", { count: blocked.length })}
               </span>
             </CardTitle>
@@ -1022,7 +1022,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
               </div>
             ))}
             {blocked.length > 20 && (
-              <p className="text-xs text-muted-foreground">{t("blocked.truncated", { rest: blocked.length - 20 })}</p>
+              <p className="text-muted-foreground text-xs">{t("blocked.truncated", { rest: blocked.length - 20 })}</p>
             )}
           </CardContent>
         </Card>
@@ -1154,7 +1154,7 @@ function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <ShieldCheckIcon className="size-4 text-sky-500" /> {t("rule.title")}
-          <span className="text-muted-foreground text-xs font-normal">{t("rule.hint", { count: rules.length })}</span>
+          <span className="font-normal text-muted-foreground text-xs">{t("rule.hint", { count: rules.length })}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -1191,7 +1191,7 @@ function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
           <Button size="sm" variant="outline" disabled={busy || !newPattern.trim()} onClick={() => void add()}>
             <PlusIcon className="size-3.5" /> {t("add")}
           </Button>
-          {err && <span className="text-xs text-red-500">{err}</span>}
+          {err && <span className="text-red-500 text-xs">{err}</span>}
         </div>
         {/* Rule list */}
         {rules.length > 0 ? (
@@ -1266,10 +1266,10 @@ function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
                   >
                     {r.action === "allow" ? t("rule.allow") : t("rule.block")}
                   </span>
-                  <span className="text-muted-foreground shrink-0 text-xs">{t(`rule.kind.${r.kind}`)}</span>
-                  <code className="bg-muted min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-xs">{r.pattern}</code>
+                  <span className="shrink-0 text-muted-foreground text-xs">{t(`rule.kind.${r.kind}`)}</span>
+                  <code className="min-w-0 flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-xs">{r.pattern}</code>
                   {r.note && (
-                    <span className="text-muted-foreground max-w-[120px] shrink-0 truncate text-xs">{r.note}</span>
+                    <span className="max-w-[120px] shrink-0 truncate text-muted-foreground text-xs">{r.note}</span>
                   )}
                   <Switch checked={r.enabled} onCheckedChange={() => void toggle(r)} />
                   <Button

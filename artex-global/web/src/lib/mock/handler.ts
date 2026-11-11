@@ -22,6 +22,9 @@ import type {
   FindingTraffic,
   FindingTrafficBinding,
   IntentAsset,
+  LLMProfile,
+  LLMProfileUsage,
+  LLMUsageWindow,
   ScopeRow,
   Task,
   TaskArchive,
@@ -30,9 +33,6 @@ import type {
   TaskCredential,
   TaskLLMResolution,
   TaskScopeRow,
-  LLMProfile,
-  LLMProfileUsage,
-  LLMUsageWindow,
   TaskTemplate,
   TrafficEvidenceRole,
   TrafficEvidenceSnapshot,
@@ -53,9 +53,7 @@ const mockLLMProfiles = structuredClone(D.llmProfiles);
 const mockTaskTemplates = structuredClone(D.taskTemplates);
 const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
-const mockTaskCredentials = new Map<string, TaskCredential[]>(
-  Object.entries(structuredClone(D.taskCredentials))
-);
+const mockTaskCredentials = new Map<string, TaskCredential[]>(Object.entries(structuredClone(D.taskCredentials)));
 let nextMockCredentialID = 100;
 const mockRetests: FindingRetest[] = [];
 const mockRetestMessages: Record<number, Activity[]> = {};
@@ -68,7 +66,12 @@ function pollMockOAuth(sessionID: string) {
   session.polls += 1;
   const authorization_url = "https://example.test/mock-sign-in";
   if (session.polls < 2)
-    return { status: "pending", authorization_url, instructions: "Mock sign-in for UI review only.", progress: "Waiting for sign-in" };
+    return {
+      status: "pending",
+      authorization_url,
+      instructions: "Mock sign-in for UI review only.",
+      progress: "Waiting for sign-in",
+    };
   if (!session.answered)
     return {
       status: "pending",
@@ -873,7 +876,11 @@ function mockProfileResolution(profileID: number | undefined, source: TaskLLMRes
     model: profile.model,
     source,
     available: usable,
-    reason: usable ? undefined : profile.auth_method === "api_key" ? "No API key is set in the LLM configuration" : "OAuth is not connected",
+    reason: usable
+      ? undefined
+      : profile.auth_method === "api_key"
+        ? "No API key is set in the LLM configuration"
+        : "OAuth is not connected",
   };
 }
 
@@ -2379,7 +2386,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
         grant_email: authChanged ? undefined : profile.grant_email,
         grant_expiry: authChanged ? undefined : profile.grant_expiry,
       });
-      if (authMethod === "api_key" && typeof apiKey === "string" && apiKey) profile.api_key_hint = `…${apiKey.slice(-4)}`;
+      if (authMethod === "api_key" && typeof apiKey === "string" && apiKey)
+        profile.api_key_hint = `…${apiKey.slice(-4)}`;
       if (authMethod !== "api_key") profile.api_key_hint = undefined;
     } else {
       mockLLMProfiles.push({
@@ -2430,7 +2438,13 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
         const isCodex = p.auth_method === "codex";
         const isClaude = p.auth_method === "claude_code";
         const isAntigravity = p.auth_method === "antigravity";
-        const plan = isCodex ? "ChatGPT Plus" : isClaude ? "Claude Pro" : isAntigravity ? "Antigravity Research Tier" : null;
+        const plan = isCodex
+          ? "ChatGPT Plus"
+          : isClaude
+            ? "Claude Pro"
+            : isAntigravity
+              ? "Antigravity Research Tier"
+              : null;
         const windows: LLMUsageWindow[] = isAntigravity
           ? [
               {
@@ -2483,7 +2497,13 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const isCodex = p.auth_method === "codex";
     const isClaude = p.auth_method === "claude_code";
     const isAntigravity = p.auth_method === "antigravity";
-    const plan = isCodex ? "ChatGPT Plus" : isClaude ? "Claude Pro" : isAntigravity ? "Antigravity Research Tier" : null;
+    const plan = isCodex
+      ? "ChatGPT Plus"
+      : isClaude
+        ? "Claude Pro"
+        : isAntigravity
+          ? "Antigravity Research Tier"
+          : null;
     const windows: LLMUsageWindow[] = isAntigravity
       ? [
           {
@@ -2700,7 +2720,12 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       throw new Error("Invalid decision source");
     const filtered = mockInterceptHistory.filter((row) => {
       const source =
-        row.decision_source || (row.rule_id ? "rule" : row.reason?.startsWith("[\u6a21\u578b]") || row.reason?.startsWith("[Model]") ? "model" : "unknown");
+        row.decision_source ||
+        (row.rule_id
+          ? "rule"
+          : row.reason?.startsWith("[\u6a21\u578b]") || row.reason?.startsWith("[Model]")
+            ? "model"
+            : "unknown");
       return (
         (seg[1] !== "task" || row.task_id === decodeURIComponent(seg[2])) &&
         (!status || row.status === status) &&

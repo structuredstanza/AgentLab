@@ -104,10 +104,15 @@ function PoolSheet({
   }, [open, pool, onReload]);
 
   React.useEffect(() => {
-    if (open) void api.settings().then((settings) => setRefusalFallback(settings.llm_refusal_fallback_enabled ?? false));
+    if (open)
+      void api.settings().then((settings) => setRefusalFallback(settings.llm_refusal_fallback_enabled ?? false));
   }, [open]);
 
-  async function toggle(patch: { llm_pool_enabled?: boolean; llm_pool_bind_fallback?: boolean; llm_refusal_fallback_enabled?: boolean }) {
+  async function toggle(patch: {
+    llm_pool_enabled?: boolean;
+    llm_pool_bind_fallback?: boolean;
+    llm_refusal_fallback_enabled?: boolean;
+  }) {
     if (busy) return;
     setBusy(true);
     try {
@@ -428,22 +433,28 @@ function ProfileSheet({
   const profileId = profile ? Number(profile.id) : undefined;
   React.useEffect(() => {
     if (!open) return;
-    void api.settings().then((s) => setMasterFallbackEnabled(s.llm_refusal_fallback_enabled ?? false)).catch(() => {});
+    void api
+      .settings()
+      .then((s) => setMasterFallbackEnabled(s.llm_refusal_fallback_enabled ?? false))
+      .catch(() => undefined);
   }, [open]);
 
-  const loadUsage = React.useCallback(async (quiet = false) => {
-    if (!profileId || authMethod === "api_key") return;
-    setLoadingUsage(true);
-    try {
-      const u = await api.profileUsage(profileId);
-      setUsage(u);
-    } catch (e) {
-      setUsage((current) => (current ? markUsageStale(current) : current));
-      if (!quiet) toast.error(t("profile.allocation.fetchFailed", { msg: (e as Error).message }));
-    } finally {
-      setLoadingUsage(false);
-    }
-  }, [profileId, authMethod, t]);
+  const loadUsage = React.useCallback(
+    async (quiet = false) => {
+      if (!profileId || authMethod === "api_key") return;
+      setLoadingUsage(true);
+      try {
+        const u = await api.profileUsage(profileId);
+        setUsage(u);
+      } catch (e) {
+        setUsage((current) => (current ? markUsageStale(current) : current));
+        if (!quiet) toast.error(t("profile.allocation.fetchFailed", { msg: (e as Error).message }));
+      } finally {
+        setLoadingUsage(false);
+      }
+    },
+    [profileId, authMethod, t],
+  );
 
   React.useEffect(() => {
     if (open && profileId && authMethod !== "api_key") {
@@ -458,14 +469,20 @@ function ProfileSheet({
       JSON.stringify([model.trim(), effectiveEffort("")]),
       ...refusalFallback.map((step) => JSON.stringify([step.model.trim(), effectiveEffort(step.reasoning_effort)])),
     ]);
-    const next = authMethod === "api_key"
-      ? { model: "", reasoning_effort: "" }
-      : models.flatMap((candidate) => [
-          { model: candidate, reasoning_effort: "" },
-          ...(modelEfforts[candidate] ?? EFFORT_LEVELS.filter((item) => item.value !== NONE).map((item) => item.value))
-            .map((value) => ({ model: candidate, reasoning_effort: value })),
-        ]).find((step) => !used.has(JSON.stringify([step.model.trim(), effectiveEffort(step.reasoning_effort)]))) ??
-        { model: "", reasoning_effort: "" };
+    const next =
+      authMethod === "api_key"
+        ? { model: "", reasoning_effort: "" }
+        : (models
+            .flatMap((candidate) => [
+              { model: candidate, reasoning_effort: "" },
+              ...(
+                modelEfforts[candidate] ?? EFFORT_LEVELS.filter((item) => item.value !== NONE).map((item) => item.value)
+              ).map((value) => ({ model: candidate, reasoning_effort: value })),
+            ])
+            .find((step) => !used.has(JSON.stringify([step.model.trim(), effectiveEffort(step.reasoning_effort)]))) ?? {
+            model: "",
+            reasoning_effort: "",
+          });
     setRefusalFallback([...refusalFallback, next]);
   };
 
@@ -499,11 +516,17 @@ function ProfileSheet({
   };
 
   // Catalog listing needs no login; loading on open lets saved effort values be checked against the model's supported list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadModels is redefined every render, so naming it here would refetch on every render; the form fields are a guard, not an input, and change only alongside the deps below.
   React.useEffect(() => {
-    if (open && profileId && profile?.auth_method === authMethod && profile.format === format && authMethod !== "api_key")
+    if (
+      open &&
+      profileId &&
+      profile?.auth_method === authMethod &&
+      profile.format === format &&
+      authMethod !== "api_key"
+    )
       void loadModels(true);
     // Runs on open and on auth/format change. Skipped until the form matches the saved profile, so a render with stale fields never fetches.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, profileId, authMethod, format]);
 
   // Each load takes a new generation; a response from a superseded load is dropped. Quiet (auto) loads never toast.
@@ -518,7 +541,9 @@ function ProfileSheet({
       if (r.ok && r.models && r.models.length > 0) {
         setModels(r.models.map((m) => m.id));
         setModelEfforts(
-          Object.fromEntries(r.models.flatMap((m): [string, string[]][] => (m.supported_efforts ? [[m.id, m.supported_efforts]] : []))),
+          Object.fromEntries(
+            r.models.flatMap((m): [string, string[]][] => (m.supported_efforts ? [[m.id, m.supported_efforts]] : [])),
+          ),
         );
         if (!quiet) {
           setModelsOpen(true);
@@ -528,7 +553,8 @@ function ProfileSheet({
         toast.error(t("profile.toast.loadModelsFailed", { error: r.error ?? t("profile.toast.noModels") }));
       }
     } catch (e) {
-      if (!quiet && gen === modelsGenRef.current) toast.error(t("profile.toast.loadModelsError", { msg: (e as Error).message }));
+      if (!quiet && gen === modelsGenRef.current)
+        toast.error(t("profile.toast.loadModelsError", { msg: (e as Error).message }));
     } finally {
       if (gen === modelsGenRef.current) setLoadingModels(false);
     }
@@ -576,9 +602,7 @@ function ProfileSheet({
       return;
     }
     const effectiveEffort = (value: string) => value || (effort === NONE ? "" : effort);
-    const seenFallbackChoices = new Set<string>([
-      JSON.stringify([model.trim(), effectiveEffort("")]),
-    ]);
+    const seenFallbackChoices = new Set<string>([JSON.stringify([model.trim(), effectiveEffort("")])]);
     for (const step of refusalFallback) {
       const trimmedStep = step.model.trim();
       if (!trimmedStep) continue;
@@ -637,10 +661,12 @@ function ProfileSheet({
     setOauthPoll(null);
     setOauthInput("");
     setOauthBusy(false);
-    if (live) api.cancelLLMOAuthSession(live.profileId, live.sessionId).catch(() => {});
+    if (live) void api.cancelLLMOAuthSession(live.profileId, live.sessionId).catch(() => undefined);
   }, []);
 
-  // Closing the drawer, switching profile, or unmounting cancels any live login.
+  // Closing the drawer, switching profile, or unmounting cancels any live login. open and
+  // profileId are not read in the body, but they are what must re-run the cleanup.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the deps are the trigger, not the input
   React.useEffect(() => () => cancelOAuth(), [open, profileId, cancelOAuth]);
 
   async function startOAuth() {
@@ -655,7 +681,7 @@ function ProfileSheet({
       const flow = await api.startLLMOAuth(profileId);
       if (gen !== oauthGenRef.current) {
         // Drawer closed or profile changed while starting: release the server session immediately.
-        api.cancelLLMOAuthSession(profileId, flow.session_id).catch(() => {});
+        void api.cancelLLMOAuthSession(profileId, flow.session_id).catch(() => undefined);
         return;
       }
       oauthRef.current = { profileId, sessionId: flow.session_id };
@@ -917,11 +943,19 @@ function ProfileSheet({
 
           {authMethod === "api_key" ? (
             <div className="grid gap-2">
-              <Label htmlFor="p-api-key">{format === "ollama" ? t("profile.apiKey.labelOllama") : t("profile.apiKey.label")}</Label>
+              <Label htmlFor="p-api-key">
+                {format === "ollama" ? t("profile.apiKey.labelOllama") : t("profile.apiKey.label")}
+              </Label>
               <Input
                 id="p-api-key"
                 type="password"
-                placeholder={format === "ollama" ? t("profile.apiKey.placeholderOllama") : keyHint ? t("profile.apiKey.placeholderSet", { hint: keyHint }) : "sk-…"}
+                placeholder={
+                  format === "ollama"
+                    ? t("profile.apiKey.placeholderOllama")
+                    : keyHint
+                      ? t("profile.apiKey.placeholderSet", { hint: keyHint })
+                      : "sk-…"
+                }
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
               />
@@ -929,160 +963,179 @@ function ProfileSheet({
           ) : (
             <>
               <div className="grid gap-3 rounded-lg border p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <Label>{t("profile.oauth.status")}</Label>
-                <Badge variant="outline">{t(grantReady ? "profile.oauth.connected" : "profile.oauth.notConnected")}</Badge>
-              </div>
-              {grantEmail && <p className="text-muted-foreground text-xs">{t("profile.oauth.email", { email: grantEmail })}</p>}
-              {grantExpiry && (
-                <p className="text-muted-foreground text-xs">
-                  {t("profile.oauth.expiry", { expiry: new Date(grantExpiry).toLocaleString(getDateLocale()) })}
-                </p>
-              )}
-              {profile?.oauth_error && (
-                <p className="text-destructive text-xs">{t("profile.oauth.sdkUnavailable", { error: profile.oauth_error })}</p>
-              )}
-              <p className="text-muted-foreground text-xs">{t("profile.oauth.credentialsNote")}</p>
-              {oauthSessionId ? (
-                <div className="grid gap-2 rounded-md bg-muted p-3 text-sm">
-                  <p>{t("profile.oauth.waiting")}</p>
-                  {oauthPoll?.instructions && <p>{oauthPoll.instructions}</p>}
-                  {oauthPoll?.progress && <p className="text-muted-foreground text-xs">{oauthPoll.progress}</p>}
-                  {oauthPoll?.authorization_url && (
-                    <a
-                      href={oauthPoll.authorization_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary underline underline-offset-4"
-                    >
-                      {t("profile.oauth.openProvider")}
-                    </a>
-                  )}
-                  {oauthPoll?.prompt && (
-                    <form className="grid gap-2" onSubmit={submitOAuthInput}>
-                      <Label htmlFor="p-oauth-input">{oauthPoll.prompt.message}</Label>
-                      <Input
-                        id="p-oauth-input"
-                        type={oauthPoll.prompt.secret ? "password" : "text"}
-                        autoComplete="off"
-                        placeholder={oauthPoll.prompt.placeholder}
-                        value={oauthInput}
-                        onChange={(e) => setOauthInput(e.target.value)}
-                      />
-                      <div>
-                        <Button type="submit" disabled={oauthBusy}>
-                          {t("profile.oauth.submit")}
-                        </Button>
-                      </div>
-                    </form>
-                  )}
-                  {oauthPoll?.expires_at && (
-                    <p className="text-muted-foreground text-xs">
-                      {t("profile.oauth.expires", { expiry: new Date(oauthPoll.expires_at).toLocaleString(getDateLocale()) })}
-                    </p>
-                  )}
-                  <div>
-                    <Button type="button" variant="outline" onClick={cancelOAuth}>
-                      {t("profile.oauth.cancel")}
-                    </Button>
-                  </div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Label>{t("profile.oauth.status")}</Label>
+                  <Badge variant="outline">
+                    {t(grantReady ? "profile.oauth.connected" : "profile.oauth.notConnected")}
+                  </Badge>
                 </div>
-              ) : (
-                <Button type="button" variant="outline" onClick={startOAuth} disabled={oauthBusy} className="justify-self-start">
-                  {oauthBusy ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />}
-                  {t("profile.oauth.signIn", { provider: OAUTH_PROVIDER[authMethod] })}
-                </Button>
-              )}
-            </div>
-            {profileId && (
-              <div className="grid gap-3 rounded-lg border p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Label className="text-sm">{t("profile.allocation.title")}</Label>
-                    {usage?.plan && (
-                      <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                        {usage.plan}
-                      </Badge>
+                {grantEmail && (
+                  <p className="text-muted-foreground text-xs">{t("profile.oauth.email", { email: grantEmail })}</p>
+                )}
+                {grantExpiry && (
+                  <p className="text-muted-foreground text-xs">
+                    {t("profile.oauth.expiry", { expiry: new Date(grantExpiry).toLocaleString(getDateLocale()) })}
+                  </p>
+                )}
+                {profile?.oauth_error && (
+                  <p className="text-destructive text-xs">
+                    {t("profile.oauth.sdkUnavailable", { error: profile.oauth_error })}
+                  </p>
+                )}
+                <p className="text-muted-foreground text-xs">{t("profile.oauth.credentialsNote")}</p>
+                {oauthSessionId ? (
+                  <div className="grid gap-2 rounded-md bg-muted p-3 text-sm">
+                    <p>{t("profile.oauth.waiting")}</p>
+                    {oauthPoll?.instructions && <p>{oauthPoll.instructions}</p>}
+                    {oauthPoll?.progress && <p className="text-muted-foreground text-xs">{oauthPoll.progress}</p>}
+                    {oauthPoll?.authorization_url && (
+                      <a
+                        href={oauthPoll.authorization_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline underline-offset-4"
+                      >
+                        {t("profile.oauth.openProvider")}
+                      </a>
                     )}
-                    {usage?.stale && (
-                      <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-500 text-[10px]">
-                        {t("profile.allocation.stale")}
-                      </Badge>
+                    {oauthPoll?.prompt && (
+                      <form className="grid gap-2" onSubmit={submitOAuthInput}>
+                        <Label htmlFor="p-oauth-input">{oauthPoll.prompt.message}</Label>
+                        <Input
+                          id="p-oauth-input"
+                          type={oauthPoll.prompt.secret ? "password" : "text"}
+                          autoComplete="off"
+                          placeholder={oauthPoll.prompt.placeholder}
+                          value={oauthInput}
+                          onChange={(e) => setOauthInput(e.target.value)}
+                        />
+                        <div>
+                          <Button type="submit" disabled={oauthBusy}>
+                            {t("profile.oauth.submit")}
+                          </Button>
+                        </div>
+                      </form>
                     )}
+                    {oauthPoll?.expires_at && (
+                      <p className="text-muted-foreground text-xs">
+                        {t("profile.oauth.expires", {
+                          expiry: new Date(oauthPoll.expires_at).toLocaleString(getDateLocale()),
+                        })}
+                      </p>
+                    )}
+                    <div>
+                      <Button type="button" variant="outline" onClick={cancelOAuth}>
+                        {t("profile.oauth.cancel")}
+                      </Button>
+                    </div>
                   </div>
+                ) : (
                   <Button
                     type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() => void loadUsage()}
-                    disabled={loadingUsage}
+                    variant="outline"
+                    onClick={startOAuth}
+                    disabled={oauthBusy}
+                    className="justify-self-start"
                   >
-                    {loadingUsage ? (
-                      <Loader2Icon className="size-3.5 animate-spin mr-1" />
-                    ) : (
-                      <RefreshCwIcon className="size-3.5 mr-1" />
-                    )}
-                    {t("profile.allocation.refresh")}
+                    {oauthBusy ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />}
+                    {t("profile.oauth.signIn", { provider: OAUTH_PROVIDER[authMethod] })}
                   </Button>
-                </div>
-
-                {usage?.error && (
-                  <p className="text-destructive text-xs">{t("profile.allocation.fetchFailed", { msg: usage.error })}</p>
-                )}
-                {!usage?.connected ? (
-                  usage?.error ? null : (
-                    <p className="text-muted-foreground text-xs italic">{t("profile.allocation.notConnected")}</p>
-                  )
-                ) : usage.windows.length === 0 ? (
-                  usage.error ? null : (
-                    <p className="text-muted-foreground text-xs">{t("profile.allocation.noWindows")}</p>
-                  )
-                ) : (
-                  <div className="grid gap-3">
-                    {usage.windows.map((w) => {
-                      const remainingPct = Math.round(w.remaining_fraction * 100);
-                      const resetsText = formatAllocationReset(w.resets_at);
-                      return (
-                        <div key={w.id} className="grid gap-1">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="font-medium text-foreground">{w.label}</span>
-                            <span className="font-mono tabular-nums text-muted-foreground">
-                              {t("profile.allocation.remaining", { pct: remainingPct })}
-                            </span>
-                          </div>
-                          <div
-                            role="progressbar"
-                            aria-valuenow={remainingPct}
-                            aria-valuemin={0}
-                            aria-valuemax={100}
-                            aria-label={`${w.label}: ${remainingPct}% remaining`}
-                            className="h-2 w-full overflow-hidden rounded-full bg-muted"
-                          >
-                            <div
-                              className={cn(
-                                 "h-full rounded-full transition-all duration-300",
-                                 remainingPct > 20
-                                   ? "bg-emerald-500"
-                                   : remainingPct > 5
-                                     ? "bg-amber-500"
-                                     : "bg-destructive",
-                              )}
-                              style={{ width: `${Math.max(0, Math.min(100, remainingPct))}%` }}
-                            />
-                          </div>
-                          {resetsText && (
-                            <span className="text-[10px] text-muted-foreground">
-                              {t("profile.allocation.resetsAt", { time: resetsText })}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
                 )}
               </div>
-            )}
+              {profileId && (
+                <div className="grid gap-3 rounded-lg border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Label className="text-sm">{t("profile.allocation.title")}</Label>
+                      {usage?.plan && (
+                        <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                          {usage.plan}
+                        </Badge>
+                      )}
+                      {usage?.stale && (
+                        <Badge
+                          variant="outline"
+                          className="border-amber-500/30 bg-amber-500/10 text-[10px] text-amber-500"
+                        >
+                          {t("profile.allocation.stale")}
+                        </Badge>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => void loadUsage()}
+                      disabled={loadingUsage}
+                    >
+                      {loadingUsage ? (
+                        <Loader2Icon className="mr-1 size-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCwIcon className="mr-1 size-3.5" />
+                      )}
+                      {t("profile.allocation.refresh")}
+                    </Button>
+                  </div>
+
+                  {usage?.error && (
+                    <p className="text-destructive text-xs">
+                      {t("profile.allocation.fetchFailed", { msg: usage.error })}
+                    </p>
+                  )}
+                  {!usage?.connected ? (
+                    usage?.error ? null : (
+                      <p className="text-muted-foreground text-xs italic">{t("profile.allocation.notConnected")}</p>
+                    )
+                  ) : usage.windows.length === 0 ? (
+                    usage.error ? null : (
+                      <p className="text-muted-foreground text-xs">{t("profile.allocation.noWindows")}</p>
+                    )
+                  ) : (
+                    <div className="grid gap-3">
+                      {usage.windows.map((w) => {
+                        const remainingPct = Math.round(w.remaining_fraction * 100);
+                        const resetsText = formatAllocationReset(w.resets_at);
+                        return (
+                          <div key={w.id} className="grid gap-1">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-medium text-foreground">{w.label}</span>
+                              <span className="font-mono text-muted-foreground tabular-nums">
+                                {t("profile.allocation.remaining", { pct: remainingPct })}
+                              </span>
+                            </div>
+                            <div
+                              role="progressbar"
+                              aria-valuenow={remainingPct}
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-label={`${w.label}: ${remainingPct}% remaining`}
+                              className="h-2 w-full overflow-hidden rounded-full bg-muted"
+                            >
+                              <div
+                                className={cn(
+                                  "h-full rounded-full transition-all duration-300",
+                                  remainingPct > 20
+                                    ? "bg-emerald-500"
+                                    : remainingPct > 5
+                                      ? "bg-amber-500"
+                                      : "bg-destructive",
+                                )}
+                                style={{ width: `${Math.max(0, Math.min(100, remainingPct))}%` }}
+                              />
+                            </div>
+                            {resetsText && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {t("profile.allocation.resetsAt", { time: resetsText })}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
 
@@ -1169,7 +1222,9 @@ function ProfileSheet({
             </div>
             <div className="flex items-center justify-between gap-4 border-t pt-3">
               <div className="grid gap-0.5">
-                <Label htmlFor="p-max-tokens-field" className="text-sm">{t("profile.maxTokensField.label")}</Label>
+                <Label htmlFor="p-max-tokens-field" className="text-sm">
+                  {t("profile.maxTokensField.label")}
+                </Label>
                 <p className="text-muted-foreground text-xs">{t(`profile.maxTokensFieldHint.${format}`)}</p>
               </div>
               <Select
@@ -1194,7 +1249,9 @@ function ProfileSheet({
           <div className="grid gap-3 rounded-lg border p-3">
             <div className="flex items-center justify-between gap-4">
               <div className="grid gap-0.5">
-                <Label htmlFor="p-thinking-type" className="text-sm">{t("profile.thinkingType.label")}</Label>
+                <Label htmlFor="p-thinking-type" className="text-sm">
+                  {t("profile.thinkingType.label")}
+                </Label>
                 <p className="text-muted-foreground text-xs">{t("profile.thinkingType.hint")}</p>
               </div>
               <Select value={thinkingType} onValueChange={setThinkingType}>
@@ -1212,7 +1269,9 @@ function ProfileSheet({
             </div>
             <div className="flex items-center justify-between gap-4 border-t pt-3">
               <div className="grid gap-0.5">
-                <Label htmlFor="p-effort" className="text-sm">{t("profile.effort.label")}</Label>
+                <Label htmlFor="p-effort" className="text-sm">
+                  {t("profile.effort.label")}
+                </Label>
                 <p className="text-muted-foreground text-xs">{t("profile.effort.hint")}</p>
               </div>
               <Select value={effort} onValueChange={setEffort}>
@@ -1247,8 +1306,8 @@ function ProfileSheet({
             <p className="text-muted-foreground text-xs">{t("profile.refusalFallback.desc")}</p>
 
             {!masterFallbackEnabled && (
-              <div className="flex items-start gap-2 rounded-md bg-amber-500/10 border border-amber-500/20 p-2.5 text-xs text-amber-500">
-                <AlertCircleIcon className="size-4 shrink-0 mt-0.5" />
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 p-2.5 text-amber-500 text-xs">
+                <AlertCircleIcon className="mt-0.5 size-4 shrink-0" />
                 <span>{t("profile.refusalFallback.masterOffNote")}</span>
               </div>
             )}
@@ -1268,18 +1327,19 @@ function ProfileSheet({
                   return (
                     <div
                       key={idx}
-                      className="flex flex-wrap sm:flex-nowrap items-center gap-2 rounded-md border bg-muted/20 p-2 text-xs"
+                      className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/20 p-2 text-xs sm:flex-nowrap"
                     >
-                      <span className="w-5 shrink-0 font-mono text-center text-muted-foreground">
-                        {idx + 1}
-                      </span>
-                      <div className="flex-1 min-w-[140px]">
+                      <span className="w-5 shrink-0 text-center font-mono text-muted-foreground">{idx + 1}</span>
+                      <div className="min-w-[140px] flex-1">
                         {authMethod !== "api_key" && models.length > 0 ? (
                           <Select
                             value={step.model || NONE}
                             onValueChange={(val) => updateFallbackStep(idx, { model: val === NONE ? "" : val })}
                           >
-                            <SelectTrigger className="h-8 font-mono text-xs" aria-label={t("profile.refusalFallback.model")}>
+                            <SelectTrigger
+                              className="h-8 font-mono text-xs"
+                              aria-label={t("profile.refusalFallback.model")}
+                            >
                               <SelectValue placeholder={t("profile.refusalFallback.model")} />
                             </SelectTrigger>
                             <SelectContent>
@@ -1318,7 +1378,7 @@ function ProfileSheet({
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="flex shrink-0 items-center gap-1">
                         <Button
                           type="button"
                           variant="ghost"
@@ -1401,7 +1461,7 @@ export default function LLMPage() {
   // Whether a profile is healthy, shown on its card. A profile without a Key cannot send any requests at all, so this should be reported before the circuit breaker state.
   const healthOf = React.useCallback(
     (p: LLMProfile, m?: LLMPoolMember): Health => {
-      if (p.auth_method === "api_key" ? (!p.api_key_hint && p.format !== "ollama") : !p.has_grant) {
+      if (p.auth_method === "api_key" ? !p.api_key_hint && p.format !== "ollama" : !p.has_grant) {
         const keylessOAuth = p.auth_method !== "api_key";
         return {
           label: t(keylessOAuth ? "health.noOAuth.label" : "health.noKey.label"),
@@ -1518,7 +1578,6 @@ export default function LLMPage() {
             {profiles.map((p) => {
               const h = healthOf(p, health.get(p.id));
               return (
-                // biome-ignore lint/a11y/useSemanticElements: the card contains its own action buttons, and a native <button> would nest buttons (invalid HTML)
                 <Card
                   key={p.id}
                   role="button"
@@ -1561,7 +1620,11 @@ export default function LLMPage() {
                       {p.auth_method === "api_key" ? (
                         p.api_key_hint && <span>{p.api_key_hint}</span>
                       ) : (
-                        <span>{p.has_grant ? (p.grant_email ?? t("profile.oauth.connected")) : t("profile.oauth.notConnected")}</span>
+                        <span>
+                          {p.has_grant
+                            ? (p.grant_email ?? t("profile.oauth.connected"))
+                            : t("profile.oauth.notConnected")}
+                        </span>
                       )}
                       <span>
                         {p.rate_per_second}/s · {p.rate_per_minute}/min

@@ -282,7 +282,7 @@ export interface TaskAssetScopeMutation {
 }
 
 // ---- Asset coverage graph (per task) ----
-// One node of the force-directed "asset coverage graph". The key is unique: assets = "a:<id>", companies = "c:<id>", 
+// One node of the force-directed "asset coverage graph". The key is unique: assets = "a:<id>", companies = "c:<id>",
 // root domain without an asset row = "r:<domain>". Nodes with in_scope=false are grey context nodes used only for drawing edges.
 export interface CoverageGraphNode {
   key: string;
@@ -584,7 +584,7 @@ export interface FindingQuery {
 // ---- Findings by asset (asset view) ----
 export type FindingAssetKind = "company" | "root_domain" | "subdomain" | "ip" | "service" | "app" | "endpoint" | "none";
 
-// FindingAssetNode is a node in the asset tree. The key takes the form a:<id> (asset), c:<id> (enterprise), 
+// FindingAssetNode is a node in the asset tree. The key takes the form a:<id> (asset), c:<id> (enterprise),
 // r:<domain> (root domain with no asset row in the database), __none__ (not linked to any asset).
 export interface FindingAssetNode {
   key: string;
@@ -1607,7 +1607,6 @@ export interface FindingTrafficDetail {
   request: EvidenceBodyPreview;
   response: EvidenceBodyPreview;
 }
-
 
 // Original execution selected from an approval, never submitted to the reviewer.
 export interface InterceptExecution {

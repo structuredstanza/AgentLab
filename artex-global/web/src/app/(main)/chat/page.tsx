@@ -139,7 +139,7 @@ function groupByAgent(conversations: Conversation[], nameOf: (agentKey: string) 
 function LiveBadge() {
   const t = useTranslations("chat");
   return (
-    <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+    <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 font-medium text-[10px] text-blue-600 dark:text-blue-400">
       <span className="size-1 animate-pulse rounded-full bg-blue-500" />
       {t("live")}
     </span>
@@ -318,7 +318,7 @@ function LLMProfileRow({
 
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-1 px-1 pt-0.5 pb-1">
-      <ZapIcon className="text-muted-foreground/50 size-3 shrink-0" />
+      <ZapIcon className="size-3 shrink-0 text-muted-foreground/50" />
       <span className="truncate text-muted-foreground/70 text-xs" title={label}>
         {label}
       </span>
@@ -334,7 +334,7 @@ function LLMProfileRow({
           </button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-64 p-1">
-          <p className="text-muted-foreground px-2 py-1 text-[11px] font-medium">{t("llmProfile.select")}</p>
+          <p className="px-2 py-1 font-medium text-[11px] text-muted-foreground">{t("llmProfile.select")}</p>
           {/* default option */}
           <button
             type="button"
@@ -349,7 +349,7 @@ function LLMProfileRow({
           >
             <span className="text-sm">{defaultLabel}</span>
             {activeDefault && (
-              <span className="text-muted-foreground text-[11px]">
+              <span className="text-[11px] text-muted-foreground">
                 {activeDefault.format} · {activeDefault.model}
               </span>
             )}
@@ -368,7 +368,7 @@ function LLMProfileRow({
               )}
             >
               <span className="text-sm">{p.name}</span>
-              <span className="text-muted-foreground text-[11px]">
+              <span className="text-[11px] text-muted-foreground">
                 {p.format} · {p.model}
               </span>
             </button>
@@ -469,14 +469,14 @@ function DraftChat({
     <>
       {/* empty / landing state fills the panel */}
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
-        <div className="bg-primary/10 flex size-12 items-center justify-center rounded-full">
-          <Bot className="text-primary size-6" />
+        <div className="flex size-12 items-center justify-center rounded-full bg-primary/10">
+          <Bot className="size-6 text-primary" />
         </div>
-        <div className="text-sm font-medium">
+        <div className="font-medium text-sm">
           {t("emptyStart", { agent: agent ? draftLabels.name(agent) : "Agent" })}
         </div>
         {agent && draftLabels.description(agent) && (
-          <p className="text-muted-foreground max-w-md text-xs">{draftLabels.description(agent)}</p>
+          <p className="max-w-md text-muted-foreground text-xs">{draftLabels.description(agent)}</p>
         )}
       </div>
 
@@ -800,22 +800,22 @@ function ChatView({
     <SideQuestionWorkspace side={side} label={agent ? convLabels.name(agent) : conv.agent_key} composerLayout="inline">
       {/* header: which agent + live + token meta */}
       <div className="flex min-w-0 flex-wrap items-center gap-2 border-b px-4 py-2.5">
-        <Bot className="text-muted-foreground size-4 shrink-0" />
-        <span className="min-w-0 max-w-48 truncate text-sm font-medium">
+        <Bot className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 max-w-48 truncate font-medium text-sm">
           {agent ? convLabels.name(agent) : conv.agent_key}
         </span>
-        <span className="text-muted-foreground hidden shrink-0 font-mono text-xs sm:inline">{conv.agent_key}</span>
+        <span className="hidden shrink-0 font-mono text-muted-foreground text-xs sm:inline">{conv.agent_key}</span>
         {agent && !agent.builtin && (
           <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]">
             {t("custom")}
           </Badge>
         )}
         {agent?.description && (
-          <span className="text-muted-foreground min-w-0 truncate text-xs">{agent.description}</span>
+          <span className="min-w-0 truncate text-muted-foreground text-xs">{agent.description}</span>
         )}
         {running && <LiveBadge />}
         <SideQuestionButton side={side} />
-        <div className="text-muted-foreground ml-auto flex min-w-0 max-w-full items-center justify-end gap-x-3 gap-y-1 text-xs max-sm:w-full max-sm:flex-wrap">
+        <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-x-3 gap-y-1 text-muted-foreground text-xs max-sm:w-full max-sm:flex-wrap">
           {tokenTotal.turns > 0 && (
             <span title={t("turnsTooltip")} className="tabular-nums">
               {t("turnsCount", { turns: tokenTotal.turns })}
@@ -832,16 +832,16 @@ function ChatView({
       <ApprovalExecutionFocus focus={approvalFocus} history={focusHistory} />
 
       {/* messages */}
-      <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
+      <ScrollArea type="auto" className="[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1">
         <div className="min-w-0 max-w-full px-4 py-3" ref={contentRef}>
           {messages.length === 0 && !running ? (
-            <div className="text-muted-foreground py-10 text-center text-sm">
+            <div className="py-10 text-center text-muted-foreground text-sm">
               {t("emptyStart", { agent: agent?.name ?? conv.agent_key })}
             </div>
           ) : (
             <>
               {hasMore && (
-                <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">{t("loadEarlierHint")}</div>
+                <div className="pb-2 text-center text-[11px] text-muted-foreground/70">{t("loadEarlierHint")}</div>
               )}
               <Transcript
                 activity={messages}
@@ -963,7 +963,7 @@ const ConversationItem = React.memo(function ConversationItem({
               onCancelRename();
             }
           }}
-          className="border-input bg-background min-w-0 flex-1 rounded-md border px-2 py-1 text-sm"
+          className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm"
         />
       ) : (
         <button
@@ -974,7 +974,7 @@ const ConversationItem = React.memo(function ConversationItem({
           className="min-w-0 flex-1 rounded-md px-2 py-1.5 text-left"
         >
           <div className="flex min-w-0 items-center gap-1.5">
-            {pinned && <PinIcon className="text-primary size-3 shrink-0" aria-label={t("item.pinnedAria")} />}
+            {pinned && <PinIcon className="size-3 shrink-0 text-primary" aria-label={t("item.pinnedAria")} />}
             <div className="truncate text-sm">{conv.title || t("untitledConversation")}</div>
             {conv.running ? (
               <Badge variant="secondary" className="shrink-0 gap-1" title={t("item.runningTooltip")}>
@@ -983,7 +983,7 @@ const ConversationItem = React.memo(function ConversationItem({
               </Badge>
             ) : null}
           </div>
-          <div className="text-muted-foreground flex min-w-0 items-center gap-1 text-[11px]">
+          <div className="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
             {showAgent && (
               <>
                 <Bot className="size-3 shrink-0" />
@@ -1008,7 +1008,7 @@ const ConversationItem = React.memo(function ConversationItem({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="text-muted-foreground shrink-0"
+            className="shrink-0 text-muted-foreground"
             aria-label={t("item.manageAria", { title: conv.title || t("untitledConversation") })}
           >
             <MoreHorizontalIcon />
@@ -1417,7 +1417,7 @@ export default function ChatPage() {
     >
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(10rem,15rem)_minmax(0,1fr)] gap-3 md:grid-cols-[18rem_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)] md:gap-4">
         {/* left: conversation list */}
-        <div className="bg-card flex flex-col overflow-hidden rounded-lg border">
+        <div className="flex flex-col overflow-hidden rounded-lg border bg-card">
           <div className="flex flex-col gap-2 border-b p-2">
             <Button size="sm" className="w-full" onClick={() => selectConversation(null)}>
               <PlusIcon /> {t("newConversation")}
@@ -1451,7 +1451,7 @@ export default function ChatPage() {
                     aria-label={t("selectAllAria")}
                     disabled={filteredConversations.length === 0 || bulkDeleting}
                   />
-                  <span className="text-muted-foreground min-w-0 flex-1 text-xs tabular-nums">
+                  <span className="min-w-0 flex-1 text-muted-foreground text-xs tabular-nums">
                     {selectedConversationCount > 0
                       ? t("selectedCount", { count: selectedConversationCount })
                       : conversationCountLabel}
@@ -1473,7 +1473,7 @@ export default function ChatPage() {
                 </div>
               ) : (
                 <div className="flex items-center gap-2 px-1">
-                  <span className="text-muted-foreground min-w-0 flex-1 text-xs tabular-nums">
+                  <span className="min-w-0 flex-1 text-muted-foreground text-xs tabular-nums">
                     {conversationCountLabel}
                   </span>
                   <Button
@@ -1492,11 +1492,11 @@ export default function ChatPage() {
           <ScrollArea
             key={agentFilter === null ? "all" : `agent:${agentFilter}`}
             type="auto"
-            className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!"
+            className="[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1"
           >
             <div className="flex min-w-0 flex-col gap-0.5 p-2">
               {filteredConversations.length === 0 && (
-                <p className="text-muted-foreground px-2 py-6 text-center text-xs">
+                <p className="px-2 py-6 text-center text-muted-foreground text-xs">
                   {agentFilter === null ? t("emptyAll") : t("emptyForAgent")}
                 </p>
               )}
@@ -1571,7 +1571,7 @@ export default function ChatPage() {
         </div>
 
         {/* right: chat view */}
-        <div className="bg-card flex min-w-0 flex-col overflow-hidden rounded-lg border">
+        <div className="flex min-w-0 flex-col overflow-hidden rounded-lg border bg-card">
           {selected ? (
             <ChatView
               key={selected.id}
@@ -1583,7 +1583,7 @@ export default function ChatPage() {
               onConvUpdated={reloadConvs}
             />
           ) : sourceRequested ? (
-            <div role="status" className="p-6 text-sm text-muted-foreground">
+            <div role="status" className="p-6 text-muted-foreground text-sm">
               {convsLoaded ? t("deletedConversation") : t("loadingConversation")}
             </div>
           ) : (

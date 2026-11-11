@@ -249,8 +249,8 @@ export function AssetDslSearch({
                   apply(s);
                 }}
               >
-                <span className={cn("shrink-0 font-mono text-xs font-semibold", KIND_STYLE[s.kind])}>{s.label}</span>
-                <span className="text-xs text-muted-foreground">{t(s.descKey)}</span>
+                <span className={cn("shrink-0 font-mono font-semibold text-xs", KIND_STYLE[s.kind])}>{s.label}</span>
+                <span className="text-muted-foreground text-xs">{t(s.descKey)}</span>
               </button>
             ))}
           </div>

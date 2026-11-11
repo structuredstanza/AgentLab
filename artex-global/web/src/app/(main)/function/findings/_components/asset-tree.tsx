@@ -287,18 +287,18 @@ export function AssetTree({
         )}
       >
         <span>{t("asset.all")}</span>
-        <span className="text-xs tabular-nums text-muted-foreground">{findingTotal}</span>
+        <span className="text-muted-foreground text-xs tabular-nums">{findingTotal}</span>
       </button>
 
       <div className="max-h-[24rem] min-h-0 flex-1 overflow-y-auto pr-2 lg:max-h-[calc(100vh-16rem)]">
         <div className="flex flex-col">
           {rows}
-          {rows.length === 0 && <p className="px-2 py-8 text-center text-xs text-muted-foreground">{emptyHint}</p>}
+          {rows.length === 0 && <p className="px-2 py-8 text-center text-muted-foreground text-xs">{emptyHint}</p>}
         </div>
       </div>
 
       {truncated && (
-        <p className="px-1 text-xs text-muted-foreground">
+        <p className="px-1 text-muted-foreground text-xs">
           {t("assetTree.truncated", {
             kinds: (droppedKinds ?? []).map((k) => kindLabel(k)).join(" / "),
           })}

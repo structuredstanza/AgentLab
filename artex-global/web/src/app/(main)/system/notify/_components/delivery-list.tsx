@@ -113,7 +113,7 @@ export function DeliveryList({ channels }: { channels: NotificationChannel[] }) 
         <Button size="sm" variant="outline" onClick={load} disabled={loading}>
           <RefreshCwIcon className={loading ? "animate-spin" : ""} /> {t("delivery.refresh")}
         </Button>
-        <span className="text-muted-foreground ml-auto text-xs">{t("delivery.totalCount", { total })}</span>
+        <span className="ml-auto text-muted-foreground text-xs">{t("delivery.totalCount", { total })}</span>
       </div>
 
       <Card className="py-0">
@@ -132,14 +132,14 @@ export function DeliveryList({ channels }: { channels: NotificationChannel[] }) 
           <TableBody>
             {rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-muted-foreground py-8 text-center">
+                <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
                   {loading ? t("delivery.loading") : t("delivery.empty")}
                 </TableCell>
               </TableRow>
             ) : (
               rows.map((d) => (
                 <TableRow key={d.id}>
-                  <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
+                  <TableCell className="whitespace-nowrap text-muted-foreground text-xs">
                     {formatTime(d.created_at)}
                   </TableCell>
                   <TableCell>
@@ -158,7 +158,7 @@ export function DeliveryList({ channels }: { channels: NotificationChannel[] }) 
                     <StatusBadge domain="delivery" value={d.state} />
                   </TableCell>
                   <TableCell className="text-muted-foreground text-sm">{d.attempts}</TableCell>
-                  <TableCell className="text-muted-foreground max-w-md text-xs break-all">{d.last_error}</TableCell>
+                  <TableCell className="max-w-md break-all text-muted-foreground text-xs">{d.last_error}</TableCell>
                   <TableCell>
                     {/* Only failed/skipped items get a resend entry point, because resending a delivered item would cause duplicate pushes. */}
                     {(d.state === "failed" || d.state === "skipped") && (

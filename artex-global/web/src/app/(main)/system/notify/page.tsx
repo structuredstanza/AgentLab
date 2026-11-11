@@ -271,7 +271,7 @@ export default function NotifyPage() {
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+          <h1 className="font-semibold text-xl tracking-tight">{t("title")}</h1>
           <p className="text-muted-foreground text-sm">{t("subtitle")}</p>
         </div>
         {meta && (
@@ -360,7 +360,7 @@ export default function NotifyPage() {
             <button
               type="button"
               onClick={openAdd}
-              className="text-foreground/70 border-foreground/70 hover:bg-muted/60 hover:shadow-sm flex min-h-[130px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed transition"
+              className="flex min-h-[130px] flex-col items-center justify-center gap-2 rounded-xl border border-foreground/70 border-dashed text-foreground/70 transition hover:bg-muted/60 hover:shadow-sm"
             >
               <PlusIcon className="size-6" />
               <span className="text-sm">{t("addChannel")}</span>
@@ -370,11 +370,11 @@ export default function NotifyPage() {
               <Card
                 key={ch.id}
                 onClick={() => openEdit(ch)}
-                className="hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm"
+                className="cursor-pointer gap-3 transition hover:border-primary/60 hover:shadow-sm"
               >
                 <CardHeader>
                   <div className="flex items-center gap-2">
-                    <BellIcon className="text-muted-foreground size-4 shrink-0" />
+                    <BellIcon className="size-4 shrink-0 text-muted-foreground" />
                     <CardTitle className="truncate text-base">{ch.name}</CardTitle>
                     {/* The whole card is clickable (it opens the editor), so these two controls must each stop bubbling on their own,
                         otherwise toggling the switch or deleting would also trigger editing. Attach stopPropagation to the controls
@@ -509,7 +509,7 @@ export default function NotifyPage() {
               </div>
 
               <div className="border-t pt-4">
-                <p className="mb-3 text-sm font-medium">{t("filter.title")}</p>
+                <p className="mb-3 font-medium text-sm">{t("filter.title")}</p>
                 <div className="grid gap-4">
                   <div className="grid gap-2">
                     <Label>{t("filter.minSeverity")}</Label>

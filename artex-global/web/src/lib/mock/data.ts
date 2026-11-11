@@ -3087,9 +3087,7 @@ export const llmProfiles: LLMProfile[] = [
     pool_exclude: false,
     max_tokens: 8192,
     max_tokens_field: "max_completion_tokens",
-    refusal_fallback: [
-      { model: "gpt-4.1-mini", reasoning_effort: "low" },
-    ],
+    refusal_fallback: [{ model: "gpt-4.1-mini", reasoning_effort: "low" }],
   },
   {
     id: "3",
@@ -3130,9 +3128,7 @@ export const llmProfiles: LLMProfile[] = [
     is_default: false,
     priority: 8,
     pool_exclude: false,
-    refusal_fallback: [
-      { model: "gemini-2.5-flash", reasoning_effort: "" },
-    ],
+    refusal_fallback: [{ model: "gemini-2.5-flash", reasoning_effort: "" }],
   },
   {
     id: "5",
@@ -4344,7 +4340,12 @@ export function llmRecordDetail(id: number, records = llmRecords) {
       {
         model: item.model,
         system: "You are the executor of an authorized penetration testing system… (omitted)",
-        messages: [{ role: "user", content: "Execute the intent in the system prompt: do only that, produce only facts, and stop when done." }],
+        messages: [
+          {
+            role: "user",
+            content: "Execute the intent in the system prompt: do only that, produce only facts, and stop when done.",
+          },
+        ],
         tools: ["bash", "insert_assets", "record_fact", "report_finding"],
       },
       null,
@@ -4371,9 +4372,18 @@ export function llmRecordDetail(id: number, records = llmRecords) {
       max_tokens: 8192,
       stream: true,
       system: [
-        { type: "text", text: "You are the executor of an authorized penetration testing system… (omitted)", cache_control: { type: "ephemeral" } },
+        {
+          type: "text",
+          text: "You are the executor of an authorized penetration testing system… (omitted)",
+          cache_control: { type: "ephemeral" },
+        },
       ],
-      messages: [{ role: "user", content: "Execute the intent in the system prompt: do only that, produce only facts, and stop when done." }],
+      messages: [
+        {
+          role: "user",
+          content: "Execute the intent in the system prompt: do only that, produce only facts, and stop when done.",
+        },
+      ],
       tools: [
         {
           name: "bash",

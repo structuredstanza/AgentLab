@@ -106,7 +106,7 @@ function SectionTitle({
 }) {
   return (
     <div className="mb-3 flex items-center justify-between">
-      <div className="flex items-center gap-1.5 text-xs font-semibold">
+      <div className="flex items-center gap-1.5 font-semibold text-xs">
         <Icon className="size-3.5 text-muted-foreground" />
         {children}
       </div>
@@ -400,7 +400,14 @@ export default function DashboardPage() {
     return m;
   }, [llmProfiles]);
 
-  type Bucket = { input: number; output: number; cacheRead: number; cacheWrite: number; taskCount: number; costEur?: number | null };
+  type Bucket = {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    taskCount: number;
+    costEur?: number | null;
+  };
 
   // Legacy: bucket by profile (from activity's task.tokens + session usage).
   const tokenByProfileOld = React.useMemo<Map<number | null, Bucket>>(() => {
@@ -481,7 +488,14 @@ export default function DashboardPage() {
     }
     const v = tokenByProfile.get(tokenTab as number | null);
     return v
-      ? { input: v.input, output: v.output, cacheRead: v.cacheRead, cacheWrite: v.cacheWrite, taskCount: v.taskCount, costEur: v.costEur ?? null }
+      ? {
+          input: v.input,
+          output: v.output,
+          cacheRead: v.cacheRead,
+          cacheWrite: v.cacheWrite,
+          taskCount: v.taskCount,
+          costEur: v.costEur ?? null,
+        }
       : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0, costEur: null };
   }, [tokenTab, tokenByProfile]);
 
@@ -559,8 +573,8 @@ export default function DashboardPage() {
       {/* ── Header ── */}
       <div>
         <div>
-          <h1 className="text-lg font-semibold tracking-tight">{t("title")}</h1>
-          <p className="text-xs text-muted-foreground">{t("subtitle")}</p>
+          <h1 className="font-semibold text-lg tracking-tight">{t("title")}</h1>
+          <p className="text-muted-foreground text-xs">{t("subtitle")}</p>
         </div>
       </div>
 
@@ -573,8 +587,8 @@ export default function DashboardPage() {
               <TargetIcon className="size-3" /> {t("activeTasks")}
             </div>
             <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-semibold tabular-nums">{tasksByStatus.running ?? 0}</span>
-              <span className="text-xs text-muted-foreground">/ {tasks.length}</span>
+              <span className="font-semibold text-2xl tabular-nums">{tasksByStatus.running ?? 0}</span>
+              <span className="text-muted-foreground text-xs">/ {tasks.length}</span>
             </div>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px]">
@@ -603,7 +617,7 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <BugIcon className="size-3" /> {t("confirmedFindings")}
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{findings.length}</div>
+            <div className="font-semibold text-2xl tabular-nums">{findings.length}</div>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2.5 text-[10px]">
             <span className="text-rose-500">
@@ -627,7 +641,7 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <NetworkIcon className="size-3" /> {t("assetNodes")}
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{totalAssets}</div>
+            <div className="font-semibold text-2xl tabular-nums">{totalAssets}</div>
           </CardHeader>
           <CardContent className="text-[10px] text-muted-foreground">{t("crossTaskShared")}</CardContent>
         </Card>
@@ -638,7 +652,7 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <ActivityIcon className="size-3" /> {t("trafficExchanges")}
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{traffic.length}</div>
+            <div className="font-semibold text-2xl tabular-nums">{traffic.length}</div>
           </CardHeader>
           <CardContent className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
             {settings?.traffic_capture ? (
@@ -659,11 +673,11 @@ export default function DashboardPage() {
               <ZapIcon className="size-3" /> {t("tokenUsage")}
             </div>
             <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-semibold tabular-nums">
+              <span className="font-semibold text-2xl tabular-nums">
                 {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
               </span>
               {displayedTokens.costEur != null && displayedTokens.costEur > 0 ? (
-                <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400 tabular-nums">
+                <span className="font-medium text-emerald-600 text-sm tabular-nums dark:text-emerald-400">
                   (€{displayedTokens.costEur.toFixed(2)})
                 </span>
               ) : null}
@@ -683,7 +697,7 @@ export default function DashboardPage() {
       <Card className="p-4">
         {/* Header */}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 text-xs font-semibold">
+          <div className="flex items-center gap-1.5 font-semibold text-xs">
             <ZapIcon className="size-3.5 text-muted-foreground" />
             {t("tokenConsumption")}
             {/* Data source switch: legacy = activity statistics (includes historical tasks); new = llm_usage metering ledger (more accurate, but only covers the period since it was enabled) */}
@@ -700,7 +714,7 @@ export default function DashboardPage() {
                   onClick={() => setTokenVersion(v)}
                   title={v === "new" ? t("tooltipNew") : t("tooltipOld")}
                   className={cn(
-                    "rounded px-2 py-0.5 text-[9px] font-medium transition-colors",
+                    "rounded px-2 py-0.5 font-medium text-[9px] transition-colors",
                     tokenVersion === v
                       ? "bg-background text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",
@@ -710,7 +724,7 @@ export default function DashboardPage() {
                 </button>
               ))}
             </div>
-            <span className="text-[10px] font-normal text-muted-foreground">
+            <span className="font-normal text-[10px] text-muted-foreground">
               {tokenVersion === "new" ? t("srcNew") : t("srcOld")}
             </span>
           </div>
@@ -720,7 +734,7 @@ export default function DashboardPage() {
               type="button"
               onClick={() => setTokenTab("all")}
               className={cn(
-                "rounded-md px-2.5 py-1 text-[10px] font-medium transition-colors",
+                "rounded-md px-2.5 py-1 font-medium text-[10px] transition-colors",
                 tokenTab === "all"
                   ? "bg-foreground text-background"
                   : "bg-muted/30 text-muted-foreground hover:text-foreground",
@@ -738,7 +752,7 @@ export default function DashboardPage() {
                   key={p.id}
                   onClick={() => setTokenTab(resolvedKey)}
                   className={cn(
-                    "flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-medium transition-colors",
+                    "flex items-center gap-1 rounded-md px-2.5 py-1 font-medium text-[10px] transition-colors",
                     tokenTab === resolvedKey
                       ? "bg-foreground text-background"
                       : "bg-muted/30 text-muted-foreground hover:text-foreground",
@@ -772,11 +786,11 @@ export default function DashboardPage() {
             <div>
               <div className="text-[10px] text-muted-foreground">{t("totalInOut")}</div>
               <div className="flex items-baseline gap-2">
-                <span className="mt-0.5 text-3xl font-bold tabular-nums tracking-tight">
+                <span className="mt-0.5 font-bold text-3xl tabular-nums tracking-tight">
                   {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
                 </span>
                 {displayedTokens.costEur != null && displayedTokens.costEur > 0 ? (
-                  <span className="text-base font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  <span className="font-semibold text-base text-emerald-600 tabular-nums dark:text-emerald-400">
                     (€{displayedTokens.costEur.toFixed(2)})
                   </span>
                 ) : null}
@@ -877,7 +891,7 @@ export default function DashboardPage() {
                     key={days}
                     onClick={() => setTokenDays(days)}
                     className={cn(
-                      "rounded px-2.5 py-0.5 text-[9px] font-medium transition-colors",
+                      "rounded px-2.5 py-0.5 font-medium text-[9px] transition-colors",
                       tokenDays === days
                         ? "bg-background text-foreground shadow-sm"
                         : "text-muted-foreground hover:text-foreground",
@@ -891,7 +905,7 @@ export default function DashboardPage() {
 
             {dailyTokenData.length === 0 ? (
               <div
-                className="flex flex-1 items-center justify-center rounded-lg border bg-muted/10 text-xs text-muted-foreground"
+                className="flex flex-1 items-center justify-center rounded-lg border bg-muted/10 text-muted-foreground text-xs"
                 style={{ minHeight: 180 }}
               >
                 {t("noData")}
@@ -945,7 +959,7 @@ export default function DashboardPage() {
       {/* ── Subscription Allocations ── */}
       <Card className="p-4">
         <div className="mb-3 flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-xs font-semibold">
+          <div className="flex items-center gap-1.5 font-semibold text-xs">
             <ZapIcon className="size-3.5 text-muted-foreground" />
             {t("subscriptions")}
           </div>
@@ -958,21 +972,24 @@ export default function DashboardPage() {
         </div>
 
         {visibleSubscriptions.length === 0 ? (
-          <div className="py-4 text-center text-xs text-muted-foreground">{t("noSubscriptions")}</div>
+          <div className="py-4 text-center text-muted-foreground text-xs">{t("noSubscriptions")}</div>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
             {visibleSubscriptions.map((sub) => (
               <div key={sub.profile_id} className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3 text-xs">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold truncate">{sub.name}</span>
-                  <div className="flex items-center gap-1 shrink-0">
+                  <span className="truncate font-semibold">{sub.name}</span>
+                  <div className="flex shrink-0 items-center gap-1">
                     {sub.plan && (
                       <Badge variant="outline" className="text-[9px] text-muted-foreground">
                         {sub.plan}
                       </Badge>
                     )}
                     {sub.stale && (
-                      <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-500 text-[9px]">
+                      <Badge
+                        variant="outline"
+                        className="border-amber-500/30 bg-amber-500/10 text-[9px] text-amber-500"
+                      >
                         {t("staleData")}
                       </Badge>
                     )}
@@ -984,50 +1001,52 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-2 mt-1">
+                <div className="mt-1 flex flex-col gap-2">
                   {sub.windows.length === 0 ? (
                     <p className="text-[10px] text-muted-foreground">
                       {t(sub.error ? "usageUnavailable" : "noQuotaWindows")}
                     </p>
-                  ) : sub.windows.map((w) => {
-                    const remainingPct = Math.round(w.remaining_fraction * 100);
-                    const resetsText = formatAllocationReset(w.resets_at);
-                    return (
-                      <div key={w.id} className="grid gap-1">
-                        <div className="flex items-center justify-between text-[11px]">
-                          <span className="text-muted-foreground">{w.label}</span>
-                          <span className="font-mono font-medium tabular-nums">
-                            {t("remaining", { pct: remainingPct })}
-                          </span>
-                        </div>
-                        <div
-                          role="progressbar"
-                          aria-valuenow={remainingPct}
-                          aria-valuemin={0}
-                          aria-valuemax={100}
-                          aria-label={`${sub.name} ${w.label}: ${remainingPct}% remaining`}
-                          className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
-                        >
+                  ) : (
+                    sub.windows.map((w) => {
+                      const remainingPct = Math.round(w.remaining_fraction * 100);
+                      const resetsText = formatAllocationReset(w.resets_at);
+                      return (
+                        <div key={w.id} className="grid gap-1">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-muted-foreground">{w.label}</span>
+                            <span className="font-medium font-mono tabular-nums">
+                              {t("remaining", { pct: remainingPct })}
+                            </span>
+                          </div>
                           <div
-                            className={cn(
-                              "h-full rounded-full transition-all duration-300",
-                              remainingPct > 20
-                                ? "bg-emerald-500"
-                                : remainingPct > 5
-                                  ? "bg-amber-500"
-                                  : "bg-destructive",
-                            )}
-                            style={{ width: `${Math.max(0, Math.min(100, remainingPct))}%` }}
-                          />
+                            role="progressbar"
+                            aria-valuenow={remainingPct}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-label={`${sub.name} ${w.label}: ${remainingPct}% remaining`}
+                            className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+                          >
+                            <div
+                              className={cn(
+                                "h-full rounded-full transition-all duration-300",
+                                remainingPct > 20
+                                  ? "bg-emerald-500"
+                                  : remainingPct > 5
+                                    ? "bg-amber-500"
+                                    : "bg-destructive",
+                              )}
+                              style={{ width: `${Math.max(0, Math.min(100, remainingPct))}%` }}
+                            />
+                          </div>
+                          {resetsText && (
+                            <span className="text-[9px] text-muted-foreground">
+                              {t("resetsAt", { time: resetsText })}
+                            </span>
+                          )}
                         </div>
-                        {resetsText && (
-                          <span className="text-[9px] text-muted-foreground">
-                            {t("resetsAt", { time: resetsText })}
-                          </span>
-                        )}
-                       </div>
-                    );
-                  })}
+                      );
+                    })
+                  )}
                 </div>
               </div>
             ))}
@@ -1040,7 +1059,7 @@ export default function DashboardPage() {
         {/* Activity Stream */}
         <Card className="p-4">
           <div className="mb-3 flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-xs font-semibold">
+            <div className="flex items-center gap-1.5 font-semibold text-xs">
               <ActivityIcon className="size-3.5 text-muted-foreground" />
               {t("activityStream")}
             </div>
@@ -1071,7 +1090,7 @@ export default function DashboardPage() {
 
           <div className="divide-y">
             {recentActivity.length === 0 ? (
-              <div className="py-4 text-center text-xs text-muted-foreground">{t("noActivity")}</div>
+              <div className="py-4 text-center text-muted-foreground text-xs">{t("noActivity")}</div>
             ) : (
               recentActivity.map((a) => (
                 <div key={a.seq} className="flex gap-2.5 py-2">
@@ -1084,14 +1103,14 @@ export default function DashboardPage() {
                     {a.worker}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[11px] font-medium">{kindLabel(a)}</div>
+                    <div className="font-medium text-[11px]">{kindLabel(a)}</div>
                     <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{a.summary}</div>
                   </div>
                   <div className="shrink-0 text-right">
                     <Badge variant="outline" className="px-1.5 py-0 text-[9px] text-muted-foreground">
                       {a.kind}
                     </Badge>
-                    <div className="mt-0.5 text-[9px] tabular-nums text-muted-foreground">{rel(a.ts)}</div>
+                    <div className="mt-0.5 text-[9px] text-muted-foreground tabular-nums">{rel(a.ts)}</div>
                   </div>
                 </div>
               ))
@@ -1102,7 +1121,7 @@ export default function DashboardPage() {
         {/* Discovery */}
         <Card className="p-4">
           <div className="mb-3 flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-xs font-semibold">
+            <div className="flex items-center gap-1.5 font-semibold text-xs">
               <BugIcon className="size-3.5 text-muted-foreground" />
               {t("findings")}
             </div>
@@ -1116,7 +1135,7 @@ export default function DashboardPage() {
 
           <div className="divide-y">
             {recentFindings.length === 0 ? (
-              <div className="py-4 text-center text-xs text-muted-foreground">{t("noFindings")}</div>
+              <div className="py-4 text-center text-muted-foreground text-xs">{t("noFindings")}</div>
             ) : (
               recentFindings.map((f) => (
                 <div key={f.id} className="flex items-start gap-2 py-2">
@@ -1127,16 +1146,16 @@ export default function DashboardPage() {
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[11px] font-semibold">{f.vulnclass}</span>
+                      <span className="font-semibold text-[11px]">{f.vulnclass}</span>
                       {f.task_description && (
                         <span className="truncate text-[10px] text-muted-foreground">{f.task_description}</span>
                       )}
                     </div>
-                    <div className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-muted-foreground">
+                    <div className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground leading-snug">
                       {f.summary}
                     </div>
                   </div>
-                  <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground">{rel(f.ts)}</span>
+                  <span className="shrink-0 text-[9px] text-muted-foreground tabular-nums">{rel(f.ts)}</span>
                 </div>
               ))
             )}
@@ -1147,7 +1166,7 @@ export default function DashboardPage() {
       {/* ── Row 4: Task Table ── */}
       <Card className="overflow-hidden p-0">
         <div className="flex items-center justify-between border-b px-4 py-3">
-          <div className="flex items-center gap-1.5 text-xs font-semibold">
+          <div className="flex items-center gap-1.5 font-semibold text-xs">
             <ClockIcon className="size-3.5 text-muted-foreground" />
             {t("tasks")}
           </div>
@@ -1174,7 +1193,7 @@ export default function DashboardPage() {
               ].map((h) => (
                 <th
                   key={h}
-                  className="px-4 py-2 text-left text-[9px] font-semibold uppercase tracking-widest text-muted-foreground first:pl-4"
+                  className="px-4 py-2 text-left font-semibold text-[9px] text-muted-foreground uppercase tracking-widest first:pl-4"
                 >
                   {h}
                 </th>
@@ -1184,7 +1203,7 @@ export default function DashboardPage() {
           <tbody>
             {sortedTasks.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-xs text-muted-foreground">
+                <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground text-xs">
                   {t("noTasks")}
                 </td>
               </tr>
@@ -1192,7 +1211,7 @@ export default function DashboardPage() {
               sortedTasks.map((t) => {
                 const goalsPct = t.goals_total ? Math.round(((t.goals_met ?? 0) / t.goals_total) * 100) : null;
                 return (
-                  <tr key={t.id} className="border-b last:border-0 transition-colors hover:bg-muted/30">
+                  <tr key={t.id} className="border-b transition-colors last:border-0 hover:bg-muted/30">
                     <td className="max-w-xs px-4 py-3">
                       <Link href={`/function/tasks/detail?id=${t.id}`} className="group flex flex-col">
                         <span className="truncate font-medium group-hover:underline">{t.description}</span>
@@ -1213,7 +1232,7 @@ export default function DashboardPage() {
                       {goalsPct !== null ? (
                         <div className="flex items-center gap-2">
                           <Progress value={goalsPct} className="h-1 w-14" />
-                          <span className="tabular-nums text-muted-foreground">
+                          <span className="text-muted-foreground tabular-nums">
                             {t.goals_met ?? 0}/{t.goals_total}
                           </span>
                         </div>
@@ -1228,7 +1247,7 @@ export default function DashboardPage() {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 tabular-nums text-muted-foreground">
+                    <td className="px-4 py-3 text-muted-foreground tabular-nums">
                       {rel(t.last_activity_unix ?? t.created_unix)}
                     </td>
                   </tr>
@@ -1248,7 +1267,7 @@ export default function DashboardPage() {
           </SectionTitle>
 
           {assetByType.length === 0 ? (
-            <div className="py-6 text-center text-xs text-muted-foreground">{t("noAssetData")}</div>
+            <div className="py-6 text-center text-muted-foreground text-xs">{t("noAssetData")}</div>
           ) : (
             <div className="flex flex-col gap-2">
               {assetByType.map(([type, count]) => (
@@ -1281,18 +1300,18 @@ export default function DashboardPage() {
 
           {/* bar chart */}
           {trafficByCodes.length === 0 ? (
-            <div className="py-6 text-center text-xs text-muted-foreground">{t("noTrafficData")}</div>
+            <div className="py-6 text-center text-muted-foreground text-xs">{t("noTrafficData")}</div>
           ) : (
             <>
               <div className="mb-3 flex items-end gap-2" style={{ height: 52 }}>
                 {trafficByCodes.map(({ code, n }) => (
                   <div key={code} className="flex flex-1 flex-col items-center gap-1">
-                    <span className="text-[9px] tabular-nums text-muted-foreground">{n}</span>
+                    <span className="text-[9px] text-muted-foreground tabular-nums">{n}</span>
                     <div
-                      className={cn("w-full min-h-1 rounded-sm", statusBg(code), "opacity-80")}
+                      className={cn("min-h-1 w-full rounded-sm", statusBg(code), "opacity-80")}
                       style={{ height: Math.max(4, (n / trafficMax) * 36) }}
                     />
-                    <span className={cn("text-[9px] font-mono", statusColor(code))}>{code}</span>
+                    <span className={cn("font-mono text-[9px]", statusColor(code))}>{code}</span>
                   </div>
                 ))}
               </div>
@@ -1371,7 +1390,7 @@ export default function DashboardPage() {
           {/* pending approvals */}
           {pendingCount > 0 && (
             <div className="mt-3">
-              <div className="mb-1.5 text-[10px] font-medium text-amber-400">
+              <div className="mb-1.5 font-medium text-[10px] text-amber-400">
                 {t("pendingApprovals", { count: pendingCount })}
               </div>
               <div className="flex flex-col gap-1.5">
@@ -1382,7 +1401,7 @@ export default function DashboardPage() {
                     className="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 hover:bg-amber-500/10"
                   >
                     <div className="min-w-0">
-                      <div className="text-[10px] font-medium">{p.tool_name}</div>
+                      <div className="font-medium text-[10px]">{p.tool_name}</div>
                       <div className="text-[9px] text-muted-foreground">{p.agent_name}</div>
                     </div>
                     <ArrowUpRightIcon className="size-3 shrink-0 text-amber-400" />

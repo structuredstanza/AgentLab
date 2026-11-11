@@ -74,7 +74,7 @@ function Row({
                 </Badge>
               )}
             </div>
-            <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
+            <span className="truncate text-muted-foreground text-xs">{f.summary}</span>
           </div>
         </button>
         <Badge variant="outline">{t("trafficEvidence", { count: f.traffic_count ?? 0 })}</Badge>
@@ -89,7 +89,7 @@ function Row({
                 {a.label}
               </code>
             ))}
-            {f.assets.length > 2 && <span className="text-xs text-muted-foreground">+{f.assets.length - 2}</span>}
+            {f.assets.length > 2 && <span className="text-muted-foreground text-xs">+{f.assets.length - 2}</span>}
           </div>
         )}
         {f.finding_id && !f.inherited ? (
@@ -110,7 +110,7 @@ function Row({
         ) : (
           <StatusBadge domain="finding" value={f.status} dot />
         )}
-        <span className="hidden shrink-0 text-xs text-muted-foreground md:block">
+        <span className="hidden shrink-0 text-muted-foreground text-xs md:block">
           {new Date(f.ts).toLocaleString(getDateLocale())}
         </span>
         {f.finding_id && (
@@ -120,7 +120,7 @@ function Row({
                 ? `/function/findings/detail?id=${f.finding_id}&context_task=${contextTaskId}`
                 : `/function/findings/detail?id=${f.finding_id}`
             }
-            className="text-muted-foreground hover:text-primary inline-flex shrink-0 items-center gap-0.5 text-xs"
+            className="inline-flex shrink-0 items-center gap-0.5 text-muted-foreground text-xs hover:text-primary"
             title={t("viewDetail")}
           >
             {t("detail")}
@@ -130,8 +130,8 @@ function Row({
       </div>
       {open && (
         <div className="bg-muted/30 px-4 pb-4 pl-11">
-          <div className="mb-1 text-xs font-medium text-muted-foreground">{t("evidencePoc")}</div>
-          <pre className="overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap">
+          <div className="mb-1 font-medium text-muted-foreground text-xs">{t("evidencePoc")}</div>
+          <pre className="overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 font-mono text-xs">
             {f.evidence}
           </pre>
         </div>
@@ -198,7 +198,7 @@ export function FindingsTab({ taskId }: { taskId: string }) {
   return (
     <Card className="overflow-hidden py-0">
       <CardContent className="px-0">
-        <div className="flex items-center border-b px-4 py-2 text-xs text-muted-foreground">
+        <div className="flex items-center border-b px-4 py-2 text-muted-foreground text-xs">
           <span className="min-w-0 flex-1">{t("columnFinding")}</span>
           <button
             type="button"
@@ -224,7 +224,7 @@ export function FindingsTab({ taskId }: { taskId: string }) {
         {items.map((f) => (
           <Row key={f.id} f={f} contextTaskId={taskId} onStatus={onStatus} />
         ))}
-        {items.length === 0 && <p className="px-4 py-8 text-center text-sm text-muted-foreground">{t("empty")}</p>}
+        {items.length === 0 && <p className="px-4 py-8 text-center text-muted-foreground text-sm">{t("empty")}</p>}
       </CardContent>
     </Card>
   );

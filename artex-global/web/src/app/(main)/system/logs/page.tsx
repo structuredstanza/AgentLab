@@ -187,7 +187,7 @@ export default function LogsPage() {
   return (
     <div className="flex flex-1 flex-col gap-3">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+        <h1 className="font-semibold text-xl tracking-tight">{t("title")}</h1>
         <p className="text-muted-foreground text-sm">{t("subtitle")}</p>
       </div>
       <div className="flex flex-1 flex-col gap-3">
@@ -222,7 +222,7 @@ export default function LogsPage() {
           <Button size="sm" variant="outline" className="h-8" onClick={() => setLines([])}>
             {t("clear")}
           </Button>
-          <span className="ml-auto text-xs text-muted-foreground">
+          <span className="ml-auto text-muted-foreground text-xs">
             {t("totalLines", { count: counts.total })} ·{" "}
             <span className="text-amber-600 dark:text-amber-400">{t("warnCount", { count: counts.warn })}</span> ·{" "}
             <span className="text-red-600 dark:text-red-400">{t("errorCount", { count: counts.error })}</span>
@@ -258,7 +258,7 @@ export default function LogsPage() {
               return (
                 <div key={l.seq} className="flex items-start gap-2 px-1 py-0.5 hover:bg-muted/40">
                   <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", levelDot[l.level])} />
-                  <span className="shrink-0 tabular-nums text-muted-foreground">{fmtTime(l.ts)}</span>
+                  <span className="shrink-0 text-muted-foreground tabular-nums">{fmtTime(l.ts)}</span>
                   {l.tag && (
                     <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-foreground/70">{l.tag}</span>
                   )}

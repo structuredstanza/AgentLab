@@ -53,12 +53,12 @@ function AgentGridCard({ agent, onOpen, onDeleted }: { agent: Agent; onOpen: () 
     }
   }
   return (
-    <div className="hover:border-primary/50 group relative flex flex-col gap-2 rounded-lg border p-4 transition-colors">
+    <div className="group relative flex flex-col gap-2 rounded-lg border p-4 transition-colors hover:border-primary/50">
       <button type="button" onClick={onOpen} className="flex flex-col gap-2 text-left">
         <div className="flex flex-wrap items-center gap-2">
-          <Bot className="text-muted-foreground size-4" />
-          <span className="text-sm font-medium">{labels.name(agent)}</span>
-          <span className="text-muted-foreground font-mono text-xs">{agent.key}</span>
+          <Bot className="size-4 text-muted-foreground" />
+          <span className="font-medium text-sm">{labels.name(agent)}</span>
+          <span className="font-mono text-muted-foreground text-xs">{agent.key}</span>
           {agent.builtin ? (
             <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
               {t("badgeBuiltin")}
@@ -69,16 +69,16 @@ function AgentGridCard({ agent, onOpen, onDeleted }: { agent: Agent; onOpen: () 
             </Badge>
           )}
           {!agent.enabled && (
-            <Badge variant="outline" className="text-destructive px-1.5 py-0 text-[10px]">
+            <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-destructive">
               {t("badgeDisabled")}
             </Badge>
           )}
         </div>
         {/* labels.description returns a string (an empty description is ""), so the || fallback text is attached. */}
-        <p className="text-muted-foreground line-clamp-2 min-h-8 text-xs">
+        <p className="line-clamp-2 min-h-8 text-muted-foreground text-xs">
           {labels.description(agent) || t("noDescription")}
         </p>
-        <div className="text-muted-foreground flex flex-wrap gap-1.5 text-[10px]">
+        <div className="flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
           <span className="rounded border px-1.5 py-0.5">MCP {agent.mcp_count ?? 0}</span>
           <span className="rounded border px-1.5 py-0.5">Skill {agent.skill_count ?? 0}</span>
           <span className="rounded border px-1.5 py-0.5">
@@ -92,7 +92,7 @@ function AgentGridCard({ agent, onOpen, onDeleted }: { agent: Agent; onOpen: () 
             <Button
               variant="ghost"
               size="icon-sm"
-              className="text-muted-foreground hover:text-destructive absolute top-2 right-2 opacity-0 transition-opacity group-hover:opacity-100"
+              className="absolute top-2 right-2 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
             >
               <Trash2Icon className="size-3.5" />
             </Button>
@@ -217,7 +217,7 @@ export default function AgentsPage() {
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+          <h1 className="font-semibold text-xl tracking-tight">{t("title")}</h1>
           <p className="text-muted-foreground text-sm">{t("subtitle")}</p>
         </div>
         <CreateAgentDialog
@@ -235,7 +235,7 @@ export default function AgentsPage() {
         </CardHeader>
         <CardContent>
           {agents.length === 0 ? (
-            <p className="text-muted-foreground py-6 text-center text-sm">{t("empty")}</p>
+            <p className="py-6 text-center text-muted-foreground text-sm">{t("empty")}</p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {agents.map((a) => (
@@ -256,7 +256,7 @@ export default function AgentsPage() {
               <SheetHeader className="px-4">
                 <SheetTitle className="flex items-center gap-2">
                   {labels.name(editing)}
-                  <span className="text-muted-foreground font-mono text-xs">{editing.key}</span>
+                  <span className="font-mono text-muted-foreground text-xs">{editing.key}</span>
                   {!editing.builtin && (
                     <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
                       {t("badgeCustom")}
