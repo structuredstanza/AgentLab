@@ -6,7 +6,7 @@ accepts = ["ip", "cidr", "domain"]
 requires = ["nmap"]
 
 [params]
-ports = { type = "string", label = "Ports", placeholder = "22,80,443 or -", default = "-", description = "Port spec passed to -p; '-' means the top 1000" }
+ports = { type = "string", label = "Ports", placeholder = "22,80,443 or -", default = "-", description = "Port spec passed to -p; '-' means all 65535 ports" }
 service = { type = "bool", label = "Service detection", default = "true", description = "Add -sV to fingerprint the service behind each open port" }
 scripts = { type = "string", label = "NSE scripts", placeholder = "default,safe", description = "NSE script names passed to --script" }
 timing = { type = "enum", label = "Timing template", default = "T4", options = ["T2", "T3", "T4"] }

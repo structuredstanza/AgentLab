@@ -113,18 +113,22 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 				},
 				"params": map[string]any{
 					"type":        "object",
-					"description": "Tool parameters, keyed by the names list_tools reports",
+					"description": "Tool parameters, keyed by the names list_tools reports. Values may be strings, numbers or true/false",
 				},
 			},
 			"required": []string{"tool", "target"},
 		},
 		func(ctx context.Context, raw json.RawMessage) (actool.Result, error) {
 			var in struct {
-				Tool   string            `json:"tool"`
-				Target string            `json:"target"`
-				Params map[string]string `json:"params"`
+				Tool   string         `json:"tool"`
+				Target string         `json:"target"`
+				Params map[string]any `json:"params"`
 			}
 			if err := json.Unmarshal(raw, &in); err != nil {
+				return actool.Errorf(fmt.Sprintf("bad input: %v", err)), nil
+			}
+			params, err := paramStrings(in.Params)
+			if err != nil {
 				return actool.Errorf(fmt.Sprintf("bad input: %v", err)), nil
 			}
 			m := manifestTools.Get(in.Tool)
@@ -149,7 +153,7 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 				return actool.Errorf(fmt.Sprintf("%s is declared but not installed in this environment (needs %s)",
 					in.Tool, strings.Join(m.Requires, ", "))), nil
 			}
-			effective, err := m.Effective(in.Params)
+			effective, err := m.Effective(params)
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("%v", err)), nil
 			}
@@ -210,6 +214,27 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 			}
 			return actool.Text(b.String()), nil
 		})
+}
+
+// paramStrings flattens run_tool parameters to the strings a manifest renders.
+// A model naturally writes service:true or timing:4, and refusing those cost a
+// whole turn; nested values stay rejected because no manifest takes one.
+func paramStrings(in map[string]any) (map[string]string, error) {
+	out := make(map[string]string, len(in))
+	for name, v := range in {
+		switch x := v.(type) {
+		case nil:
+		case string:
+			out[name] = x
+		case bool:
+			out[name] = strconv.FormatBool(x)
+		case float64:
+			out[name] = strconv.FormatFloat(x, 'f', -1, 64)
+		default:
+			return nil, fmt.Errorf("parameter %q must be a string, number or boolean", name)
+		}
+	}
+	return out, nil
 }
 
 // toolListManifests exposes the catalog so an agent can discover a tool and its

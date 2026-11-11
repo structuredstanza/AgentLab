@@ -2,6 +2,7 @@ package manifest_test
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -86,9 +87,62 @@ func defaultsFor(m *manifest.Manifest) map[string]string {
 		out[name] = p.Default
 		if out[name] == "" {
 			out[name] = "x"
+			if p.Type == manifest.ParamBool {
+				out[name] = "true"
+			}
 		}
 	}
 	return out
+}
+
+// The command runs without a shell, so "-sV true" as one argument is a single
+// unknown option, not a flag and its value. Every `| -flag` manifest shipped
+// that way, and nmap printed usage text instead of XML. Check every manifest,
+// not one, because the defect lived in the shared renderer.
+func TestFlagAndValueAreSeparateArguments(t *testing.T) {
+	flagWithValue := regexp.MustCompile(`^--?[A-Za-z][\w-]* \S`)
+	for _, m := range manifest.LoadBuiltin().All() {
+		args, err := m.Resolve("example.test", defaultsFor(m))
+		if err != nil {
+			t.Fatalf("%s: %v", m.ID, err)
+		}
+		for _, a := range args {
+			if flagWithValue.MatchString(a) {
+				t.Errorf("%s: %q is one argument; a flag and its value must be two", m.ID, a)
+			}
+		}
+	}
+}
+
+// A bool parameter is a switch: bare flag when true, absent when false.
+func TestBoolParameterIsABareSwitch(t *testing.T) {
+	m := manifest.LoadBuiltin().Get("nmap")
+	for value, want := range map[string]bool{"true": true, "false": false} {
+		params, err := m.Effective(map[string]string{"service": value, "scripts": "default"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		args, err := m.Resolve("10.129.14.7", params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		has := false
+		for _, a := range args {
+			if a == "-sV" {
+				has = true
+			}
+			if a == "true" || a == "false" {
+				t.Errorf("service=%s leaked %q into argv: %v", value, a, args)
+			}
+		}
+		if has != want {
+			t.Errorf("service=%s: -sV present = %v, want %v (%v)", value, has, want, args)
+		}
+	}
+	params, _ := m.Effective(map[string]string{"service": "maybe"})
+	if _, err := m.Resolve("10.129.14.7", params); err == nil {
+		t.Error("a non-boolean value for a bool parameter must be an error")
+	}
 }
 
 // A [limits] block naming a parameter that does not exist would silently cap
