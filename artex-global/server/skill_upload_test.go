@@ -136,6 +136,8 @@ func TestUploadSkillZstdAndChineseNames(t *testing.T) {
 	data := buildZip(t,
 		zipFile{name: "localised-skill/SKILL.md", body: zhSkillMD, method: zipMethodZstd},
 		zipFile{name: "localised-skill/reference/notes doc.md", body: "reference", method: zipMethodZstd},
+		// A UTF-8 multibyte entry name: the half of this test's purpose that ASCII names dropped.
+		zipFile{name: "localised-skill/reference/\u6587\u6863.md", body: "cjk", method: zipMethodZstd},
 		zipFile{name: "localised-skill/scripts/run.py", body: "print(1)", method: zip.Deflate},
 	)
 	rr, out := uploadZip(t, dir, "localised-skill.zip", data)
@@ -145,7 +147,7 @@ func TestUploadSkillZstdAndChineseNames(t *testing.T) {
 	if out["name"] != "localised-skill" {
 		t.Fatalf("name = %v, want localised-skill", out["name"])
 	}
-	for _, rel := range []string{"SKILL.md", "reference/notes doc.md", "scripts/run.py"} {
+	for _, rel := range []string{"SKILL.md", "reference/notes doc.md", "reference/\u6587\u6863.md", "scripts/run.py"} {
 		if _, err := os.Stat(filepath.Join(dir, "localised-skill", rel)); err != nil {
 			t.Errorf("missing extracted file %q: %v", rel, err)
 		}

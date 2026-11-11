@@ -125,6 +125,11 @@ func TestWeComTruncatesCJKWithinByteLimit(t *testing.T) {
 	})
 	// Build a long enough Chinese summary that it will necessarily exceed 4096 bytes.
 	m := batchMsg(200)
+	// Every rune of a CJK summary is 3 bytes, so a byte-oriented cut lands mid-rune and
+	// the utf8.ValidString check above can actually fail; with ASCII it never could.
+	for i := range m.Items {
+		m.Items[i].Summary = strings.Repeat("\u53cd\u5c04\u578b\u8de8\u7ad9\u811a\u672c", 3)
+	}
 	if _, err := (weComChannel{}).Send(context.Background(), map[string]any{"webhook": srv.URL}, m); err != nil {
 		t.Fatalf("delivery failed: %v", err)
 	}

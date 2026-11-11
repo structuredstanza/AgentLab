@@ -11,8 +11,8 @@ func TestTruncateBytesKeepsValidUTF8(t *testing.T) {
 	// so any implementation that cuts strictly by bytes will split a character in half, producing invalid UTF-8 that the platform rejects.
 	// Hit every possible cut point with mixed Chinese-English inputs whose lengths are mutually coprime.
 	inputs := []string{
-		"localised test content",
-		"mixed content",
+		"\u672c\u5730\u5316\u6d4b\u8bd5\u5185\u5bb9",
+		"ab\u4e2dcd\u6587e\u6df7\u5408",
 		"a1b2c3d4e",
 		"🔴🟠🟡🔵", // 4-byte emoji make wrong cuts more obvious
 		strings.Repeat("finding", 100),
@@ -59,7 +59,7 @@ func TestTruncateBytesEllipsisBudget(t *testing.T) {
 func TestTruncateRunesCountsCharactersNotBytes(t *testing.T) {
 	// The difference in counting from TruncateBytes must be preserved: Telegram limits length by characters,
 	// while counting by bytes would cut a Chinese message down to only a third of its length.
-	s := "abcdefghij"
+	s := "\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341"
 	got := TruncateRunes(s, 5)
 	if n := utf8.RuneCountInString(got); n != 5 {
 		t.Fatalf("expected 5 characters, got %d (%q)", n, got)
