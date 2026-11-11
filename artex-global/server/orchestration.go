@@ -504,6 +504,7 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 	s.seedCompanyScopeRebind()
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces are unbound from worker by default (one-time)
 	s.seedWorkerReadbackRebind()  // Fix for an old migration that deleted bindings by mistake: re-bind search_all_worker_traces/get_worker_trace/node_detail back to worker (one-time)
+	s.seedMemoryToolBindings()    // Knowledge/reflection tools: give them their default agent bindings on databases seeded before them (one-time)
 	s.seedAutoReportFindingBinding()
 	s.unbindGoalMetDefault()
 	s.reseedGoalsPrompt()     // Added a "extract operation constraints" step to the goals prompt → existing databases get a new default version appended (one-time)

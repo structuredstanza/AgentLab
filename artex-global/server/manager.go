@@ -1563,6 +1563,7 @@ func (m *Manager) SetTaskStatusGuarded(id, status string) (won bool, err error) 
 	}
 	m.mu.Unlock()
 	m.extractLessons(n)
+	m.deriveTaskReflections(n)
 	return true, nil
 }
 
@@ -1596,6 +1597,7 @@ func (m *Manager) SetTaskStatus(id, status string) error {
 	m.mu.Unlock()
 	if pgdb.IsTerminal(status) {
 		m.extractLessons(n)
+		m.deriveTaskReflections(n)
 	}
 	return nil
 }
@@ -1607,6 +1609,18 @@ func (m *Manager) SetTaskStatus(id, status string) error {
 func (m *Manager) extractLessons(taskID int64) {
 	if _, err := m.pg.ExtractLessonsForTask(context.Background(), taskID); err != nil {
 		log.Printf("[rsi] lesson extraction failed for task %d: %v", taskID, err)
+	}
+}
+
+// deriveTaskReflections records the deterministic end-of-task reflections
+// (noise, learning, lookfor) next to lesson extraction. Best-effort like it:
+// bounded to 5s, log-only, never fails or delays the status update beyond the
+// budget.
+func (m *Manager) deriveTaskReflections(taskID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := m.pg.DeriveTaskReflections(ctx, taskID); err != nil {
+		log.Printf("[memory] task reflection derivation failed for task %d: %v", taskID, err)
 	}
 }
 

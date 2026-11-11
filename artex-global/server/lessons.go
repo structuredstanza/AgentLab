@@ -38,35 +38,54 @@ func rsiLessonsMode() string {
 // code-owned: it is appended after the rendered prompt and cannot be removed
 // by editing the prompt in the UI. Usage is logged in both modes so a later
 // comparison can tell which tasks saw which lessons.
+//
+// The operational-memory block (server/memory.go) rides this same wiring and
+// the same SetLessonsBlock call, so the prompt has one code-owned tail instead
+// of two competing ones. The memory store is bound first and unconditionally;
+// the reflections provider and the block follow the injection switch.
 func (s *Server) wireTaskLessons(t *Task, wk *agent.Worker, pl *agent.Planner) {
-	mode := rsiLessonsMode()
-	if mode == "off" || t == nil {
+	if t == nil {
+		return
+	}
+	memMode := memoryMode()
+	s.bindTaskMemory(t, wk, pl, memMode)
+	lessonMode := rsiLessonsMode()
+	if lessonMode == "off" && memMode == "off" {
 		return
 	}
 	taskID, err := strconv.ParseInt(t.ID, 10, 64)
 	if err != nil {
 		return
 	}
-	lessons, err := s.m.PG().TaskLessons(context.Background(), taskID, 8)
-	if err != nil {
-		log.Printf("[rsi] lesson selection failed for task %s: %v", t.ID, err)
+	var injected []string
+	if lessonMode != "off" {
+		lessons, err := s.m.PG().TaskLessons(context.Background(), taskID, 8)
+		if err != nil {
+			log.Printf("[rsi] lesson selection failed for task %s: %v", t.ID, err)
+		} else {
+			if block := db.RenderLessons(lessons, 1800); block != "" && lessonMode == "inject" {
+				injected = append(injected, block)
+			}
+			ids := make([]int64, 0, len(lessons))
+			for _, l := range lessons {
+				ids = append(ids, l.ID)
+			}
+			if err := s.m.PG().LogLessonUsage(context.Background(), taskID, ids, lessonMode); err != nil {
+				log.Printf("[rsi] lesson usage log failed for task %s: %v", t.ID, err)
+			}
+		}
+	}
+	if memMode != "off" {
+		if block := s.taskMemoryBlock(t, taskID, memMode); block != "" && memMode == "inject" {
+			injected = append(injected, block)
+		}
+	}
+	if len(injected) == 0 {
 		return
 	}
-	block := db.RenderLessons(lessons, 1800)
-	if block == "" {
-		return
-	}
-	if mode == "inject" {
-		wk.SetLessonsBlock(block)
-		pl.SetLessonsBlock(block)
-	}
-	ids := make([]int64, 0, len(lessons))
-	for _, l := range lessons {
-		ids = append(ids, l.ID)
-	}
-	if err := s.m.PG().LogLessonUsage(context.Background(), taskID, ids, mode); err != nil {
-		log.Printf("[rsi] lesson usage log failed for task %s: %v", t.ID, err)
-	}
+	combined := strings.Join(injected, "\n\n")
+	wk.SetLessonsBlock(combined)
+	pl.SetLessonsBlock(combined)
 }
 
 // taskLessons returns the lessons visible to one task plus the rendered block.

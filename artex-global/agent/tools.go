@@ -124,6 +124,7 @@ type ToolSet struct {
 	findingRecorder FindingRecorder
 	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
 	cs              *db.CompanyStore // company store (optional)
+	mem             MemoryStore      // knowledge base + reflection pool (optional; nil = memory tools refuse)
 	ts              *db.ExplorationStore
 	worker          string
 	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
@@ -2170,5 +2171,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.addTaskScope(),
 		// list_untested_assets: On demand, list untested assets within this task's scope (by type, with pagination), and decide on supplementary testing yourself.
 		t.listUntestedAssets(),
+		// recall / knowledge_add / reflect: the task's operational memory (planner
+		// records the reflections it derives from the round's evidence).
+		t.recallTool(), t.knowledgeAddTool(), t.reflectTool(),
 	}
 }

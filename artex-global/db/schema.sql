@@ -1516,3 +1516,70 @@ CREATE TABLE IF NOT EXISTS rsi_lesson_usage (
     shown_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (lesson_id, task_id, mode)
 );
+
+-- =====================================================================
+-- Knowledge base (KB) and reflection pool
+-- Durable operational memory: reusable technique/tool/opsec knowledge plus
+-- per-task reflections about what worked, what was noisy, and what to look
+-- for next. Visibility is the security boundary: a candidate entry never
+-- leaves the task it was learned in, and a task-scoped entry can only reach
+-- company/global scope through an explicit owner promotion that re-scrubs
+-- the origin task's identifiers.
+-- =====================================================================
+-- A generated column's expression must be IMMUTABLE, and array_to_string is
+-- only STABLE (its array_out arm). For a fixed delimiter the result depends on
+-- the array alone, so this thin wrapper declares what is already true.
+CREATE OR REPLACE FUNCTION knowledge_tags_text(tags text[]) RETURNS text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT array_to_string(tags, ' ') $$;
+
+CREATE TABLE IF NOT EXISTS knowledge_entries (
+    id             BIGSERIAL PRIMARY KEY,
+    scope          TEXT NOT NULL CHECK (scope IN ('global','company','task')),
+    company_id     BIGINT REFERENCES companies(id) ON DELETE CASCADE,
+    task_id        BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
+    CONSTRAINT ck_knowledge_scope CHECK (
+        (scope='global'  AND company_id IS NULL AND task_id IS NULL) OR
+        (scope='company' AND company_id IS NOT NULL AND task_id IS NULL) OR
+        (scope='task'    AND task_id IS NOT NULL)
+    ),
+    kind           TEXT NOT NULL CHECK (kind IN ('technique','tool','opsec','indicator','playbook','note')),
+    title          TEXT NOT NULL,
+    body           TEXT NOT NULL,
+    tags           TEXT[] NOT NULL DEFAULT '{}',
+    -- candidate = agent-written, task-private; adopted = owner-approved, may
+    -- cross engagement boundaries; retired = kept for audit, never injected.
+    status         TEXT NOT NULL DEFAULT 'candidate' CHECK (status IN ('candidate','adopted','retired')),
+    source         TEXT NOT NULL CHECK (source IN ('operator','agent','reflection')),
+    -- Task the entry was learned in. Deliberately no FK: promotion must still
+    -- know the origin scope when the task row is gone.
+    origin_task_id BIGINT,
+    tsv            TSVECTOR GENERATED ALWAYS AS (
+        setweight(to_tsvector('simple', title), 'A')
+     || setweight(to_tsvector('simple', knowledge_tags_text(tags)), 'B')
+     || setweight(to_tsvector('simple', body), 'C')
+    ) STORED,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tsv   ON knowledge_entries USING GIN(tsv);
+CREATE INDEX IF NOT EXISTS idx_knowledge_scope ON knowledge_entries(scope, status);
+CREATE INDEX IF NOT EXISTS idx_knowledge_task  ON knowledge_entries(task_id);
+-- Deduplication inside one task: the same title written twice is one entry.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_task_title
+    ON knowledge_entries(task_id, lower(title)) WHERE scope='task';
+
+CREATE TABLE IF NOT EXISTS task_reflections (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    intent_id  BIGINT,
+    kind       TEXT NOT NULL CHECK (kind IN ('opsec','noise','lookfor','learning','mistake')),
+    source     TEXT NOT NULL CHECK (source IN ('engine','worker','planner')),
+    dedupe_key TEXT NOT NULL,
+    summary    TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT '',
+    signal     JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (task_id, dedupe_key)
+);
+CREATE INDEX IF NOT EXISTS idx_reflections_task ON task_reflections(task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reflections_kind ON task_reflections(task_id, kind);

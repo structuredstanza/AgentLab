@@ -704,6 +704,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/outcome", s.taskOutcome)
 	mux.HandleFunc("GET /api/tasks/{id}/lessons", s.taskLessons)
 	mux.HandleFunc("POST /api/tasks/{id}/lessons/extract", s.extractTaskLessons)
+	// Knowledge base + reflection pool (owner side; promotion is the only way
+	// a task-scoped entry leaves its task)
+	mux.HandleFunc("GET /api/knowledge", s.listKnowledge)
+	mux.HandleFunc("POST /api/knowledge", s.createKnowledge)
+	mux.HandleFunc("PATCH /api/knowledge/{id}", s.patchKnowledge)
+	mux.HandleFunc("POST /api/knowledge/{id}/promote", s.promoteKnowledge)
+	mux.HandleFunc("DELETE /api/knowledge/{id}", s.deleteKnowledge)
+	mux.HandleFunc("GET /api/tasks/{id}/reflections", s.taskReflections)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
 	// Task-level asset block/allow rules

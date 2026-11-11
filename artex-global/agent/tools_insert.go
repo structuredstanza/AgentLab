@@ -701,6 +701,10 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.searchAllWorkerTraces(), t.getWorkerTrace(),
 		// node_detail: Once the worker has the intent_id / node id, it can look up the full details of that node (used together with the lookback above).
 		t.nodeDetail(),
+		// recall / knowledge_add / reflect: the task's operational memory. They stay
+		// in the list with a nil store so the DB tool catalog seeds them (handlers
+		// refuse clearly without one).
+		t.recallTool(), t.knowledgeAddTool(), t.reflectTool(),
 		// The following tools are still NOT given to the worker; they are reserved for the planner/main (reading context and reviewing across work items is planning responsibility,
 		// worker only executes a single intent and writes back the result: list_facts / list_companies / list_worker_traces.
 	}
@@ -724,6 +728,9 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.addTaskScope(),
 		// list_untested_assets: On demand, list untested assets within this task's scope (by type, with pagination), and decide on supplementary testing yourself.
 		t.listUntestedAssets(),
+		// recall / knowledge_add: the operator interface reads and records reusable
+		// knowledge (reflect is worker/planner only — an intent's own lesson).
+		t.recallTool(), t.knowledgeAddTool(),
 	}
 }
 

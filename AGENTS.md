@@ -20,6 +20,7 @@ Next.js SPA (embedded) → /api/* → server.Handler() mux → Manager/Task/Engi
 - **Two outbound paths**: worker/tool traffic goes through the recording MITM proxy (`traffic/`, `-proxy`, default `127.0.0.1:8788`); traffic the backend generates itself (asset enrichment probes, MCP handshakes) goes through the masking `egress-proxy` (`egress/`, `-addr`, default `127.0.0.1:8888`), which owns the uTLS Chrome fingerprint, the header set, the CA and the per-host rate cap. `ARTEX_EGRESS_PROXY` / `ARTEX_EGRESS_CA` configure the client side; with neither, enrichment probes fail closed rather than dialling direct.
 - **Per task**: `Engine.Run` (`server/engine.go:783`) starts 1 planner loop + N worker loops (`workers` setting, default 3) + deadline coordinator. Planner is the sole intent producer; workers claim one intent, execute real tools, write facts/assets/findings back.
 - **Dual graph**: global asset graph (`db/assets.go`, shared, program-computed hierarchy) and per-task exploration graph (`db/exploration.go`, goals/intents/facts/findings), joined by `exploration_anchors`.
+- **Memory**: `db/knowledge.go` (full-text knowledge base), `db/reflection.go` + `db/reflect_engine.go` (per-task reflection pool, engine-derived at intent and task end), `db/scrub.go` (credential and target-identifier scrubbing on every write). Agents use `recall` / `knowledge_add` / `reflect` (`agent/tools_memory.go`); `server/memory.go` builds the start-of-task block and the per-round reflections provider (`ARTEX_MEMORY=off|inject`). Agent writes are task-private candidates; only an owner promotes, and promotion re-scrubs with the origin task's scope identifiers. See `RSI.md`.
 - **Agent SDK**: vendored `artex-global/third_party/norma/` via `replace` in `go.mod` — `agentcore` (Session/Options), `harness` (turn loop), `llm` (Provider `Stream`/`Complete`), `tool` (CoreTool).
 - **Decorator chains, not DI**: provider = `agent.Config` → optional `nativeproxy` → `llmrec` recorder → `llmpool.Pool` failover. Tools = base set → `ToolAugment` (skills/MCP) → `ToolResolve` (DB overrides) → alias/panic wrapper → harness hooks (`guard` audit, `intercept` allow/deny/ask, `scope` boundary).
 - **Capture**: `traffic/` is a go-mitmproxy addon writing a file tree plus a **SQLite index only** (`traffic/traffic.go:194`); graphs/tasks/findings/LLM records live in PostgreSQL. `evidence/` pins finding evidence blobs independently of disposable traffic.
@@ -41,7 +42,8 @@ Next.js SPA (embedded) → /api/* → server.Handler() mux → Manager/Task/Engi
 | `artex-global/web/` | Next.js App Router frontend (`src/app`, `src/lib`, `src/components`) |
 | `artex-global/skills/`, `detections/`, `docs/` | Agent skills, detection rules, design/defense docs |
 | `deployment/` | Guest `Dockerfile`(+`.toolchain`), `sandbox.yaml`, `guest-start.py`, `export_traces.py`, host proxy (`cliproxy/`) |
-| `tests/` | Umbrella runner + relocated black-box Go and Python suites |
+| `tests/` | Umbrella runner + Python suites (black-box Go suites are in `artex-global/tests/go/`) |
+| `.github/` | GitHub Actions workflows (ci, web, detections, docs, external-links, release) and issue/PR templates; jobs run from `artex-global/` |
 | `artex-global/graphify-out/` | Generated knowledge graph of `artex-global/` (gitignored; query it, don't rebuild) |
 
 ## Development Commands
@@ -61,7 +63,7 @@ npm run test -- --run    # vitest
 npm run check            # biome check (CI gate; use check:fix to autofix)
 
 # Umbrella suites (from repo root)
-tests/run.sh [all|go|proxy|python|web]
+tests/run.sh [all|go|proxy|python|web|dev]
 
 # Full binary (embeds UI; requires the static export first)
 cd artex-global && ARTEX_COMPRESS=off ./build.sh --target linux/amd64
@@ -84,7 +86,7 @@ cd artex-global && ARTEX_COMPRESS=off ./build.sh --target linux/amd64
 - Cancellation: `context.Context` first everywhere; long runs use `context.WithCancelCause` plus a named `agent.AbortCause`; read it back with `agent.AbortReason(ctx)`.
 - Concurrency: goroutine-per-role with `WaitGroup`/routine registry; `sync.RWMutex` over lifecycle state, `sync.Map`/`atomic` for hot counters; channel + timer debounce (800 ms planner wake) instead of polling.
 - Dependency injection: constructors take explicit deps; optional wiring via `Set*` methods; DB-backed overrides are package-level function variables (`agent.ToolAugment`, `agent.ToolResolve`, `agent.PromptOverride`, `agent.WrapupOverride`, …) assigned once in `server.New`.
-- Adding an external tool: a TOML manifest in `manifest/builtin/` plus a golden case under `tests/go/manifest/testdata/golden/` (`TestEveryManifestHasAGoldenCase` fails otherwise). Adding a DB-exposed tool: seed in `agent/toolcatalog.go`, handler stays in code.
+- Adding an external tool: a TOML manifest in `manifest/builtin/` plus a golden case under `artex-global/tests/go/manifest/testdata/golden/` (`TestEveryManifestHasAGoldenCase` fails otherwise). Adding a DB-exposed tool: seed in `agent/toolcatalog.go`, handler stays in code.
 - Adding a runtime toggle: a `setting*` constant in `server/manager.go` + row in the `settings` table, read per run.
 
 **Frontend**
@@ -98,6 +100,7 @@ cd artex-global && ARTEX_COMPRESS=off ./build.sh --target linux/amd64
 - `artex-global/cmd/artex/main.go`, `server/server.go` (route table at `Handler()`), `server/engine.go`, `server/manager.go`, `server/task_llm.go` — process wiring and orchestration semantics.
 - `artex-global/agent/planner.go`, `agent/worker.go`, `agent/tools.go`, `agent/toolcatalog.go`, `agent/assembly.go`, `agent/cancelcause.go` — agent behavior and tool contract.
 - `artex-global/db/exploration.go`, `db/assets.go`, `db/db.go`, `db/schema.sql` — graph invariants and migration.
+- `artex-global/db/knowledge.go`, `db/reflection.go`, `db/scrub.go`, `agent/tools_memory.go`, `server/memory.go` — knowledge base and reflection pool; protected by tests that prove task isolation and scrubbing, so keep those passing.
 - `artex-global/intercept/intercept.go`, `guard/guard.go`, `scope/scope.go` — authorization boundary; treat as protected surfaces.
 - `artex-global/config/config.go` — `config.json` + `ARTEX_CONFIG` / `ARTEX_PG_DSN` / `ARTEX_SKILL_DIR`; no built-in DSN fallback, startup fails loudly.
 - `deployment/provenance.json` — machine-rewritten by `./lab primary`; never hand-edit.
@@ -116,19 +119,19 @@ cd artex-global && ARTEX_COMPRESS=off ./build.sh --target linux/amd64
 
 - **Go**: stdlib `testing` only (no testify/gomock). White-box tests stay beside their package (they call unexported functions); black-box `package foo_test` tests live in `artex-global/tests/go/{manifest,scope,useragent,nativeproxy,config}/`. Patterns: table-driven cases with `httptest.NewRequest`/`NewRecorder`, `t.TempDir()`, `t.Setenv`, `t.Cleanup` registered first so it runs last, `pg_advisory_lock` per package.
 - **Python**: stdlib `unittest`; `tests/python/{test_lab,test_guest_start,test_export_traces}.py` load scripts by path (`SourceFileLoader` / `sys.path`), synthesize fixtures inline, and touch no deployment state.
-- **Web**: Vitest + jsdom + Testing Library; all tests live in `artex-global/web/tests/` (mirrors `src/`, imports via `@/…`; `vitest.config.ts` includes only `tests/**/*.test.ts(x)`); `vi.mock` for `next-intl`, `sonner`, `@/lib/api`. Go white-box tests stay beside their package because they call unexported symbols; everything that can be black-box is central (`tests/go/`, `tests/python/`, `web/tests/`).
-- **Detections**: bash drivers under `artex-global/detections/tests/` (8 suites + 3 gates, Docker-only); `run-all.sh` locally, `detections.yml` in CI.
+- **Web**: Vitest + jsdom + Testing Library; all tests live in `artex-global/web/tests/` (mirrors `src/`, imports via `@/…`; `vitest.config.ts` includes only `tests/**/*.test.ts(x)`); `vi.mock` for `next-intl`, `sonner`, `@/lib/api`. Go white-box tests stay beside their package because they call unexported symbols; everything that can be black-box is central (`artex-global/tests/go/`, `tests/python/`, `artex-global/web/tests/`).
+- **Detections**: bash drivers under `artex-global/detections/tests/` (8 suites + 3 gates, Docker-only); `run-all.sh` locally, the root `.github/workflows/detections.yml` in CI.
 - **Coverage**: none configured anywhere — quality gates are pass/fail (`go vet`, `go test`, `build:static`, `biome check`, `check-cjk.py`, `check-doc-links.py`).
 - **Verification beyond unit tests**: `python3 deployment/verify_capture.py` (host `tshark` required) and `python3 deployment/verify_reasoning.py` (starts the local model).
 
 ## Traps
 
-- **Root `.gitignore` is deny-by-default** (`/*` plus a short whitelist). `tests/`, `skills/`, `.audit/`, `.upstream-work/`, `state/`, `exports/`, `secrets/` are untracked by design; search tools honoring gitignore silently miss them — pass `gitignore: false`.
+- **Root `.gitignore` is deny-by-default** (`/*` plus a short whitelist). Only `README.md`, `AGENTS.md`, `lab`, `deployment/`, `artex-global/`, `.github/` and `tests/` are published; `.audit/`, `.upstream-work/`, `state/`, `exports/`, `secrets/` and the empty root `skills/` stay untracked by design; search tools honoring gitignore silently miss them — pass `gitignore: false`.
 - **Do not edit vendored/pinned trees as first-party**: `artex-global/third_party/norma/` (nested module), `deployment/cliproxy/` (upstream clone + `core.patch`), `.upstream-work/CLIProxyAPI/` (its own `AGENTS.md`/`CLAUDE.md` are not repo policy).
 - **Generated, never hand-edit**: `server/webui/dist/`, `web/out/`, `web/.next/`, `dist/`, `next-env.d.ts`, `tsconfig.tsbuildinfo`, `web/src/lib/preferences/theme.ts` (generated block), `skills/privesc/reference/{gtfobins,lolbas}.json`.
 - **`web/.gitignore` ignores `*.sh`** inside `web/`; new scripts there are silently untracked.
 - **Secrets and large local data** — never read, print, or copy: `secrets/`, `jwt.key`, `proxy-state/` (secret-bearing strace), `vpn-profiles/`, `.env`, `state/` (PostgreSQL, pcap, strace), `exports/`, `microsandbox/`, root `*.tar.gz` capture archives.
 - **Detection indicators are pinned to source strings** (`enrich/`, `guard/`, `db/schema.sql`, `traffic/`, `cmd/artex/main.go`); changing those values requires updating `detections/indicators/*`, Sigma/Suricata rules, and the ATT&CK layer or CI goes red.
-- **Docs drift**: `artex-global/MAINTAINING.en.md` still describes a retired Korean/Chinese localization pipeline — ignore it; `CONTRIBUTING.en.md` understates gates (`npm run check` and vitest are merge gates now). `docs/features/benchmarks.md` ≡ `scripts/benchmark/README.md` and `docs/features/submission-review.md` ≡ `scripts/submission_review/README.md` — edit both or neither.
-- **Known-broken references**: `tests/run.sh python` calls `pytest`, which is not installed in `.venv` (suites are `unittest`); CI's `cd deployment && python3 -m unittest test_export_traces` points at a file that lives in `tests/python/`.
-- **Operational**: never start two VMs against the shared `state/`; use `./lab stop` rather than a force-kill; `lab` targets the VM name hardcoded at `lab:23`, not the one quoted in `README.md`.
+- **Docs drift**: `CONTRIBUTING.en.md` understates gates (`npm run check` and vitest are merge gates now). `docs/features/benchmarks.md` ≡ `scripts/benchmark/README.md` and `docs/features/submission-review.md` ≡ `scripts/submission_review/README.md` — edit both or neither.
+- **Known-broken references**: `tests/run.sh` uses stdlib `unittest` (pytest is installed system-wide but is not declared anywhere). CI lives in the root `.github/` (GitHub ignores `artex-global/.github/`); every job runs from `artex-global/` via `working-directory`, and the `deployment-scripts` job runs the root `tests/python` suites.
+- **Operational**: never start two VMs against the shared `state/` — `./lab start` refuses while any other running `artex-agentlab-*` sandbox exists; use `./lab stop` rather than a force-kill. `lab` targets the VM name at `lab:23` (also quoted in `README.md`).

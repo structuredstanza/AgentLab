@@ -137,7 +137,7 @@ Upstream provides several methods: an install script (`./install.sh`), precompil
 
 **Concurrency:** the number of worker agents spawned per task is adjustable under "System settings" (default 3).
 
-**Common flags:** `./start.sh -addr :8787 -proxy :8788` — `-addr` is the frontend and API, `-proxy` is the traffic-recording proxy port. `-addr` defaults to `127.0.0.1:8787` (local connections only); pass an explicit bind address such as `:8787` to serve other machines (see "First-run protection" below).
+**Common flags:** `./start.sh -addr :8787 -proxy 127.0.0.1:8788` — `-addr` is the frontend and API, `-proxy` is the traffic-recording proxy port. `-addr` defaults to `127.0.0.1:8787` (local connections only); pass an explicit bind address such as `:8787` to serve other machines (see "First-run protection" below).
 
 ### Target-traffic masking and asset enrichment
 
@@ -186,6 +186,12 @@ ARTEX_EGRESS_CA="$PWD/data/egress/ca.pem" ./artex
   buffered request bodies remain capped at 32 MiB. At most 512 client connections
   are handled concurrently; overload receives `503`. Idle rate windows are
   reclaimed on subsequent traffic.
+
+### Knowledge base and reflections
+
+Each task keeps a **reflection pool**: what it learned about being detected (`opsec`), what was redundant or low-yield (`noise`), what to look for next (`lookfor`), plus `learning` and `mistake` notes. The engine derives reflections from run data at the end of every intent and at task close, and agents add their own with `reflect`; the planner sees a "Recent reflections" block every round and every worker intent receives it, so the next batch starts from what the last one learned. A **knowledge base** holds reusable technique, tool, opsec and indicator notes (`recall`, `knowledge_add`), searched with Postgres full-text search.
+
+Operational safety is enforced in code: writes are scrubbed for credentials, agent-written entries stay private to their task, and promoting an entry to company or global scope is an owner action that replaces the origin task's hosts, IPs and company names with placeholders. `ARTEX_MEMORY=off` disables injection. Details are in [RSI.md](RSI.md).
 
 ### Model selection
 

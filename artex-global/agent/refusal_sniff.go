@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 
 	"github.com/Autumn-27/norma/llm"
@@ -60,17 +59,4 @@ func RefusalInRawResponse(format llm.Format, body []byte) bool {
 		}
 	}
 	return false
-}
-
-type workerSessionSuffixKey struct{}
-
-// WithWorkerSessionSuffix gives a replay a separate transcript instead of
-// resuming the assistant response that triggered it.
-func WithWorkerSessionSuffix(ctx context.Context, suffix string) context.Context {
-	return context.WithValue(ctx, workerSessionSuffixKey{}, suffix)
-}
-
-func workerSessionSuffix(ctx context.Context) string {
-	suffix, _ := ctx.Value(workerSessionSuffixKey{}).(string)
-	return suffix
 }

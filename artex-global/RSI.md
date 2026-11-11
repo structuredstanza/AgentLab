@@ -80,6 +80,48 @@ A future Loop C PR is acceptable only with:
 None of these changes an agent's instructions on its own. Shadow mode exists to
 measure whether retrieval helps before any harness edit is attempted.
 
+## Memory: knowledge base and reflection pool (Loop B)
+
+Two stores feed an agent's working memory. Neither edits a prompt body, a gate
+or a skill; both stay inside Loop B (data an agent may read), never Loop C.
+
+- **Knowledge base** (`knowledge_entries`). Searchable technique, tool, opsec,
+  indicator and playbook notes. Retrieval is Postgres full-text search over
+  title, tags and body. Shortcut: keyword recall only, no semantic search;
+  upgrade to pgvector when an embedding provider is configured.
+- **Reflection pool** (`task_reflections`). What one task learned, per
+  kind: `opsec` (what a defender could see), `noise` (redundant or low-yield
+  work), `lookfor` (leads not chased), `learning`, `mistake`. Two sources: the
+  engine derives them from run data at the end of every intent and at task close
+  (error rate, duplicate requests, no-yield intents, guard denials, defence
+  responses, finding quality, calls per finding, skill misses), and agents add
+  their own with `reflect` before finishing an intent.
+
+Loop closure: the planner prompt carries a "Recent reflections" block every
+round and each worker intent receives the same block, so the next batch sees
+what the last one learned. At task start the knowledge hits for the task name
+and goal are added to the code-owned memory block next to the lesson block.
+Everything rendered is flattened to one line, length capped and framed as data
+from earlier work, because it can contain target-controlled text.
+
+Operational security rules, all enforced in code:
+
+1. Every write is scrubbed for credentials (bearer tokens, key=value secrets,
+   JWTs, cloud keys, private keys, URL userinfo, cookies, long opaque blobs).
+2. Agent-written entries are task-private candidates. A candidate never leaves
+   its task, so nothing crosses an engagement until the owner promotes it.
+3. Promotion to company or global scope is an owner action and re-scrubs the
+   entry with the origin task's scope identifiers (hosts, IPs, company names)
+   replaced by `<target>`, `<ip>` and `<email>`. The response reports how many
+   redactions were made.
+4. An agent can never set `adopted`; status changes stay owner actions, as for
+   lessons.
+5. Per-task caps (50 agent knowledge entries, 300 reflections) and field length
+   caps bound noise. Overflow is an error, not a silent drop.
+
+Flag: `ARTEX_MEMORY=off|inject` (default `inject`), read per task-bundle build.
+Deleting a task deletes its task-scoped knowledge and reflections.
+
 ## Credits
 
 The admission rule (no lesson without cue, action, and evidence) and the

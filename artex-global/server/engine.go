@@ -1231,9 +1231,28 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 	}
 	log.Printf("[worker %s] task %s intent #%d ended: %s (wrote back %s)", name, t.ID, intent.ID, state, wrote)
+	// End-of-batch reflections, before the planner is woken so the next round
+	// already sees them. Bounded and log-only: never changes the outcome.
+	e.deriveIntentReflections(t.ID, intent.ID)
 	e.touch(t.ID)
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true
+}
+
+// deriveIntentReflections records the deterministic end-of-batch reflections of
+// one intent after its terminal state is persisted. Best-effort by design: it
+// runs on a bounded context, logs only, and can never change the intent
+// outcome or hold up shutdown for more than that budget.
+func (e *Engine) deriveIntentReflections(taskID string, intentID int64) {
+	tid, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := e.m.PG().DeriveIntentReflections(ctx, tid, intentID); err != nil {
+		log.Printf("[memory] intent reflection derivation failed for task %s intent #%d: %v", taskID, intentID, err)
+	}
 }
 
 // runDetachedIntent runs one paused intent OUTSIDE the worker pool in its own

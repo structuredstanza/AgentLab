@@ -35,6 +35,7 @@ type MainAgent struct {
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	mem             MemoryStore                            // knowledge base (nil = recall/knowledge_add refuse)
 }
 
 // SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
@@ -86,6 +87,10 @@ func (m *MainAgent) SetWebSearch(o WebSearchOpts) { m.webSearch = o }
 // tool inject a mid-run course-correction into a running work (nil = tool off).
 func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.steerWork = fn }
 
+// SetMemory wires the task's knowledge base into the main agent's tool set
+// (recall / knowledge_add). nil = those tools refuse.
+func (m *MainAgent) SetMemory(mem MemoryStore) { m.mem = mem }
+
 // mainAgentDefaultTmpl is the built-in EDITABLE body (segment [A]) of the main agent
 // prompt, seeded into agent_prompts. Goal is a {{.Goal}} template var; the middle
 // Output-spec tail is code-owned (artifactSpec), appended after rendering.
@@ -128,6 +133,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		tsx.SetAssetStore(as, as.Companies())
 	}
 	tsx.SetTaskID(taskID)
+	tsx.SetMemory(m.mem) // recall / knowledge_add (nil store = they refuse)
 	tsx.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
 	tsx.SetNotify(notify)         // Generic wake-up (write operations without a dedicated callback go through this path, debounced)
 	tsx.SetResumeTask(resume)     // set_goals adds a new goal → moves completed/paused tasks back to running

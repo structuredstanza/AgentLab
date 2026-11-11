@@ -90,6 +90,12 @@ type Worker struct {
 	// the rendered system prompt. Empty = off. It is data, not instructions:
 	// the server renders it from outcome records and sets it before the run.
 	lessonsBlock string
+	// mem is the task's knowledge base + reflection pool, forwarded into the
+	// run's ToolSet (recall / knowledge_add / reflect). nil = they refuse.
+	mem MemoryStore
+	// reflections, when set, supplies the per-run "Recent reflections" block
+	// (db.RenderReflections bound to this task), appended to the intent text.
+	reflections func(ctx context.Context) string
 }
 
 // WorkerSessionID returns the stable transcript key used by a worker intent.
@@ -162,6 +168,17 @@ func (w *Worker) wantConstraints() bool { return w.injectConstraints == nil || w
 // SetLessonsBlock sets the code-owned RSI evidence block (data, not prompt). The
 // server renders it from outcome records and is never editable through the prompt UI.
 func (w *Worker) SetLessonsBlock(block string) { w.lessonsBlock = block }
+
+// SetMemory wires the task's knowledge base + reflection pool into this run's
+// ToolSet (recall / knowledge_add / reflect). nil = those tools refuse.
+func (w *Worker) SetMemory(m MemoryStore) { w.mem = m }
+
+// SetReflectionsProvider supplies the per-run reflections block (the server binds
+// db.RenderReflections to this task). Its output is data, capped and framed by
+// reflectionsBlock, and appended to the intent text. nil = off.
+func (w *Worker) SetReflectionsProvider(fn func(ctx context.Context) string) {
+	w.reflections = fn
+}
 
 // SetRunTimeout configures the per-intent wall-clock budget for the main
 // exploration (0 = unlimited). When it fires, the SDK settlement phase still runs
@@ -332,12 +349,25 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
+// workerMemoryGuidance is a code-owned tail appended to every worker system
+// prompt: quiet, non-destructive operation and the memory habits that keep later
+// runs from repeating this one. Not stored, not editable.
+const workerMemoryGuidance = "\n\n**Working quiet (opsec and noise)**:\n" +
+	"- Prefer passive, low-volume steps first: read facts, traffic and memory before touching the target.\n" +
+	"- Never repeat an identical request; a copy will not answer what the first did not.\n" +
+	"- On 429 / 403 / captcha / WAF back off or change approach; never push harder.\n" +
+	"- When defences react, finish the documented bypass checks, then stop escalating; record it and move on.\n" +
+	"- Keep proofs small and reversible; state-changing requests only as the testing-bounds gate allows. No restarts or denial of service.\n" +
+	"- Before finishing, call reflect once per applicable kind: opsec (what triggered defences), noise (wasted effort), lookfor (next steps).\n" +
+	"- Call recall before re-deriving a known technique.\n" +
+	"- Never put credentials or target data in knowledge_add; store the reusable technique."
+
 func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + langDirective()
+	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + workerMemoryGuidance + langDirective()
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
@@ -360,8 +390,12 @@ func intentAssetIDs(intent *db.Node) []int64 {
 	return p.AssetIDs
 }
 
-func renderIntentTask(intent *db.Node) string {
-	return fmt.Sprintf("\n\n[The intent you were given (your only task this run: do just this one, produce facts only, stop when done)]:\n%s\nintent id: %d (pass it when writing back to record_fact / report_finding)", string(intent.Payload), intent.ID)
+// renderIntentTask formats the claimed intent. It is appended to the worker's SYSTEM
+// prompt (see sysBody in Run), not the user turn. extra carries the per-run
+// reflections block: target-influenced text, so it must arrive already flattened and
+// framed as data (db.RenderReflections does both); empty when no provider is wired.
+func renderIntentTask(intent *db.Node, extra string) string {
+	return fmt.Sprintf("\n\n[The intent you were given (your only task this run: do just this one, produce facts only, stop when done)]:\n%s\nintent id: %d (pass it when writing back to record_fact / report_finding)", string(intent.Payload), intent.ID) + extra
 }
 
 // renderWorkerGraphOverview folds the global situational snapshot into the worker's
@@ -409,6 +443,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	tsx := NewToolSet(ts, name)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
+	tsx.SetMemory(w.mem) // recall / knowledge_add / reflect (nil store = they refuse)
 	coverageEnabled := as == nil || as.CoverageEnabled(taskID)
 	tsx.SetCoverageEnabled(coverageEnabled)
 	if as != nil {
@@ -446,7 +481,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		sysBody += constraintBlock(ts) // Operation constraints (if any) are injected into the system prompt, and the worker strictly complies with them during execution
 	}
 	// Intent block → intent-anchored asset block → launch instruction are appended in order to the end of the system prompt (same append method as constraintBlock).
-	sysBody += renderIntentTask(intent)
+	sysBody += renderIntentTask(intent, reflectionsBlock(ctx, w.reflections))
 	if as != nil {
 		if ids := intentAssetIDs(intent); len(ids) > 0 {
 			if assets, err := as.GetByIDs(ids); err == nil && len(assets) > 0 {
@@ -521,7 +556,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	}
 	if w.tx != nil { // persist raw LLM conversation; one file per worked intent
 		opts.Transcript = w.tx
-		opts.SessionID = WorkerSessionID(ts.ID(), intent.ID) + workerSessionSuffix(ctx)
+		opts.SessionID = WorkerSessionID(ts.ID(), intent.ID)
 	}
 	intentID := intent.ID
 	emitWrap := func(r db.Activity) {
