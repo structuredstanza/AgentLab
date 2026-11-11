@@ -8,6 +8,10 @@ The upstream ARTEX project's per-version release history (0.3.x and earlier) and
 
 ## [Unreleased]
 
+### Deployment
+
+- Stop the VM from running whatever the image was built with. `lab start` rebuilds the application into `deployment/guest-dist/` (frontend export plus the `embedui` binary, the skills, `guest-start.py` and `guest-export.py`) whenever a source file is newer than that build, and the directory is mounted read-only at `/dist`. The supervisor copies the binary and syncs the skills into `/state/skills` at every start, so a code, skill or supervisor change reaches the VM on the next start. A skill deleted upstream is removed; a skill created in the UI is kept. `./lab build` forces the build without starting the VM, and `lab start` names the recreate command when a sandbox predates the mount. The image's copies remain only as the fallback for such a sandbox.
+
 ### Knowledge base, reflection pool and storage
 
 - Add a knowledge base and a reflection pool (`knowledge_entries`, `task_reflections`). Agents get `recall`, `knowledge_add` and `reflect`; the engine derives reflections at the end of every intent and at task close (tool error rate, duplicate requests, no-yield intents, guard denials, defence responses, finding quality, calls per finding, skill misses). The planner sees a Recent reflections block every round and each worker intent receives it, so the next batch starts from what the last one learned. Retrieval is Postgres full-text search; semantic recall waits for an embedding provider. `ARTEX_MEMORY=off|inject` (default `inject`); see `RSI.md`.

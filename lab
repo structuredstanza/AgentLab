@@ -245,8 +245,67 @@ def resize_state(gb, confirmed):
     print(f'{NAME} recreated with a {label} /state quota; run ./lab start')
 
 
+GUEST_DIST = ROOT / 'deployment/guest-dist'
+ARTEX_SRC = ROOT / 'artex-global'
+# Inputs of the guest build. Generated trees (out/, dist/, node_modules) are
+# skipped: a build rewrites them, so counting them would make every check stale.
+BUILD_INPUTS = [ARTEX_SRC / name for name in (
+    'cmd', 'agent', 'db', 'manifest', 'server', 'skills', 'web/src', 'web/messages',
+    'go.mod', 'go.sum', 'build.sh', 'web/package.json', 'web/package-lock.json',
+)] + [ROOT / 'deployment/guest-start.py', ROOT / 'deployment/guest-export.py']
+BUILD_SKIP = {'node_modules', '.next', 'out', 'dist', 'graphify-out', '__pycache__'}
+
+
+def newest_build_input():
+    newest = 0.0
+    for path in BUILD_INPUTS:
+        if path.is_dir():
+            for root, dirs, files in os.walk(path):
+                dirs[:] = [d for d in dirs if d not in BUILD_SKIP]
+                for name in files:
+                    newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+        elif path.exists():
+            newest = max(newest, os.path.getmtime(path))
+    return newest
+
+
+def guest_dist_stale(binary=GUEST_DIST / 'artex'):
+    """True when the guest build is missing or older than any source it is built from."""
+    try:
+        built = os.path.getmtime(binary)
+    except OSError:
+        return True
+    return newest_build_input() > built
+
+
+def build_guest_dist(force=False):
+    """Build the binary and stage skills and guest scripts for the /dist mount.
+
+    `lab start` calls this, so the VM runs the current source rather than whatever
+    the image baked in, and a source change rebuilds everything on the next start.
+    """
+    if not force and not guest_dist_stale():
+        return GUEST_DIST
+    GUEST_DIST.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, ARTEX_COMPRESS='off', ARTEX_SKIP_NPM_CI='1',
+               ARTEX_OUTPUT=str(GUEST_DIST / 'artex'))
+    subprocess.run([str(ARTEX_SRC / 'build.sh')], env=env, check=True)
+    shutil.rmtree(GUEST_DIST / 'skills', ignore_errors=True)
+    shutil.copytree(ARTEX_SRC / 'skills', GUEST_DIST / 'skills')
+    for name in ('guest-start.py', 'guest-export.py'):
+        shutil.copy2(ROOT / 'deployment' / name, GUEST_DIST / name)
+    return GUEST_DIST
+
+
+def guest_file(path):
+    """True when the running guest has path (the /dist mount is present)."""
+    return subprocess.run([str(MSB), 'exec', '--no-stdin', NAME, '--', 'test', '-f', path],
+                          capture_output=True).returncode == 0
+
+
 def start(vpn=None, quota_gb=None):
     start_provider_proxy()
+    build_guest_dist()
     for name in other_running_agentlab():
         raise RuntimeError(f'Stop the previous {name} VM gracefully before sharing its persistent state')
     result = subprocess.run([str(MSB), 'inspect', NAME, '--format', 'json'],
@@ -255,6 +314,9 @@ def start(vpn=None, quota_gb=None):
         create_sandbox(state_quota_mb(quota_gb))
     elif json.loads(result.stdout)['status'].lower() != 'running':
         msb('start', NAME)
+    if not guest_file('/dist/artex'):
+        raise RuntimeError(f'{NAME} predates the /dist mount that carries the current build; '
+                           'recreate it with ./lab resize-state <GB> --yes (state/ is kept)')
     healthy = True
     try:
         api('/api/health')
@@ -265,7 +327,7 @@ def start(vpn=None, quota_gb=None):
             raise RuntimeError('ARTEX is already running without the requested VPN; run ./lab stop and start again with --vpn')
     else:
         stage_vpn(vpn)
-        msb('exec', '-d', NAME, '--', 'python3', '/opt/agentlab/guest-start.py')
+        msb('exec', '-d', NAME, '--', 'python3', '/dist/guest-start.py')
         deadline = time.monotonic() + 120
         while True:
             try:
@@ -377,7 +439,7 @@ if path.exists():
         command = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\\0')
     except FileNotFoundError:
         command = []
-    if b'/opt/agentlab/guest-start.py' in command:
+    if b'/opt/agentlab/guest-start.py' in command or b'/dist/guest-start.py' in command:
         try:
             os.kill(pid, 15)
         except ProcessLookupError:
@@ -541,8 +603,9 @@ def export():
         guest('pg_dump', '-h', '/run/postgresql', '-U', 'postgres', '-d', 'artex', '-Fc', stdout=dump)
     guest('sync')
     with (raw / 'capture-export.stderr').open('w') as errors:
+        exporter = '/dist/guest-export.py' if guest_file('/dist/guest-export.py') else '/opt/agentlab/guest-export.py'
         proc = subprocess.Popen([str(MSB), 'exec', '--no-stdin', NAME, '--',
-                                 'python3', '/opt/agentlab/guest-export.py'],
+                                 'python3', exporter],
                                 stdout=subprocess.PIPE, stderr=errors)
         try:
             extract_capture_archive(proc.stdout, raw)
@@ -599,6 +662,7 @@ def main():
     sub = parser.add_subparsers(dest='action', required=True)
     for name in ('stop', 'status', 'export', 'primary'):
         sub.add_parser(name)
+    sub.add_parser('build', help='Rebuild the guest binary, skills and scripts that /dist carries')
     boot = sub.add_parser('start', help='Start the VM, optionally through an OpenVPN profile')
     boot.add_argument('--vpn', metavar='PROFILE',
                       help='OpenVPN .ovpn/.conf to bring up before capture; egress is refused if the tunnel drops')
@@ -612,6 +676,9 @@ def main():
     args = parser.parse_args()
     if args.action == 'start':
         start(args.vpn, args.state_quota_gb)
+    elif args.action == 'build':
+        build_guest_dist(force=True)
+        print(json.dumps({'guest_dist': str(GUEST_DIST), 'stale': guest_dist_stale()}))
     elif args.action == 'resize-state':
         resize_state(args.gb, args.yes)
     elif args.action == 'stop':

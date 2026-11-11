@@ -19,13 +19,16 @@ The current ARTEX upstream for future selective imports is [BaaRai/ARTEX](https:
 Run from this directory:
 
 ```sh
-./lab start       # Create or restart the VM, start services, enable capture
+./lab start       # Build the guest from source if anything changed, then start the VM and capture
 ./lab start --vpn ~/engagement.ovpn   # Same, but egress through an OpenVPN profile first
+./lab build       # Force that build without starting the VM
 ./lab status      # VM details and effective ARTEX settings
 ./lab primary     # Select/verify the installed local thinking model, without paid fallbacks
 ./lab export      # Consistent database rows + backups, artifact snapshot, training export
 ./lab stop        # Gracefully stop ARTEX, flush tcpdump, stop PostgreSQL, then stop VM
 ```
+
+The guest never runs what its image was built with. `lab start` rebuilds `artex-global` (frontend export plus the `embedui` binary) into `deployment/guest-dist/` whenever a source file, skill or guest script is newer than that build, and the directory is mounted read-only at `/dist`. The supervisor copies the binary and syncs the skills from there at every start, so a code, skill or `guest-start.py` change reaches the VM on the next `./lab start` and nothing baked into the image can go stale. Skills created in the UI live in `/state/skills` and survive that sync; a skill deleted from the repository is removed. The image's own copies are only the fallback for a sandbox created before the `/dist` mount existed, which `lab start` reports and `./lab resize-state <GB> --yes` recreates.
 
 ### Optional OpenVPN egress
 
@@ -86,7 +89,7 @@ Provider-reported **5-hour** and **7-day** allocation windows, when available, a
 ./lab exec -- bash -lc 'apt-get update && apt-get install -y python3-venv'
 ```
 
-Python 3, Node.js 22, Chromium/Playwright, Git, curl, jq, ripgrep, nmap and DNS/network tools are installed. Guest root can install task-specific packages. Rootfs changes survive ordinary stop/start. For rebuildable additions, update `deployment/Dockerfile` and rebuild the image rather than relying only on mutable guest changes. Put files that must be exported under `/state/artex` (ARTEX task workspaces already live there); arbitrary `/tmp` or `/root` contents are not copied by `lab export`.
+Python 3, Node.js 22, Chromium/Playwright, Git, curl, jq, ripgrep, nmap and DNS/network tools are installed. Guest root can install task-specific packages. Rootfs changes survive ordinary stop/start. ARTEX itself, its skills and `guest-start.py` are not part of the rootfs: `lab start` builds them from this repository into `deployment/guest-dist/` and the guest runs them from the read-only `/dist` mount, so update the source and start again. Rebuild the image (`deployment/Dockerfile`) only for system packages or toolchain changes. Put files that must be exported under `/state/artex` (ARTEX task workspaces already live there); arbitrary `/tmp` or `/root` contents are not copied by `lab export`.
 
 Chromium was exercised successfully headless inside the VM. Guest-root launches need `--no-sandbox`; the outer VM supplies the host-isolation boundary. Do not use this image as an ordinary privileged host container.
 

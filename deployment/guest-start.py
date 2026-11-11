@@ -48,8 +48,15 @@ host    all   all   127.0.0.1/32  scram-sha-256
 ARTEX_DATA = f"{STATE}/artex"
 CAPTURES = f"{STATE}/captures"
 ADMIN_SECRET = "/run/secrets/agentlab-admin"
-IMAGE_BIN = "/opt/artex/artex"
-SKILLS_DIR = "/opt/artex/skills"
+DIST = "/dist"
+# ./lab build stages the host build here (read-only mount). The image's baked
+# copies are only the fallback for a sandbox created before the mount existed.
+DIST_BIN = f"{DIST}/artex"
+IMAGE_BIN = DIST_BIN if os.path.exists(DIST_BIN) else "/opt/artex/artex"
+# Skills must stay writable (create_skill, upload), so the build is synced into
+# /state at every start instead of being read from the mount.
+SKILLS_DIR = f"{STATE}/skills" if os.path.isdir(f"{DIST}/skills") else "/opt/artex/skills"
+SKILL_MANIFEST = f"{STATE}/skills/.guest-dist.json"
 BROWSERS_DIR = "/opt/ms-playwright"
 # Guest-local capture proxy; not the host native provider proxy, which also listens on 8788.
 ARTEX_ARGS = ["-addr", ":8787", "-proxy", "127.0.0.1:8788", "-data", ARTEX_DATA]
@@ -458,9 +465,48 @@ def app_env(dsn, admin_pw):
     return env
 
 
+def sync_skills(src=f"{DIST}/skills", dst=SKILLS_DIR, manifest=SKILL_MANIFEST):
+    """Copy the staged build's skills into the writable skill directory.
+
+    Files the previous sync wrote and the build no longer has are removed, so a
+    renamed or deleted skill cannot linger. Skills created in the UI are absent
+    from the manifest and are left alone.
+    """
+    if not os.path.isdir(src):
+        return 0
+    os.makedirs(dst, exist_ok=True)
+    try:
+        with open(manifest) as f:
+            previous = set(json.load(f))
+    except (OSError, ValueError):
+        previous = set()
+    current = set()
+    for root, _, files in os.walk(src):
+        for name in files:
+            rel = os.path.relpath(os.path.join(root, name), src)
+            current.add(rel)
+            target = os.path.join(dst, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(os.path.join(src, rel), target)
+    for rel in previous - current:
+        path = os.path.join(dst, rel)
+        if os.path.isfile(path):
+            os.remove(path)
+        parent = os.path.dirname(path)
+        while parent.startswith(dst + os.sep):
+            try:
+                os.rmdir(parent)
+            except OSError:
+                break
+            parent = os.path.dirname(parent)
+    with open(manifest, "w") as f:
+        json.dump(sorted(current), f)
+    return len(current)
+
+
 def install_binary():
     if not os.path.exists(IMAGE_BIN):
-        raise Fatal(f"{IMAGE_BIN} missing from image")
+        raise Fatal(f"{IMAGE_BIN} missing: run ./lab build and recreate the sandbox with ./lab resize-state")
     dst = f"{RUNTIME}/artex"
     shutil.copyfile(IMAGE_BIN, dst + ".new")
     os.chmod(dst + ".new", 0o755)
@@ -809,6 +855,8 @@ def main():
         dsn = pg_provision(bindir)
         binary, digest = install_binary()
         sess.m["artex"]["sha256"] = digest
+        if synced := sync_skills():
+            log(f"skills: {synced} files synced from {DIST}/skills into {SKILLS_DIR}")
         env = app_env(dsn, admin_password())
         vpn = start_vpn(sess)
         egress = start_egress(sess, binary)

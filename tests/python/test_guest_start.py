@@ -19,6 +19,38 @@ supervisor = importlib.util.module_from_spec(spec)
 loader.exec_module(supervisor)
 
 
+class SkillSyncTests(unittest.TestCase):
+    """Skills come from the host build, but UI-created ones must survive."""
+
+    def test_build_skills_replace_old_files_and_keep_operator_skills(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src, dst = root / 'dist-skills', root / 'state-skills'
+            (src / 'recon').mkdir(parents=True)
+            (src / 'recon' / 'SKILL.md').write_text('v2')
+            (dst / 'recon').mkdir(parents=True)
+            (dst / 'recon' / 'SKILL.md').write_text('v1')
+            (dst / 'operator').mkdir()
+            (dst / 'operator' / 'SKILL.md').write_text('created in the UI')
+            (dst / 'gone').mkdir()
+            (dst / 'gone' / 'SKILL.md').write_text('removed upstream')
+            manifest = dst / '.guest-dist.json'
+            manifest.write_text(json.dumps(['recon/SKILL.md', 'gone/SKILL.md']))
+
+            self.assertEqual(supervisor.sync_skills(str(src), str(dst), str(manifest)), 1)
+
+            self.assertEqual((dst / 'recon' / 'SKILL.md').read_text(), 'v2')
+            self.assertFalse((dst / 'gone').exists(), 'a skill deleted upstream must not linger')
+            self.assertEqual((dst / 'operator' / 'SKILL.md').read_text(), 'created in the UI')
+            self.assertEqual(json.loads(manifest.read_text()), ['recon/SKILL.md'])
+
+    def test_absent_build_leaves_the_skill_directory_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dst = Path(tmp) / 'state-skills'
+            self.assertEqual(supervisor.sync_skills(str(Path(tmp) / 'missing'), str(dst), str(dst / 'm.json')), 0)
+            self.assertFalse(dst.exists())
+
+
 class SupervisorCleanupTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

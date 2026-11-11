@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -216,6 +217,33 @@ class SharedStateGuardTests(unittest.TestCase):
         with mock.patch.object(lab.subprocess, 'run', return_value=listing):
             with self.assertRaisesRegex(RuntimeError, 'Could not list'):
                 lab.other_running_agentlab()
+
+
+class BuildFreshnessTests(unittest.TestCase):
+    """The guest runs the host build, so a stale check that never fires would
+    silently serve the binary the image baked in."""
+
+    def test_missing_binary_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(lab.guest_dist_stale(Path(tmp) / 'artex'))
+
+    def check(self, source_time, binary_time):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'main.go'
+            source.write_text('package main')
+            binary = root / 'artex'
+            binary.write_bytes(b'bin')
+            os.utime(source, (source_time, source_time))
+            os.utime(binary, (binary_time, binary_time))
+            with mock.patch.object(lab, 'BUILD_INPUTS', [source]):
+                return lab.guest_dist_stale(binary)
+
+    def test_binary_newer_than_every_input_is_current(self):
+        self.assertFalse(self.check(1000, 2000))
+
+    def test_newer_input_makes_the_build_stale(self):
+        self.assertTrue(self.check(3000, 2000))
 
 
 class StateStorageTests(unittest.TestCase):

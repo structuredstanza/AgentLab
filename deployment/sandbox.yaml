@@ -13,6 +13,10 @@ security: default
 # volume with `./lab resize-state <GB>`.
 mounts:
   - /mnt/Research/AgentLab/state:/state:quota=153600
+  # The host build (`./lab build`, rebuilt automatically by `lab start` when a
+  # source changed): binary, skills and guest scripts. The guest runs these, so
+  # the image never needs a manual binary swap and nothing baked in can go stale.
+  - /mnt/Research/AgentLab/deployment/guest-dist:/dist:ro
   - /mnt/Research/AgentLab/secrets/admin-password:/run/secrets/agentlab-admin:ro
   - /mnt/Research/AgentLab/secrets/native-proxy-token:/run/secrets/agentlab-native-proxy:ro
 network:
