@@ -67,12 +67,14 @@ func NewWebFetch(cfg WebFetchConfig) CoreTool {
 
 const maxFetchBytes = 2 << 20 // 2 MiB
 
-// newFetchClient returns an HTTP client honoring the proxy / TLS config.
+// newFetchClient returns an HTTP client honoring the proxy / TLS config. The
+// proxy is always explicit: an empty Proxy dials directly and deliberately
+// ignores the ambient HTTP_PROXY/HTTPS_PROXY, because an identity-masking proxy
+// parked in those variables rewrites the request headers an API backend
+// validates (Brave Search answers 422 to the browser Accept such a proxy forces).
 func newFetchClient(cfg WebFetchConfig) *http.Client {
-	if cfg.Proxy == "" && !cfg.InsecureTLS && cfg.CACert == "" {
-		return &http.Client{}
-	}
-	tr := &http.Transport{}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil
 	if cfg.Proxy != "" {
 		if pu, err := url.Parse(cfg.Proxy); err == nil {
 			tr.Proxy = http.ProxyURL(pu)
