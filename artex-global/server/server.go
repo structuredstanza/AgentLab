@@ -188,6 +188,10 @@ type Server struct {
 	// learned about which backends are out of credit / rate-limited.
 	llmHealth *llmpool.Registry
 
+	// nativeSelected remembers the last persisted native routing selection per
+	// task/conversation session so an unchanged selection is not re-logged per call.
+	nativeSelected sync.Map
+
 	// Explicit task chains use one task-scoped dynamic provider shared by goals,
 	// planner, workers, and the main agent. Bundles are stable; their runtime reads
 	// the persisted current profile at every new LLM call.

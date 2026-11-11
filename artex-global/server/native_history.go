@@ -162,8 +162,15 @@ func (p *nativeHistoryProvider) prepare(ctx context.Context, req llm.CompletionR
 	}
 	// Actual immutable provider selection, not a foreign envelope, is authority.
 	// Persist before dispatch so recording-off and process resume remain safe.
-	if err := p.s.appendNativeHistory(ctx, scope, selection); err != nil {
-		return ctx, req, nativeHistoryError("cannot persist selected provider")
+	// Only a change of selection is a new fact: handoff reads the set of distinct
+	// selections, so repeating one on every model call only floods the activity log.
+	key := fmt.Sprintf("%d/%d/%s", scope.explorationID(), scope.conversationID, sessionID)
+	fingerprint := fmt.Sprintf("%v|%s", selection.Identity, selection.ThinkingType)
+	if last, _ := p.s.nativeSelected.Load(key); last != fingerprint {
+		if err := p.s.appendNativeHistory(ctx, scope, selection); err != nil {
+			return ctx, req, nativeHistoryError("cannot persist selected provider")
+		}
+		p.s.nativeSelected.Store(key, fingerprint)
 	}
 	if err := ctx.Err(); err != nil {
 		return ctx, req, err

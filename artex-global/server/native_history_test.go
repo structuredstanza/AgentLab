@@ -269,4 +269,13 @@ func TestNativeHistoryHandoffPersistsAcrossProviderRotationAndResume(t *testing.
 	if err != nil || stored.ActiveLLMProfileID == nil || *stored.ActiveLLMProfileID != b.ID {
 		t.Fatalf("history rejection poisoned active allocation: %+v %v", stored, err)
 	}
+	// Several model calls ran under two distinct selections (A once, B repeatedly):
+	// an unchanged selection must not add one activity row per call.
+	var selections int
+	if err := s.m.pg.QueryRow(`SELECT count(*) FROM activity WHERE exploration_id=$1 AND kind='llm_native' AND metadata->>'record'='selection'`, task.ExpID).Scan(&selections); err != nil {
+		t.Fatal(err)
+	}
+	if selections != 2 {
+		t.Fatalf("selection rows = %d, want 2 (one per distinct selection)", selections)
+	}
 }
