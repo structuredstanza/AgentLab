@@ -185,6 +185,11 @@ var defaultEnabledTools = []string{
 	"Bash", "WebFetch", "web_search",
 	"shell_open", "shell_send",
 	"Write", "Edit", "MultiEdit",
+	// memory_propose is the curator's only write, and what it stores is durable:
+	// an operator may later promote it into a scope every task reads. Gating it
+	// lets a proposal carrying target-specific detail be vetoed before it is
+	// stored, at a negligible cost - the curator's other tools are reads.
+	"memory_propose",
 }
 
 // New creates an Interceptor backed by d. The rule cache is lazy-loaded on
