@@ -41,6 +41,7 @@ func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 	tools := append(s.m.HostTools(), s.orchestrationTools()...)
 	tools = append(tools, s.findingRetestTools()...)
 	tools = append(tools, s.platformTools()...) // Platform operation tools (create/edit skills/tools/MCP, for Auto use)
+	tools = append(tools, s.curatorTools()...)  // Memory-curation tools, bound to the curator chat agent only
 	custom, err := s.customTools()
 	if err != nil {
 		log.Printf("[custom-tool] failed to load: %v", err)
@@ -513,6 +514,7 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces are unbound from worker by default (one-time)
 	s.seedWorkerReadbackRebind()  // Fix for an old migration that deleted bindings by mistake: re-bind search_all_worker_traces/get_worker_trace/node_detail back to worker (one-time)
 	s.seedMemoryToolBindings()    // Knowledge/reflection tools: give them their default agent bindings on databases seeded before them (one-time)
+	s.seedCuratorTools()          // Memory-curation tools: seeded bound to "curator" only, so no other agent can reach them
 	s.seedAutoReportFindingBinding()
 	s.unbindGoalMetDefault()
 	s.reseedGoalsPrompt()     // Added a "extract operation constraints" step to the goals prompt → existing databases get a new default version appended (one-time)

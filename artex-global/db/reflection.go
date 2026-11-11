@@ -325,3 +325,233 @@ LIMIT $3`, taskID, kinds, limit)
 	}
 	return out, nil
 }
+
+// ReflectionFilter selects reflections for the curation surface. TaskID 0
+// means every task: curation is an owner view, so no visibility rule applies
+// here (an agent still reads only its own task through ListReflections).
+type ReflectionFilter struct {
+	TaskID int64
+	Kinds  []string
+	Source string
+	Query  string
+	Since  *time.Time
+	Limit  int
+	Offset int
+}
+
+// ReflectionTaskCount is one row of the per-task breakdown.
+type ReflectionTaskCount struct {
+	TaskID int64 `json:"task_id"`
+	Count  int   `json:"count"`
+}
+
+// ReflectionStats is the pool's shape for the curation header.
+type ReflectionStats struct {
+	Total    int                   `json:"total"`
+	ByKind   map[string]int        `json:"by_kind"`
+	BySource map[string]int        `json:"by_source"`
+	ByTask   []ReflectionTaskCount `json:"by_task"`
+}
+
+// reflectionWhere builds the shared WHERE clause so the page and its total
+// count can never disagree.
+func (d *DB) reflectionWhere(f ReflectionFilter, tsquery string) (string, []any) {
+	args := []any{}
+	where := []string{}
+	add := func(clause string, v any) {
+		args = append(args, v)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if f.TaskID > 0 {
+		add(`task_id = $%d`, f.TaskID)
+	}
+	if len(f.Kinds) > 0 {
+		add(`kind = ANY($%d::text[])`, f.Kinds)
+	}
+	if f.Source != "" {
+		add(`source = $%d`, f.Source)
+	}
+	if f.Since != nil {
+		add(`created_at >= $%d`, *f.Since)
+	}
+	if tsquery != "" {
+		add(`tsv @@ websearch_to_tsquery('english', $%d)`, tsquery)
+	}
+	if len(where) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(where, " AND "), args
+}
+
+// ListReflectionsPage is the cross-task curation query: the same filters the
+// operator sees, with a stable newest-first order, a page, and the unpaged
+// total. The query reuses MemorySearchTerms, so reflection search and
+// knowledge search agree on what a word means.
+func (d *DB) ListReflectionsPage(ctx context.Context, f ReflectionFilter) ([]Reflection, int, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	tsquery := ""
+	if q := strings.TrimSpace(f.Query); q != "" {
+		tsquery = MemorySearchTerms(q)
+	}
+	whereSQL, args := d.reflectionWhere(f, tsquery)
+	var total int
+	if err := d.QueryRowContext(ctx,
+		`SELECT count(*) FROM task_reflections`+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count reflections: %w", err)
+	}
+	args = append(args, limit, offset)
+	rows, err := d.QueryContext(ctx, `
+SELECT `+reflectionColumns+`
+FROM task_reflections`+whereSQL+fmt.Sprintf(`
+ORDER BY created_at DESC, id DESC
+LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list reflections page: %w", err)
+	}
+	defer rows.Close()
+	out := []Reflection{}
+	for rows.Next() {
+		r, err := scanReflection(rows)
+		if err != nil {
+			return nil, 0, fmt.Errorf("list reflections page: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("list reflections page: %w", err)
+	}
+	return out, total, nil
+}
+
+// GetReflection returns one reflection; sql.ErrNoRows when it does not exist.
+func (d *DB) GetReflection(ctx context.Context, id int64) (Reflection, error) {
+	row := d.QueryRowContext(ctx, `SELECT `+reflectionColumns+` FROM task_reflections WHERE id=$1`, id)
+	r, err := scanReflection(row)
+	if err != nil {
+		return Reflection{}, fmt.Errorf("reflection %d: %w", id, err)
+	}
+	return r, nil
+}
+
+// UpdateReflection patches summary and detail, and only those: kind, source,
+// task and signal are write-time facts, not operator-editable text. The edited
+// text runs the same scrub and task-identifier generalisation as
+// AddReflection, so an edit cannot reintroduce a secret or a target name.
+// DedupeKey is deliberately left alone: it records the row's write-time
+// identity, so an edit can never collide with a sibling observation.
+func (d *DB) UpdateReflection(ctx context.Context, id int64, summary, detail *string) (Reflection, error) {
+	cur, err := d.GetReflection(ctx, id)
+	if err != nil {
+		return Reflection{}, err
+	}
+	if summary != nil {
+		cur.Summary = memoryLine(*summary, reflectionSumMax)
+	}
+	if detail != nil {
+		cur.Detail = memoryBody(*detail, reflectionDetMax)
+	}
+	if cur.Summary == "" {
+		return Reflection{}, fmt.Errorf("empty reflection summary: %w", ErrMemoryInvalid)
+	}
+	memoryScrub(&cur.Summary, &cur.Detail)
+	ids, err := d.TaskScopeIdentifiers(ctx, cur.TaskID)
+	if err != nil {
+		return Reflection{}, err
+	}
+	cur.Summary, _ = ScrubTargetIdentifiers(cur.Summary, ids)
+	cur.Detail, _ = ScrubTargetIdentifiers(cur.Detail, ids)
+	row := d.QueryRowContext(ctx, `
+UPDATE task_reflections SET summary=$2, detail=$3
+WHERE id=$1
+RETURNING `+reflectionColumns, id, cur.Summary, cur.Detail)
+	r, err := scanReflection(row)
+	if err != nil {
+		return Reflection{}, fmt.Errorf("update reflection %d: %w", id, err)
+	}
+	return r, nil
+}
+
+// DeleteReflection removes one row; sql.ErrNoRows when it does not exist.
+func (d *DB) DeleteReflection(ctx context.Context, id int64) error {
+	res, err := d.ExecContext(ctx, `DELETE FROM task_reflections WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("delete reflection %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete reflection %d: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("reflection %d: %w", id, sql.ErrNoRows)
+	}
+	return nil
+}
+
+// ReflectionStats counts the pool by kind, source and task, so the curation
+// view can show what is in it without paging through it.
+func (d *DB) ReflectionStats(ctx context.Context) (ReflectionStats, error) {
+	out := ReflectionStats{
+		ByKind:   map[string]int{},
+		BySource: map[string]int{},
+		ByTask:   []ReflectionTaskCount{},
+	}
+	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM task_reflections`).Scan(&out.Total); err != nil {
+		return ReflectionStats{}, fmt.Errorf("count reflections: %w", err)
+	}
+	for _, g := range []struct {
+		col string
+		dst map[string]int
+	}{
+		{"kind", out.ByKind},
+		{"source", out.BySource},
+	} {
+		rows, err := d.QueryContext(ctx,
+			`SELECT `+g.col+`, count(*) FROM task_reflections GROUP BY `+g.col)
+		if err != nil {
+			return ReflectionStats{}, fmt.Errorf("reflection stats by %s: %w", g.col, err)
+		}
+		for rows.Next() {
+			var k string
+			var n int
+			if err := rows.Scan(&k, &n); err != nil {
+				rows.Close()
+				return ReflectionStats{}, fmt.Errorf("reflection stats by %s: %w", g.col, err)
+			}
+			g.dst[k] = n
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return ReflectionStats{}, fmt.Errorf("reflection stats by %s: %w", g.col, err)
+		}
+		rows.Close()
+	}
+	rows, err := d.QueryContext(ctx, `
+SELECT task_id, count(*) FROM task_reflections
+GROUP BY task_id
+ORDER BY count(*) DESC, task_id`)
+	if err != nil {
+		return ReflectionStats{}, fmt.Errorf("reflection stats by task: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var row ReflectionTaskCount
+		if err := rows.Scan(&row.TaskID, &row.Count); err != nil {
+			return ReflectionStats{}, fmt.Errorf("reflection stats by task: %w", err)
+		}
+		out.ByTask = append(out.ByTask, row)
+	}
+	if err := rows.Err(); err != nil {
+		return ReflectionStats{}, fmt.Errorf("reflection stats by task: %w", err)
+	}
+	return out, nil
+}

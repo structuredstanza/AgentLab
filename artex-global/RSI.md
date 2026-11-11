@@ -139,6 +139,18 @@ Operational security rules, all enforced in code:
 Flag: `ARTEX_MEMORY=off|inject` (default `inject`), read per task-bundle build.
 Deleting a task deletes its task-scoped knowledge and reflections.
 
+Curation (owner side). `/system/memory` browses both stores, edits and promotes
+entries, graduates a reflection into a task-scoped candidate, and previews the
+exact block a task would be injected with (`GET /api/memory/preview`).
+`knowledge_usage` records which entries were read back - start-of-task block,
+per-round block, or an agent's `recall` - so a dead entry is distinguishable
+from a load-bearing one; it is best-effort telemetry and never fails a prompt
+build. The `curator` assistant shares the chat stack and is propose-only: its
+five tools (`memory_search`, `memory_read`, `memory_propose`,
+`reflection_search`, `task_digest`) are bound to that agent alone, and its
+writes are task-scoped candidates, generalised like any other agent write.
+Promotion stays the owner's.
+
 ## Credits
 
 The admission rule (no lesson without cue, action, and evidence) and the

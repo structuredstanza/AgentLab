@@ -1617,3 +1617,153 @@ export interface InterceptExecution {
   seq: number;
   items: Activity[];
 }
+
+// ---- Knowledge base + reflection pool (operator management) ----
+// Mirrors db/knowledge.go: the operator sees every scope, an agent may only
+// write a task-scoped candidate, and promotion is the operator's action.
+export type KnowledgeScope = "global" | "environment" | "company" | "task";
+export type KnowledgeKind = "technique" | "tool" | "opsec" | "indicator" | "playbook" | "lead" | "note";
+export type KnowledgeStatus = "candidate" | "adopted" | "retired";
+export type KnowledgeSource = "operator" | "agent" | "reflection";
+export type KnowledgeSort = "created" | "updated" | "title";
+export type KnowledgeUsageSurface = "task_start" | "round" | "recall" | "chat";
+
+export interface KnowledgeEntry {
+  id: number;
+  scope: KnowledgeScope;
+  company_id?: number;
+  task_id?: number;
+  kind: KnowledgeKind;
+  title: string;
+  body: string;
+  tags: string[];
+  status: KnowledgeStatus;
+  source: KnowledgeSource;
+  origin_task_id?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgePage {
+  entries: KnowledgeEntry[];
+  total: number;
+  count: number;
+  relaxed: boolean;
+  limit: number;
+  offset: number;
+}
+
+export interface KnowledgeStats {
+  total: number;
+  by_scope: Record<string, number>;
+  by_status: Record<string, number>;
+  by_kind: Record<string, number>;
+  by_source: Record<string, number>;
+}
+
+export interface KnowledgeUsageRow {
+  task_id: number;
+  surface: KnowledgeUsageSurface;
+  shown_at: string;
+}
+
+export interface KnowledgeUsage {
+  hits: number;
+  last_used: string; // RFC3339, empty when the entry was never injected
+  usage: KnowledgeUsageRow[];
+}
+
+export interface KnowledgeInput {
+  scope: KnowledgeScope;
+  company_id?: number;
+  task_id?: number;
+  kind: KnowledgeKind;
+  title: string;
+  body: string;
+  tags: string[];
+}
+
+export interface KnowledgePatch {
+  title?: string;
+  body?: string;
+  kind?: KnowledgeKind;
+  tags?: string[];
+  status?: KnowledgeStatus;
+}
+
+export type BulkKnowledgeAction = "promote" | "retire" | "delete" | "adopt";
+
+export interface BulkKnowledgeResult {
+  id: number;
+  ok: boolean;
+  error?: string;
+}
+
+// Query shapes for the two list endpoints; lib/memory-query.ts turns them into
+// query strings so the parameter rules live in one tested place.
+export interface KnowledgeQuery {
+  scope?: KnowledgeScope | "";
+  kind?: KnowledgeKind | "";
+  status?: KnowledgeStatus | "";
+  source?: KnowledgeSource | "";
+  tag?: string;
+  origin_task_id?: number | null;
+  company_id?: number | null;
+  task_id?: number | null;
+  q?: string;
+  created_after?: string; // RFC3339
+  created_before?: string; // RFC3339
+  sort?: KnowledgeSort;
+  order?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}
+
+export type ReflectionKind = "opsec" | "noise" | "lookfor" | "learning" | "mistake";
+
+export interface Reflection {
+  id: number;
+  task_id: number;
+  intent_id?: number;
+  kind: ReflectionKind;
+  source: string; // engine | worker | planner
+  dedupe_key?: string;
+  summary: string;
+  detail: string;
+  signal?: unknown;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface ReflectionPage {
+  reflections: Reflection[];
+  total: number;
+  count: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ReflectionStats {
+  total: number;
+  by_kind: Record<string, number>;
+  by_source: Record<string, number>;
+  by_task: { task_id: number; count: number }[];
+}
+
+export interface ReflectionQuery {
+  task_id?: number | null;
+  kind?: ReflectionKind[] | string; // repeatable on the wire
+  source?: string;
+  q?: string;
+  since?: string; // RFC3339
+  limit?: number;
+  offset?: number;
+}
+
+export interface MemoryPreview {
+  mode: "inject" | "off";
+  start_block: string;
+  round_block: string;
+  knowledge_ids: number[];
+  reflection_ids: number[];
+}

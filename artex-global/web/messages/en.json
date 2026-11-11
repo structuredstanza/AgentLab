@@ -186,7 +186,8 @@
       "tasks": "Tasks",
       "tools": "Tools",
       "traffic": "Traffic",
-      "workspace": "Workspace"
+      "workspace": "Workspace",
+      "memory": "Memory"
     }
   },
   "notFound": {
@@ -3839,6 +3840,188 @@
     "retester": {
       "name": "Vulnerability Retest",
       "description": "Launched manually from a finding's detail view; reads the original evidence and saves an independent retest conclusion."
+    }
+  },
+  "memoryPage": {
+    "title": "Memory",
+    "subtitle": "Knowledge base and reflection pool: what tasks may recall, and what the curator proposed.",
+    "relaxed": "No exact match for the query - showing related entries instead. Narrow the filters or clear the search to see the exact set.",
+    "saved": "Saved.",
+    "deleted": "Deleted.",
+    "demoted": "Moved back to a task-scoped candidate.",
+    "redactions": "Saved. {count} identifiers were generalised.",
+    "cancel": "Cancel",
+    "close": "Close",
+    "empty": "No knowledge entries match these filters.",
+    "loadFailed": "Could not load entries: {msg}",
+    "saveFailed": "Could not save: {msg}",
+    "createFailed": "Could not create the entry: {msg}",
+    "promoteFailed": "Could not promote: {msg}",
+    "demoteFailed": "Could not demote: {msg}",
+    "deleteFailed": "Could not delete: {msg}",
+    "stats": {
+      "total": "Total",
+      "adopted": "Adopted",
+      "candidate": "Candidates",
+      "retired": "Retired",
+      "reflections": "Reflections"
+    },
+    "filter": {
+      "allCompany": "All companies",
+      "allKind": "All kinds",
+      "allScope": "All scopes",
+      "allSource": "All sources",
+      "allStatus": "All statuses",
+      "allTasks": "All tasks",
+      "clear": "Clear filters",
+      "company": "Company",
+      "createdAfter": "Created on or after",
+      "createdBefore": "Created on or before",
+      "originTask": "Origin task id",
+      "scope": "Scope",
+      "search": "Search title and body",
+      "searchReflections": "Search reflections",
+      "since": "Since",
+      "sortCreated": "Created",
+      "sortRelevance": "Relevance",
+      "sortTitle": "Title",
+      "sortUpdated": "Updated",
+      "tag": "Tag",
+      "taskLens": "Task lens"
+    },
+    "column": {
+      "title": "Entry",
+      "status": "Status",
+      "source": "Source",
+      "tags": "Tags",
+      "usage": "Usage",
+      "updated": "Updated",
+      "summary": "Summary",
+      "kind": "Kind",
+      "task": "Task",
+      "created": "Created"
+    },
+    "usage": {
+      "title": "Injection usage",
+      "hint": "Loaded per entry when you ask for it",
+      "load": "Load usage",
+      "loadHint": "Fetch this entry's injection hits and last use",
+      "never": "Never injected",
+      "hits": "{count} hits",
+      "lastUsed": "last used {time}",
+      "surface": {
+        "task_start": "task start",
+        "round": "round",
+        "recall": "recall",
+        "chat": "chat"
+      }
+    },
+    "detail": {
+      "source": "Source",
+      "originTask": "Origin task",
+      "company": "Company",
+      "updated": "updated {time}",
+      "body": "Body",
+      "emptyBody": "(empty)",
+      "edit": "Edit",
+      "editHint": "Edits overwrite the entry in place; only the update time is kept.",
+      "title": "Title",
+      "kind": "Kind",
+      "status": "Status",
+      "tags": "Tags",
+      "tagsPlaceholder": "comma separated tags",
+      "save": "Save changes",
+      "promote": "Promote",
+      "demote": "Demote",
+      "retire": "Retire",
+      "delete": "Delete"
+    },
+    "promote": {
+      "title": "Promote entry",
+      "desc": "Promotion generalises the origin task's identifiers, then makes the entry visible at the chosen scope.",
+      "companyPlaceholder": "Pick a company",
+      "confirm": "Promote"
+    },
+    "demote": {
+      "title": "Demote entry",
+      "desc": "Demotion moves the entry back to a task-scoped candidate. It is visible only inside that task until promoted again.",
+      "taskPlaceholder": "Pick a task",
+      "confirm": "Demote"
+    },
+    "delete": {
+      "title": "Delete entry",
+      "desc": "The entry is removed for good. This cannot be undone.",
+      "confirm": "Delete"
+    },
+    "create": {
+      "title": "New entry",
+      "desc": "Write an adopted entry. The preview runs the scrubber without writing, so you see which identifiers get generalised first.",
+      "preview": "Preview redactions",
+      "previewRedactions": "{count} identifiers would be generalised",
+      "confirm": "Create"
+    },
+    "bulk": {
+      "selected": "{count} selected",
+      "selectAll": "Select every row on this page",
+      "promote": "Promote",
+      "adopt": "Adopt",
+      "retire": "Retire",
+      "delete": "Delete",
+      "clear": "Clear selection",
+      "promoteDesc": "Promote {count} entries to the chosen scope.",
+      "deleteDesc": "Delete {count} entries for good. This cannot be undone.",
+      "results": "Bulk results",
+      "allOk": "{count} entries updated.",
+      "partial": "{ok} updated, {failed} failed.",
+      "ok": "ok",
+      "fail": "failed",
+      "failed": "Bulk action failed: {msg}"
+    },
+    "reflections": {
+      "privateHint": "Reflections stay inside their task until graduated and promoted.",
+      "empty": "No reflections match these filters."
+    },
+    "reflectionDelete": {
+      "desc": "The reflection is removed from its task's pool. This cannot be undone."
+    },
+    "graduate": {
+      "action": "Graduate to knowledge",
+      "title": "Graduate reflection",
+      "step1": "Step 1: this writes a task-scoped candidate for task #{task}.",
+      "step2": "Step 2: nothing is shared yet. The candidate stays inside task #{task} until you promote it from the Knowledge tab.",
+      "confirm": "Create candidate",
+      "created": "Candidate #{id} created for this task.",
+      "failed": "Could not graduate: {msg}"
+    },
+    "preview": {
+      "pickTask": "Pick a task",
+      "load": "Load preview",
+      "modeInject": "injection on",
+      "modeOff": "injection off",
+      "counts": "{knowledge} knowledge entries, {reflections} reflections",
+      "empty": "Pick a task and load the preview to see the memory block it would receive.",
+      "startBlock": "Start block",
+      "roundBlock": "Round block",
+      "none": "(empty)",
+      "knowledgeIds": "Knowledge ids",
+      "reflectionIds": "Reflection ids",
+      "failed": "Could not load the preview: {msg}"
+    },
+    "chat": {
+      "title": "Curator",
+      "toggle": "Curator",
+      "proposesOnly": "The curator reads memory and proposes task-scoped candidates. It cannot adopt or promote - that is your call in the browser.",
+      "empty": "Ask the curator what is worth keeping, or what the pool is missing.",
+      "placeholder": "Message the curator",
+      "send": "Send",
+      "stop": "Stop",
+      "sendFailed": "Could not send: {msg}",
+      "stopFailed": "Could not stop: {msg}"
+    },
+    "tab": {
+      "knowledge": "Knowledge",
+      "reflections": "Reflections",
+      "preview": "Preview"
     }
   }
 }

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // memoryTestDB opens the configured test database and skips without one.
@@ -540,28 +541,28 @@ func TestListKnowledgeRelaxesInsteadOfReturningNothing(t *testing.T) {
 	})
 
 	// Every word is in the entry, so the exact AND pass answers.
-	exact, relaxed, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{Query: word + " retries"})
+	exact, exactTotal, relaxed, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{Query: word + " retries"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if relaxed {
 		t.Fatalf("an exact match was reported as relaxed: %+v", exact)
 	}
-	if len(exact) != 1 || exact[0].ID != entry.ID {
-		t.Fatalf("exact AND pass wrong: %+v", exact)
+	if len(exact) != 1 || exact[0].ID != entry.ID || exactTotal != 1 {
+		t.Fatalf("exact AND pass wrong: %+v total=%d", exact, exactTotal)
 	}
 
 	// The extra word exists nowhere, so AND matches nothing; the list must
 	// retry with the ORed terms and flag the widened answer.
-	wide, relaxed, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{Query: word + " nosuchword"})
+	wide, wideTotal, relaxed, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{Query: word + " nosuchword"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !relaxed {
 		t.Fatalf("no exact match but relaxed=false: %+v", wide)
 	}
-	if len(wide) != 1 || wide[0].ID != entry.ID {
-		t.Fatalf("relaxed pass wrong: %+v", wide)
+	if len(wide) != 1 || wide[0].ID != entry.ID || wideTotal != 1 {
+		t.Fatalf("relaxed pass wrong: %+v total=%d", wide, wideTotal)
 	}
 	// The plain call degrades the same way; only the flag needs the new one.
 	plain, err := d.ListKnowledge(ctx, KnowledgeFilter{Query: word + " nosuchword"})
@@ -932,5 +933,262 @@ func TestKnowledgeAgentWriteGeneralisesIdentifiers(t *testing.T) {
 	}
 	if !strings.Contains(entry.Body, scrubIP) || !strings.Contains(entry.Body, scrubTarget) {
 		t.Fatalf("body not generalised: %q", entry.Body)
+	}
+}
+
+// TestListKnowledgePagesWithStableTotal: total is the filtered set, not the
+// page length, and it does not move when the offset does. A pager that reads
+// count as the total cannot tell "last page" from "first page".
+func TestListKnowledgePagesWithStableTotal(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	suffix := fmt.Sprintf(" [%d]", tk.ID)
+	for i := range 3 {
+		mustAddKnowledge(t, d, KnowledgeInput{TaskID: tk.ID, Kind: "note", Source: "operator",
+			Title: fmt.Sprintf("page entry %d%s", i, suffix), Body: "body"})
+	}
+	// Scope=task keeps the lens to this task's own rows: the task lens also
+	// admits adopted global entries, which other tests leave behind.
+	f := KnowledgeFilter{TaskID: tk.ID, Scope: "task", Limit: 2, Sort: "created", Order: "asc"}
+	first, total, relaxed, err := d.ListKnowledgeMatch(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relaxed || total != 3 || len(first) != 2 {
+		t.Fatalf("first page: total=%d len=%d relaxed=%v want total=3 len=2", total, len(first), relaxed)
+	}
+	f.Offset = 2
+	second, total2, _, err := d.ListKnowledgeMatch(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total2 != total {
+		t.Fatalf("total moved across pages: %d then %d", total, total2)
+	}
+	if len(second) != 1 {
+		t.Fatalf("second page len=%d want 1", len(second))
+	}
+	if first[0].ID == second[0].ID {
+		t.Fatalf("pages overlap: %d", first[0].ID)
+	}
+	// An offset past the end has no rows but must still report the real total,
+	// which a window-function count cannot do.
+	f.Offset = 99
+	none, total3, _, err := d.ListKnowledgeMatch(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 || total3 != 3 {
+		t.Fatalf("past-the-end page: len=%d total=%d want 0/3", len(none), total3)
+	}
+}
+
+// TestListKnowledgeNewFiltersNarrow: each added filter cuts the set on its own.
+func TestListKnowledgeNewFiltersNarrow(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	suffix := fmt.Sprintf(" [%d]", tk.ID)
+
+	agentEntry := mustAddKnowledge(t, d, KnowledgeInput{TaskID: tk.ID, Kind: "technique",
+		Source: "agent", Title: "filter agent technique" + suffix, Body: "body", Tags: []string{"alpha"}})
+	operatorEntry := mustAddKnowledge(t, d, KnowledgeInput{TaskID: tk.ID, Kind: "opsec",
+		Source: "operator", Title: "filter operator opsec" + suffix, Body: "body", Tags: []string{"beta"}})
+
+	bySource, total, _, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{TaskID: tk.ID, Scope: "task", Source: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(bySource) != 1 || bySource[0].ID != agentEntry.ID {
+		t.Fatalf("source filter wrong: %+v total=%d", bySource, total)
+	}
+	byTag, total, _, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{TaskID: tk.ID, Scope: "task", Tag: "beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(byTag) != 1 || byTag[0].ID != operatorEntry.ID {
+		t.Fatalf("tag filter wrong: %+v total=%d", byTag, total)
+	}
+	// Scope=task pins the lens to this task's rows: the task lens also admits
+	// adopted global entries left behind by other tests.
+	// Both task rows carry the task as origin; an unrelated origin matches none.
+	if _, total, _, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{TaskID: tk.ID, Scope: "task", OriginTaskID: tk.ID}); err != nil || total != 2 {
+		t.Fatalf("origin filter kept the task rows: total=%d err=%v", total, err)
+	}
+	if _, total, _, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{TaskID: tk.ID, Scope: "task", OriginTaskID: tk.ID + 999999}); err != nil || total != 0 {
+		t.Fatalf("origin filter did not narrow: total=%d err=%v", total, err)
+	}
+	if _, total, _, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{TaskID: tk.ID, Scope: "task", CreatedAfter: operatorEntry.CreatedAt.Add(time.Second)}); err != nil || total != 0 {
+		t.Fatalf("created_after did not narrow: total=%d err=%v", total, err)
+	}
+	if _, total, _, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{TaskID: tk.ID, Scope: "task", CreatedBefore: operatorEntry.CreatedAt}); err != nil || total != 2 {
+		t.Fatalf("created_before excluded the task rows: total=%d err=%v", total, err)
+	}
+
+	companyID, _, err := d.Companies().UpsertCompany("Filter Co"+suffix, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	companyEntry := mustAddKnowledge(t, d, KnowledgeInput{Scope: "company", CompanyID: companyID,
+		Kind: "note", Source: "operator", Status: "adopted", Title: "filter company note" + suffix, Body: "body"})
+	t.Cleanup(func() { _ = d.DeleteKnowledge(ctx, companyEntry.ID) })
+	byCompany, total, _, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{CompanyID: companyID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(byCompany) != 1 || byCompany[0].ID != companyEntry.ID {
+		t.Fatalf("company filter wrong: %+v total=%d", byCompany, total)
+	}
+}
+
+// TestKnowledgeStatsAddUp: every dimension partitions the same rows, so each
+// counter set sums to the total.
+func TestKnowledgeStatsAddUp(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	mustAddKnowledge(t, d, KnowledgeInput{TaskID: tk.ID, Kind: "note", Source: "operator",
+		Title: fmt.Sprintf("stats probe [%d]", tk.ID), Body: "body"})
+
+	stats, err := d.KnowledgeStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Total < 1 {
+		t.Fatalf("total=%d want at least the row just written", stats.Total)
+	}
+	for name, m := range map[string]map[string]int64{
+		"scope": stats.ByScope, "status": stats.ByStatus,
+		"kind": stats.ByKind, "source": stats.BySource,
+	} {
+		var sum int64
+		for _, n := range m {
+			sum += n
+		}
+		if sum != stats.Total {
+			t.Fatalf("by_%s sums to %d, total=%d", name, sum, stats.Total)
+		}
+	}
+}
+
+// TestDryRunKnowledgeInsertsNothing: the preview runs the same scrub as a real
+// write, reports the same redaction count, and leaves no row behind.
+func TestDryRunKnowledgeInsertsNothing(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	in := KnowledgeInput{Scope: "global", Kind: "technique", Source: "operator", Status: "adopted",
+		Title: fmt.Sprintf("dry run probe [%d]", time.Now().UnixNano()),
+		Body:  "mail analyst@example.com from 10.9.8.7 with password=hunter2"}
+
+	preview, redactions, err := d.DryRunKnowledge(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.ID != 0 {
+		t.Fatalf("preview carries an id %d; it is not a row", preview.ID)
+	}
+	if redactions < 3 {
+		t.Fatalf("redactions=%d want the email, the IP and the password", redactions)
+	}
+	for _, leak := range []string{"analyst@example.com", "10.9.8.7", "hunter2"} {
+		if strings.Contains(preview.Body, leak) {
+			t.Fatalf("%q survived the preview: %q", leak, preview.Body)
+		}
+	}
+	var stored int
+	if err := d.QueryRowContext(ctx,
+		`SELECT count(*) FROM knowledge_entries WHERE title=$1`, preview.Title).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 0 {
+		t.Fatalf("dry run inserted %d row(s) titled %q", stored, preview.Title)
+	}
+
+	real, realRedactions, err := d.AddKnowledge(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteKnowledge(ctx, real.ID) })
+	if realRedactions != redactions {
+		t.Fatalf("preview counted %d redactions, the write made %d", redactions, realRedactions)
+	}
+	if real.Title != preview.Title || real.Body != preview.Body ||
+		strings.Join(real.Tags, "|") != strings.Join(preview.Tags, "|") {
+		t.Fatalf("preview %+v disagrees with the stored row %+v", preview, real)
+	}
+}
+
+// TestDemoteKnowledgeRoundTripsToTask: promotion then demotion returns the
+// entry to a task as a candidate, and demotion cannot undo the generalisation
+// promotion performed. A task-scoped entry is refused.
+func TestDemoteKnowledgeRoundTripsToTask(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	other := memoryTask(t, d)
+	suffix := fmt.Sprintf(" [%d]", tk.ID)
+	entry := mustAddKnowledge(t, d, KnowledgeInput{TaskID: tk.ID, Kind: "technique", Source: "agent",
+		Title: "demote probe" + suffix, Body: "the host 10.5.6.7 answers"})
+	if !strings.Contains(entry.Body, scrubIP) {
+		t.Fatalf("agent write was not generalised: %q", entry.Body)
+	}
+	promoted, _, err := d.PromoteKnowledge(ctx, entry.ID, "global", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promoted.Scope != "global" || promoted.Status != "adopted" || promoted.TaskID != 0 {
+		t.Fatalf("promotion wrong: %+v", promoted)
+	}
+	demoted, err := d.DemoteKnowledge(ctx, promoted.ID, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if demoted.Scope != "task" || demoted.Status != "candidate" || demoted.TaskID != other.ID {
+		t.Fatalf("demotion wrong: %+v", demoted)
+	}
+	if demoted.OriginTaskID != other.ID {
+		t.Fatalf("origin_task_id=%d want the demoted task %d", demoted.OriginTaskID, other.ID)
+	}
+	if demoted.Body != promoted.Body {
+		t.Fatalf("demotion rewrote the text: %q -> %q", promoted.Body, demoted.Body)
+	}
+	if _, err := d.DemoteKnowledge(ctx, demoted.ID, tk.ID); !errors.Is(err, ErrMemoryInvalid) {
+		t.Fatalf("demoting a task entry should be refused, got %v", err)
+	}
+}
+
+// TestListKnowledgeRanksOperatorWide: a query outside any task lens orders by
+// relevance when Ranked is set, and by recency otherwise.
+func TestListKnowledgeRanksOperatorWide(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	word := fmt.Sprintf("rankword%d", tk.ID)
+	titleHit := mustAddKnowledge(t, d, KnowledgeInput{Scope: "global", Kind: "note", Source: "operator",
+		Status: "adopted", Title: word + " in the title", Body: "nothing else"})
+	bodyHit := mustAddKnowledge(t, d, KnowledgeInput{Scope: "global", Kind: "note", Source: "operator",
+		Status: "adopted", Title: fmt.Sprintf("unrelated note [%d]", tk.ID), Body: "mentions " + word + " once"})
+	t.Cleanup(func() {
+		_ = d.DeleteKnowledge(ctx, titleHit.ID)
+		_ = d.DeleteKnowledge(ctx, bodyHit.ID)
+	})
+
+	ranked, total, _, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{Query: word, Ranked: true, Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total < 2 || len(ranked) < 2 {
+		t.Fatalf("ranked query lost rows: total=%d len=%d", total, len(ranked))
+	}
+	if ranked[0].ID != titleHit.ID {
+		t.Fatalf("title match should rank first, got %d (%q)", ranked[0].ID, ranked[0].Title)
+	}
+	plain, _, _, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{Query: word, Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) < 2 || plain[0].ID != bodyHit.ID {
+		t.Fatalf("unranked query should be newest first, got %+v", plain)
 	}
 }

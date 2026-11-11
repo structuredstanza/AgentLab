@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/structuredstanza/AgentLab/artex-global/agent"
 	"github.com/structuredstanza/AgentLab/artex-global/db"
@@ -74,22 +76,31 @@ func (s *Server) bindTaskMemory(t *Task, wk *agent.Worker, pl *agent.Planner, mo
 // waiting for the next task. Environment and goal-matched knowledge are stable
 // and already in the start-of-task block, so they are not repeated here.
 func (s *Server) memoryProvider(t *Task, taskID int64) func(context.Context) string {
-	pg := s.m.PG()
 	return func(ctx context.Context) string {
-		refl, err := pg.ListReflections(ctx, taskID, nil, 6)
-		if err != nil {
-			log.Printf("[memory] reflections provider failed for task %s: %v", t.ID, err)
-			refl = nil
-		}
-		parts := make([]string, 0, 2)
-		if block := db.RenderMemory(s.roundKnowledge(ctx, t, taskID), nil, memoryRoundKnowledgeChars); block != "" {
-			parts = append(parts, block)
-		}
-		if block := db.RenderReflections(refl, memoryRoundReflectionChars); block != "" {
-			parts = append(parts, block)
-		}
-		return strings.Join(parts, "\n")
+		block, hits, _ := s.roundMemoryBlock(ctx, t, taskID)
+		s.recordKnowledgeUsage(ctx, taskID, "round", hits)
+		return block
 	}
+}
+
+// roundMemoryBlock renders the per-round block and returns what went into it.
+// Split from the provider so the operator preview renders the same block
+// without writing the usage ledger.
+func (s *Server) roundMemoryBlock(ctx context.Context, t *Task, taskID int64) (string, []db.KnowledgeHit, []db.Reflection) {
+	refl, err := s.m.PG().ListReflections(ctx, taskID, nil, 6)
+	if err != nil {
+		log.Printf("[memory] reflections provider failed for task %s: %v", t.ID, err)
+		refl = nil
+	}
+	hits := s.roundKnowledge(ctx, t, taskID)
+	parts := make([]string, 0, 2)
+	if block := db.RenderMemory(hits, nil, memoryRoundKnowledgeChars); block != "" {
+		parts = append(parts, block)
+	}
+	if block := db.RenderReflections(refl, memoryRoundReflectionChars); block != "" {
+		parts = append(parts, block)
+	}
+	return strings.Join(parts, "\n"), hits, refl
 }
 
 // roundKnowledge is the knowledge half of the per-round block: the task's own
@@ -119,16 +130,40 @@ func (s *Server) roundKnowledge(ctx context.Context, t *Task, taskID int64) []db
 // block is capped.
 func (s *Server) taskMemoryBlock(t *Task, taskID int64, mode string) string {
 	ctx := context.Background()
+	block, hits, refl := s.memoryStartBlock(ctx, t, taskID)
+	log.Printf("[memory] task %s: %d knowledge hits, %d reflections (mode %s)",
+		t.ID, len(hits), len(refl), mode)
+	s.recordKnowledgeUsage(ctx, taskID, "task_start", hits)
+	return block
+}
+
+// memoryStartBlock renders the start-of-task block and returns what went into
+// it. Split from taskMemoryBlock so the operator preview renders the same block
+// without writing the usage ledger.
+func (s *Server) memoryStartBlock(ctx context.Context, t *Task, taskID int64) (string, []db.KnowledgeHit, []db.Reflection) {
 	hits := s.memoryHits(ctx, t, taskID)
 	refl, err := s.m.PG().ListReflections(ctx, taskID, []string{"opsec", "noise"}, 4)
 	if err != nil {
 		log.Printf("[memory] reflection selection failed for task %s: %v", t.ID, err)
 		refl = nil
 	}
-	block := db.RenderMemory(hits, refl, memoryStartMaxChars)
-	log.Printf("[memory] task %s: %d knowledge hits, %d reflections (mode %s)",
-		t.ID, len(hits), len(refl), mode)
-	return block
+	return db.RenderMemory(hits, refl, memoryStartMaxChars), hits, refl
+}
+
+// recordKnowledgeUsage writes the usage ledger for one read path. Telemetry
+// only: a failure is logged and dropped, so it can never fail a prompt build
+// or a tool call. An empty selection skips the round trip entirely.
+func (s *Server) recordKnowledgeUsage(ctx context.Context, taskID int64, surface string, hits []db.KnowledgeHit) {
+	if len(hits) == 0 {
+		return
+	}
+	ids := make([]int64, len(hits))
+	for i, h := range hits {
+		ids[i] = h.ID
+	}
+	if err := s.m.PG().RecordKnowledgeUsage(ctx, taskID, surface, ids); err != nil {
+		log.Printf("[memory] usage ledger write failed for task %d surface %s: %v", taskID, surface, err)
+	}
 }
 
 // memoryHits selects the knowledge a task sees at start: every adopted
@@ -209,4 +244,87 @@ func (s *Server) seedMemoryToolBindings() {
 		}
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
+}
+
+// knowledgeUsage serves GET /api/knowledge/{id}/usage: how often and where one
+// entry was read back. last_used is empty for an entry nothing has retrieved.
+func (s *Server) knowledgeUsage(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, 400, "invalid knowledge id")
+		return
+	}
+	limit, ok := parseIDParam(r.URL.Query().Get("limit"))
+	if !ok {
+		writeErr(w, 400, "invalid limit")
+		return
+	}
+	sum, err := s.m.PG().GetKnowledgeUsage(r.Context(), id, int(limit))
+	if err != nil {
+		log.Printf("[memory] knowledge usage read failed for %d: %v", id, err)
+		writeErr(w, 500, "knowledge usage failed")
+		return
+	}
+	lastUsed := ""
+	if !sum.LastUsed.IsZero() {
+		lastUsed = sum.LastUsed.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, 200, map[string]any{"hits": sum.Hits, "last_used": lastUsed, "usage": sum.Usage})
+}
+
+// memoryPreview serves GET /api/memory/preview?task_id=: exactly what that task
+// would be injected with, rendered through the same selection and rendering
+// path the task itself uses. It records no usage and mutates nothing - an
+// operator looking is not an agent reading.
+func (s *Server) memoryPreview(w http.ResponseWriter, r *http.Request) {
+	taskID, ok := parseIDParam(r.URL.Query().Get("task_id"))
+	if !ok || taskID <= 0 {
+		writeErr(w, 400, "invalid task id")
+		return
+	}
+	pgTask, err := s.m.PG().GetTask(taskID)
+	if err != nil {
+		log.Printf("[memory] preview task lookup failed for %d: %v", taskID, err)
+		writeErr(w, 500, "task lookup failed")
+		return
+	}
+	if pgTask == nil {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	// The memory selection only reads the task's identity, name and goal, so a
+	// throwaway handle is enough: the preview must work for a task that is not
+	// loaded in memory (finished, or after a restart).
+	task := &Task{ID: strconv.FormatInt(taskID, 10), Name: pgTask.Name, Goal: pgTask.Goal}
+	mode := memoryMode()
+	out := map[string]any{
+		"mode": mode, "start_block": "", "round_block": "",
+		"knowledge_ids": []int64{}, "reflection_ids": []int64{},
+	}
+	if mode == "inject" {
+		ctx := r.Context()
+		start, startHits, startRefl := s.memoryStartBlock(ctx, task, taskID)
+		round, roundHits, roundRefl := s.roundMemoryBlock(ctx, task, taskID)
+		out["start_block"] = start
+		out["round_block"] = round
+		out["knowledge_ids"] = previewIDs(func(h db.KnowledgeHit) int64 { return h.ID }, startHits, roundHits)
+		out["reflection_ids"] = previewIDs(func(x db.Reflection) int64 { return x.ID }, startRefl, roundRefl)
+	}
+	writeJSON(w, 200, out)
+}
+
+// previewIDs collects the ids of several rendered blocks in first-seen order,
+// so a preview can link each row back to the entry it came from.
+func previewIDs[T any](id func(T) int64, groups ...[]T) []int64 {
+	out := make([]int64, 0)
+	seen := make(map[int64]bool)
+	for _, g := range groups {
+		for _, v := range g {
+			if k := id(v); !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	return out
 }

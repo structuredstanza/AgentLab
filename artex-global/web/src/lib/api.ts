@@ -4,6 +4,7 @@
 // are passed through and formatted at the call site.
 
 import type { ChatMention } from "@/lib/chat-mentions";
+import { clampLimit, knowledgeQuery, reflectionQuery } from "@/lib/memory-query";
 import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
 import type {
@@ -18,6 +19,8 @@ import type {
   AssetInterceptRuleInput,
   BatchCategoryItem,
   BatchControlItem,
+  BulkKnowledgeAction,
+  BulkKnowledgeResult,
   ChatAttachment,
   CommandRecord,
   Company,
@@ -52,6 +55,14 @@ import type {
   InterceptRule,
   JudgeConfig,
   JudgeUsage,
+  KnowledgeEntry,
+  KnowledgeInput,
+  KnowledgeKind,
+  KnowledgePage,
+  KnowledgePatch,
+  KnowledgeQuery,
+  KnowledgeStats,
+  KnowledgeUsage,
   LLMPoolStatus,
   LLMProfile,
   LLMProfileUsage,
@@ -64,12 +75,17 @@ import type {
   LLMTask,
   MCPServer,
   MCPTool,
+  MemoryPreview,
   MissingSkill,
   ModelTokenStat,
   NotificationChannel,
   NotificationDelivery,
   NotificationFilter,
   NotificationMeta,
+  Reflection,
+  ReflectionPage,
+  ReflectionQuery,
+  ReflectionStats,
   SessionTokenUsage,
   Settings,
   Severity,
@@ -1327,4 +1343,66 @@ export const api = {
   tokensByModel: (task: string) =>
     get<{ models: ModelTokenStat[] }>(`/llm/records/by-model?task=${encodeURIComponent(task)}`),
 
+  // ---- knowledge base + reflection pool (operator management) ----
+  knowledgeList: (query: KnowledgeQuery = {}) =>
+    get<KnowledgePage>(`/knowledge${knowledgeQuery(query)}`).then((r) => ({
+      entries: arr(r.entries),
+      total: r.total ?? r.count ?? 0,
+      count: r.count ?? 0,
+      relaxed: !!r.relaxed,
+      limit: r.limit ?? clampLimit(query.limit),
+      offset: r.offset ?? 0,
+    })),
+  knowledge: (id: number) => get<{ entry: KnowledgeEntry }>(`/knowledge/${id}`),
+  knowledgeStats: () => get<KnowledgeStats>("/knowledge/stats"),
+  // dry_run renders the scrubber's work without writing: the caller shows the
+  // redaction count before committing.
+  createKnowledge: (input: KnowledgeInput, dryRun = false) =>
+    post<{ entry: KnowledgeEntry; redactions: number; dry_run?: boolean }>(
+      `/knowledge${dryRun ? "?dry_run=true" : ""}`,
+      input,
+    ),
+  patchKnowledge: (id: number, body: KnowledgePatch) =>
+    patch<{ entry: KnowledgeEntry; redactions: number }>(`/knowledge/${id}`, body),
+  promoteKnowledge: (id: number, scope: "company" | "environment" | "global", companyId = 0) =>
+    post<{ entry: KnowledgeEntry; redactions: number }>(`/knowledge/${id}/promote`, {
+      scope,
+      company_id: scope === "company" ? companyId : 0,
+    }),
+  // demote moves an adopted entry back to a task-scoped candidate.
+  demoteKnowledge: (id: number, taskId: number) =>
+    post<{ entry: KnowledgeEntry }>(`/knowledge/${id}/demote`, { task_id: taskId }),
+  deleteKnowledge: (id: number) => del<{ ok: boolean }>(`/knowledge/${id}`),
+  bulkKnowledge: (ids: number[], action: BulkKnowledgeAction, opts?: { scope?: string; companyId?: number }) =>
+    post<{ results: BulkKnowledgeResult[] }>("/knowledge/bulk", {
+      ids,
+      action,
+      scope: opts?.scope ?? "",
+      company_id: opts?.companyId ?? 0,
+    }),
+  // Usage is per entry: there is no batch form, so the UI loads it when a row
+  // is opened instead of firing one request per row of the page.
+  knowledgeUsage: (id: number, limit = 20) =>
+    get<KnowledgeUsage>(`/knowledge/${id}/usage?limit=${clampLimit(limit)}`),
+
+  reflections: (query: ReflectionQuery = {}) =>
+    get<ReflectionPage>(`/reflections${reflectionQuery(query)}`).then((r) => ({
+      reflections: arr(r.reflections),
+      total: r.total ?? r.count ?? 0,
+      count: r.count ?? 0,
+      limit: r.limit ?? clampLimit(query.limit),
+      offset: r.offset ?? 0,
+    })),
+  reflectionStats: () => get<ReflectionStats>("/reflections/stats"),
+  patchReflection: (id: number, body: { summary?: string; detail?: string }) =>
+    patch<{ reflection: Reflection }>(`/reflections/${id}`, body),
+  deleteReflection: (id: number) => del<{ ok: boolean }>(`/reflections/${id}`),
+  // graduate writes a task-scoped candidate owned by the reflection's task; the
+  // operator still promotes it, so nothing crosses a task boundary here.
+  graduateReflection: (
+    id: number,
+    body: { kind: KnowledgeKind; title?: string; tags?: string[] },
+  ) => post<{ entry: KnowledgeEntry; redactions: number }>(`/reflections/${id}/graduate`, body),
+
+  memoryPreview: (taskId: number) => get<MemoryPreview>(`/memory/preview?task_id=${taskId}`),
 };

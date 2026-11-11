@@ -715,7 +715,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/knowledge/{id}", s.patchKnowledge)
 	mux.HandleFunc("POST /api/knowledge/{id}/promote", s.promoteKnowledge)
 	mux.HandleFunc("DELETE /api/knowledge/{id}", s.deleteKnowledge)
+	mux.HandleFunc("GET /api/knowledge/stats", s.knowledgeStats)
+	mux.HandleFunc("GET /api/knowledge/{id}", s.getKnowledge)
+	mux.HandleFunc("GET /api/knowledge/{id}/usage", s.knowledgeUsage)
+	mux.HandleFunc("POST /api/knowledge/{id}/demote", s.demoteKnowledge)
+	mux.HandleFunc("POST /api/knowledge/bulk", s.bulkKnowledge)
 	mux.HandleFunc("GET /api/tasks/{id}/reflections", s.taskReflections)
+	// Reflection pool, curation side: cross-task now, not one task at a time.
+	mux.HandleFunc("GET /api/reflections", s.listReflections)
+	mux.HandleFunc("GET /api/reflections/stats", s.reflectionStats)
+	mux.HandleFunc("PATCH /api/reflections/{id}", s.patchReflection)
+	mux.HandleFunc("DELETE /api/reflections/{id}", s.deleteReflection)
+	mux.HandleFunc("POST /api/reflections/{id}/graduate", s.graduateReflection)
+	// What a task's prompt would actually be injected with (read-only; records no usage).
+	mux.HandleFunc("GET /api/memory/preview", s.memoryPreview)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
 	// Task-level asset block/allow rules

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"iter"
 	"strings"
 	"sync"
@@ -28,6 +29,15 @@ type fakeMemory struct {
 	reflectionCalls  int
 	addKnowledgeErr  error
 	addReflectionErr error
+	usageCalls       []usageCall
+	usageErr         error
+}
+
+// usageCall is one read-ledger write the tools made.
+type usageCall struct {
+	taskID  int64
+	surface string
+	ids     []int64
 }
 
 func (f *fakeMemory) AddKnowledge(_ context.Context, in db.KnowledgeInput) (db.KnowledgeEntry, int, error) {
@@ -71,6 +81,13 @@ func (f *fakeMemory) ListReflections(_ context.Context, taskID int64, _ []string
 	defer f.mu.Unlock()
 	f.listTaskIDs = append(f.listTaskIDs, taskID)
 	return f.reflections, nil
+}
+
+func (f *fakeMemory) RecordKnowledgeUsage(_ context.Context, taskID int64, surface string, ids []int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.usageCalls = append(f.usageCalls, usageCall{taskID: taskID, surface: surface, ids: append([]int64(nil), ids...)})
+	return f.usageErr
 }
 
 // callMemory runs one memory tool and returns its flattened output.
@@ -706,5 +723,64 @@ func TestMemoryToolsAgainstRealStore(t *testing.T) {
 	}
 	if !strings.Contains(text, "WAF blocked") {
 		t.Errorf("recall did not surface the reflection: %s", text)
+	}
+}
+
+// A recall that returns entries writes one usage row per hit, attributed to the
+// tool set's own task and the recall surface - the strongest usefulness signal
+// in the ledger. A recall that matches nothing writes nothing.
+func TestRecallRecordsUsagePerHit(t *testing.T) {
+	store := &fakeMemory{
+		searchHits: []db.KnowledgeHit{
+			{KnowledgeEntry: db.KnowledgeEntry{ID: 5, Kind: "technique", Title: "passive first"}},
+			{KnowledgeEntry: db.KnowledgeEntry{ID: 6, Kind: "opsec", Title: "slow the scanner"}},
+		},
+		reflections: []db.Reflection{{ID: 1, Kind: "opsec", Summary: "WAF blocked the scanner"}},
+	}
+	ts := NewToolSet(nil, "worker")
+	ts.SetTaskID(11)
+	ts.SetMemory(store)
+
+	if _, isErr := callMemory(t, ts.recallTool(), `{"query":"scanner"}`); isErr {
+		t.Fatal("recall refused")
+	}
+	if len(store.usageCalls) != 1 {
+		t.Fatalf("usage writes = %d, want one batch for the whole recall", len(store.usageCalls))
+	}
+	call := store.usageCalls[0]
+	if call.taskID != 11 || call.surface != "recall" {
+		t.Errorf("usage write = %+v, want task 11 surface recall", call)
+	}
+	if len(call.ids) != 2 || call.ids[0] != 5 || call.ids[1] != 6 {
+		t.Errorf("usage ids = %v, want one per knowledge hit [5 6]", call.ids)
+	}
+
+	empty := &fakeMemory{}
+	ts.SetMemory(empty)
+	if _, isErr := callMemory(t, ts.recallTool(), `{"query":"nothing matches this"}`); isErr {
+		t.Fatal("empty recall refused")
+	}
+	if len(empty.usageCalls) != 0 {
+		t.Errorf("a recall with no hits wrote %d usage batches, want none", len(empty.usageCalls))
+	}
+}
+
+// The ledger is telemetry: a store that cannot record usage must not turn a
+// useful recall into a failed tool call.
+func TestRecallSurvivesUsageLedgerFailure(t *testing.T) {
+	store := &fakeMemory{
+		searchHits: []db.KnowledgeHit{{KnowledgeEntry: db.KnowledgeEntry{ID: 5, Kind: "technique", Title: "passive first"}}},
+		usageErr:   errors.New("ledger down"),
+	}
+	ts := NewToolSet(nil, "worker")
+	ts.SetTaskID(11)
+	ts.SetMemory(store)
+
+	text, isErr := callMemory(t, ts.recallTool(), `{"query":"passive"}`)
+	if isErr {
+		t.Fatalf("recall failed because the usage ledger did: %s", text)
+	}
+	if !strings.Contains(text, "passive first") {
+		t.Errorf("recall lost its hits on a ledger error: %s", text)
 	}
 }

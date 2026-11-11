@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -20,6 +21,9 @@ type MemoryStore interface {
 	SearchKnowledge(ctx context.Context, taskID int64, q string, kinds []string, limit int) ([]db.KnowledgeHit, error)
 	AddReflection(ctx context.Context, in db.ReflectionInput) (db.Reflection, bool, error)
 	ListReflections(ctx context.Context, taskID int64, kinds []string, limit int) ([]db.Reflection, error)
+	// RecordKnowledgeUsage is the read ledger behind recall; callers treat a
+	// failure as lost telemetry, never as a failed call.
+	RecordKnowledgeUsage(ctx context.Context, taskID int64, surface string, ids []int64) error
 }
 
 // SetMemory wires the task's knowledge base and reflection pool. nil = the
@@ -182,6 +186,17 @@ func (t *ToolSet) recallTool() actool.CoreTool {
 			matches := make([]map[string]any, len(ranked))
 			for i, s := range ranked {
 				matches[i] = s.item
+			}
+			// The strongest usefulness signal in the ledger: the agent asked
+			// for these. Best-effort, and skipped when nothing matched.
+			if len(hits) > 0 {
+				ids := make([]int64, len(hits))
+				for i, h := range hits {
+					ids[i] = h.ID
+				}
+				if err := t.mem.RecordKnowledgeUsage(ctx, t.taskID, "recall", ids); err != nil {
+					log.Printf("[memory] recall usage ledger failed for task %d: %v", t.taskID, err)
+				}
 			}
 			return jsonResult(map[string]any{"knowledge": out, "reflections": matches})
 		}))

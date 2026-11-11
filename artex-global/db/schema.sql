@@ -1636,3 +1636,27 @@ CREATE TABLE IF NOT EXISTS task_reflections (
 );
 CREATE INDEX IF NOT EXISTS idx_reflections_task ON task_reflections(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reflections_kind ON task_reflections(task_id, kind);
+-- Reflections are searchable the same way knowledge is, so the curation UI can
+-- look across tasks instead of paging one task at a time. ADD COLUMN IF NOT
+-- EXISTS keeps this idempotent; the configuration matches knowledge_entries.
+ALTER TABLE task_reflections ADD COLUMN IF NOT EXISTS tsv TSVECTOR
+    GENERATED ALWAYS AS (
+        setweight(to_tsvector('english', summary), 'A')
+     || setweight(to_tsvector('english', detail), 'B')
+    ) STORED;
+CREATE INDEX IF NOT EXISTS idx_reflections_tsv ON task_reflections USING GIN(tsv);
+CREATE INDEX IF NOT EXISTS idx_reflections_created ON task_reflections(created_at DESC);
+
+-- Which knowledge was actually read back. Without this, "refine the memory" is
+-- guesswork: an entry nothing ever retrieves looks the same as a load-bearing
+-- one. Mirrors rsi_lesson_usage. surface names the read path: the start-of-task
+-- block, a per-round block, an agent's recall call, or the curation chat.
+CREATE TABLE IF NOT EXISTS knowledge_usage (
+    id           BIGSERIAL PRIMARY KEY,
+    knowledge_id BIGINT NOT NULL REFERENCES knowledge_entries(id) ON DELETE CASCADE,
+    task_id      BIGINT REFERENCES tasks(id) ON DELETE SET NULL,
+    surface      TEXT NOT NULL CHECK (surface IN ('task_start','round','recall','chat')),
+    shown_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_usage_entry ON knowledge_usage(knowledge_id, shown_at DESC);
+CREATE INDEX IF NOT EXISTS idx_knowledge_usage_task  ON knowledge_usage(task_id, shown_at DESC);

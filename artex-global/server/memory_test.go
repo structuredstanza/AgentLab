@@ -2,9 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
@@ -241,5 +245,206 @@ func TestRoundMemoryProviderRefreshesKnowledge(t *testing.T) {
 	}
 	if max := memoryRoundKnowledgeChars + memoryRoundReflectionChars + 2; len(block) > max {
 		t.Errorf("round block length %d exceeds the %d budget", len(block), max)
+	}
+}
+
+// usageCount runs one count query against the ledger.
+func usageCount(t *testing.T, m *Manager, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := m.pg.QueryRow(query, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// memoryPreviewTask seeds one task with a visible knowledge entry and one
+// reflection, both matching the task's wording, and returns the ids.
+func memoryPreviewTask(t *testing.T, m *Manager) (*Task, int64, int64) {
+	t.Helper()
+	task, err := m.CreateTaskWithOptions("mtestusage task", "audit the billing portal",
+		db.TaskCreateOptions{Name: "mtestusage zeta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := strconv.ParseInt(task.ID, 10, 64)
+	t.Cleanup(func() { _ = m.pg.DeleteTask(id) })
+
+	ctx := context.Background()
+	entry, _, err := m.pg.AddKnowledge(ctx, db.KnowledgeInput{
+		TaskID: id, Kind: "technique", Source: "agent",
+		Title: "billing portal replay lesson",
+		Body:  "replay the billing portal upload slowly, one request per round",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refl, _, err := m.pg.AddReflection(ctx, db.ReflectionInput{
+		TaskID: id, Kind: "opsec", Source: "worker",
+		Summary: "the billing portal waf blocked the fast replay",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task, entry.ID, refl.ID
+}
+
+// The two prompt-build read paths write their own surface into the ledger, with
+// one row per knowledge entry they showed.
+func TestMemoryBlocksRecordUsage(t *testing.T) {
+	m, s, _ := memoryTestServer(t)
+	task, entryID, _ := memoryPreviewTask(t, m)
+	id, _ := strconv.ParseInt(task.ID, 10, 64)
+
+	if block := s.taskMemoryBlock(task, id, "inject"); !strings.Contains(block, "billing portal replay lesson") {
+		t.Fatalf("start block missing the seeded lesson:\n%s", block)
+	}
+	if n := usageCount(t, m, `SELECT count(*) FROM knowledge_usage
+		WHERE task_id=$1 AND surface='task_start' AND knowledge_id=$2`, id, entryID); n != 1 {
+		t.Errorf("task_start rows for the seeded entry = %d, want 1", n)
+	}
+
+	ctx := context.Background()
+	if block := s.memoryProvider(task, id)(ctx); !strings.Contains(block, "billing portal replay lesson") {
+		t.Fatalf("round block missing the seeded lesson:\n%s", block)
+	}
+	if n := usageCount(t, m, `SELECT count(*) FROM knowledge_usage
+		WHERE task_id=$1 AND surface='round' AND knowledge_id=$2`, id, entryID); n != 1 {
+		t.Errorf("round rows for the seeded entry = %d, want 1", n)
+	}
+
+	var recorded int64
+	if err := m.pg.QueryRow(`SELECT knowledge_id FROM knowledge_usage
+		WHERE task_id=$1 AND surface='task_start'`, id).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != entryID {
+		t.Errorf("task_start row names entry %d, want %d", recorded, entryID)
+	}
+
+	// A ledger write that fails (unknown entry: FK violation) is swallowed;
+	// the prompt build that follows still renders.
+	s.recordKnowledgeUsage(ctx, id, "round", []db.KnowledgeHit{{KnowledgeEntry: db.KnowledgeEntry{ID: 1 << 50}}})
+	if block := s.taskMemoryBlock(task, id, "inject"); block == "" {
+		t.Fatal("a failed ledger write broke the prompt build")
+	}
+}
+
+// The operator preview renders what the task would be injected with and writes
+// no ledger rows: looking is not reading.
+func TestMemoryPreviewRendersWithoutUsage(t *testing.T) {
+	m, s, _ := memoryTestServer(t)
+	task, entryID, reflID := memoryPreviewTask(t, m)
+	id, _ := strconv.ParseInt(task.ID, 10, 64)
+	t.Setenv("ARTEX_MEMORY", "inject")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/memory/preview?task_id="+task.ID, nil)
+	rec := httptest.NewRecorder()
+	s.memoryPreview(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Mode          string  `json:"mode"`
+		StartBlock    string  `json:"start_block"`
+		RoundBlock    string  `json:"round_block"`
+		KnowledgeIDs  []int64 `json:"knowledge_ids"`
+		ReflectionIDs []int64 `json:"reflection_ids"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal %q: %v", rec.Body.String(), err)
+	}
+	if out.Mode != "inject" {
+		t.Errorf("mode = %q, want inject", out.Mode)
+	}
+	if !strings.Contains(out.StartBlock, "billing portal replay lesson") {
+		t.Errorf("start block missing the seeded lesson:\n%s", out.StartBlock)
+	}
+	if !strings.Contains(out.RoundBlock, "billing portal replay lesson") {
+		t.Errorf("round block missing the seeded lesson:\n%s", out.RoundBlock)
+	}
+	if len(out.KnowledgeIDs) == 0 || out.KnowledgeIDs[0] != entryID {
+		t.Errorf("knowledge_ids = %v, want the seeded entry %d", out.KnowledgeIDs, entryID)
+	}
+	if len(out.ReflectionIDs) == 0 || out.ReflectionIDs[0] != reflID {
+		t.Errorf("reflection_ids = %v, want the seeded reflection %d", out.ReflectionIDs, reflID)
+	}
+	if n := usageCount(t, m, `SELECT count(*) FROM knowledge_usage WHERE task_id=$1`, id); n != 0 {
+		t.Fatalf("preview wrote %d usage rows, want none", n)
+	}
+
+	// With injection off nothing is injected, so the preview shows nothing and
+	// still records nothing.
+	t.Setenv("ARTEX_MEMORY", "off")
+	rec = httptest.NewRecorder()
+	s.memoryPreview(rec, httptest.NewRequest(http.MethodGet, "/api/memory/preview?task_id="+task.ID, nil))
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal %q: %v", rec.Body.String(), err)
+	}
+	if out.Mode != "off" || out.StartBlock != "" || out.RoundBlock != "" || len(out.KnowledgeIDs) != 0 {
+		t.Errorf("off preview = %+v, want empty blocks and ids", out)
+	}
+	if n := usageCount(t, m, `SELECT count(*) FROM knowledge_usage WHERE task_id=$1`, id); n != 0 {
+		t.Fatalf("preview with injection off wrote %d usage rows, want none", n)
+	}
+}
+
+// The usage endpoint reports one entry's hit count, last read and newest rows.
+func TestKnowledgeUsageEndpoint(t *testing.T) {
+	m, s, _ := memoryTestServer(t)
+	task, entryID, _ := memoryPreviewTask(t, m)
+	id, _ := strconv.ParseInt(task.ID, 10, 64)
+	if err := m.pg.RecordKnowledgeUsage(context.Background(), id, "recall", []int64{entryID}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/knowledge/"+strconv.FormatInt(entryID, 10)+"/usage", nil)
+	req.SetPathValue("id", strconv.FormatInt(entryID, 10))
+	rec := httptest.NewRecorder()
+	s.knowledgeUsage(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("usage status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Hits     int    `json:"hits"`
+		LastUsed string `json:"last_used"`
+		Usage    []struct {
+			TaskID  int64  `json:"task_id"`
+			Surface string `json:"surface"`
+			ShownAt string `json:"shown_at"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal %q: %v", rec.Body.String(), err)
+	}
+	if out.Hits != 1 || len(out.Usage) != 1 {
+		t.Fatalf("usage = %+v, want one hit and one row", out)
+	}
+	if _, err := time.Parse(time.RFC3339, out.LastUsed); err != nil {
+		t.Errorf("last_used = %q, want RFC3339: %v", out.LastUsed, err)
+	}
+	if out.Usage[0].Surface != "recall" || out.Usage[0].TaskID != id {
+		t.Errorf("usage row = %+v, want recall on task %d", out.Usage[0], id)
+	}
+	if _, err := time.Parse(time.RFC3339, out.Usage[0].ShownAt); err != nil {
+		t.Errorf("shown_at = %q, want RFC3339: %v", out.Usage[0].ShownAt, err)
+	}
+
+	// An entry nothing has read reports an empty last_used, not a zero time.
+	unread, _, err := m.pg.AddKnowledge(context.Background(), db.KnowledgeInput{
+		TaskID: id, Kind: "note", Title: "unread usage entry", Body: "never shown", Source: "agent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/knowledge/"+strconv.FormatInt(unread.ID, 10)+"/usage", nil)
+	req.SetPathValue("id", strconv.FormatInt(unread.ID, 10))
+	rec = httptest.NewRecorder()
+	s.knowledgeUsage(rec, req)
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal %q: %v", rec.Body.String(), err)
+	}
+	if out.Hits != 0 || out.LastUsed != "" || len(out.Usage) != 0 {
+		t.Errorf("unread usage = %+v, want zero hits and empty last_used", out)
 	}
 }

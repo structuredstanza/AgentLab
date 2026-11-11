@@ -91,14 +91,26 @@ type KnowledgeHit struct {
 }
 
 // KnowledgeFilter selects entries for the operator list. TaskID, when set,
-// narrows to what that task may see (the same visibility rule as search).
+// narrows to what that task may see (the same visibility rule as search);
+// the other fields are plain equality filters. Sort/Order are whitelisted by
+// listKnowledge. Ranked orders a text query by relevance instead of Sort.
 type KnowledgeFilter struct {
-	Scope  string
-	Kind   string
-	Status string
-	Query  string
-	TaskID int64
-	Limit  int
+	Scope         string
+	Kind          string
+	Status        string
+	Source        string
+	Tag           string
+	Query         string
+	TaskID        int64
+	OriginTaskID  int64
+	CompanyID     int64
+	CreatedAfter  time.Time
+	CreatedBefore time.Time
+	Sort          string // created | updated | title
+	Order         string // asc | desc
+	Ranked        bool
+	Limit         int
+	Offset        int
 }
 
 // KnowledgePatch is a partial update; nil fields stay unchanged.
@@ -254,11 +266,59 @@ func scanKnowledge(sc interface{ Scan(dest ...any) error }, extra ...any) (Knowl
 // rather than a report about this one. Re-writing the same title inside a task
 // updates that entry instead of creating a second one.
 func (d *DB) AddKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeEntry, int, error) {
+	in, redactions, err := d.prepareKnowledge(ctx, in)
+	if err != nil {
+		return KnowledgeEntry{}, 0, err
+	}
+	machine := in.Source != "operator"
+	if machine {
+		// shortcut: the cap is advisory under concurrency (check-then-insert);
+		// per-task volume is low and one extra row is harmless.
+		// An idempotent re-write of an existing title refreshes it and must not
+		// consume a cap slot: only genuinely new entries are bounded.
+		var existing bool
+		if err := d.QueryRowContext(ctx, `
+SELECT EXISTS(SELECT 1 FROM knowledge_entries
+WHERE scope='task' AND task_id=$1 AND lower(title)=lower($2))`, in.TaskID, in.Title).Scan(&existing); err != nil {
+			return KnowledgeEntry{}, 0, fmt.Errorf("count knowledge: %w", err)
+		}
+		if !existing {
+			var count int
+			if err := d.QueryRowContext(ctx, `
+SELECT count(*) FROM knowledge_entries
+WHERE scope='task' AND task_id=$1 AND source<>'operator'`, in.TaskID).Scan(&count); err != nil {
+				return KnowledgeEntry{}, 0, fmt.Errorf("count knowledge: %w", err)
+			}
+			if count >= MaxKnowledgePerTask {
+				return KnowledgeEntry{}, 0, ErrMemoryCapReached
+			}
+		}
+	}
+
+	row := d.QueryRowContext(ctx, `
+INSERT INTO knowledge_entries(scope,company_id,task_id,kind,title,body,tags,status,source,origin_task_id)
+VALUES($1,NULLIF($2,0),NULLIF($3,0),$4,$5,$6,COALESCE($7::text[],'{}'::text[]),$8,$9,NULLIF($10,0))
+ON CONFLICT (task_id, lower(title)) WHERE scope='task'
+DO UPDATE SET body=EXCLUDED.body, tags=EXCLUDED.tags, updated_at=now()
+RETURNING `+knowledgeColumns,
+		in.Scope, in.CompanyID, in.TaskID, in.Kind, in.Title, in.Body, in.Tags, in.Status, in.Source, in.OriginTaskID)
+	entry, err := scanKnowledge(row)
+	if err != nil {
+		return KnowledgeEntry{}, 0, fmt.Errorf("add knowledge: %w", err)
+	}
+	return entry, redactions, nil
+}
+
+// prepareKnowledge validates a write and applies the exact normalisation and
+// scrubbing a real insert applies, returning the fields that would be stored
+// and the redaction count. AddKnowledge and DryRunKnowledge share it so a
+// preview can never disagree with the write it previews.
+func (d *DB) prepareKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeInput, int, error) {
 	if in.Source == "" || !knowledgeSourceSet[in.Source] {
-		return KnowledgeEntry{}, 0, fmt.Errorf("knowledge source %q: %w", in.Source, ErrMemoryInvalid)
+		return in, 0, fmt.Errorf("knowledge source %q: %w", in.Source, ErrMemoryInvalid)
 	}
 	if !knowledgeKindSet[in.Kind] {
-		return KnowledgeEntry{}, 0, fmt.Errorf("knowledge kind %q: %w", in.Kind, ErrMemoryInvalid)
+		return in, 0, fmt.Errorf("knowledge kind %q: %w", in.Kind, ErrMemoryInvalid)
 	}
 	if in.Scope == "" {
 		switch {
@@ -274,32 +334,32 @@ func (d *DB) AddKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeEntr
 		in.Status = "candidate"
 	}
 	if !knowledgeStatusSet[in.Status] {
-		return KnowledgeEntry{}, 0, fmt.Errorf("knowledge status %q: %w", in.Status, ErrMemoryInvalid)
+		return in, 0, fmt.Errorf("knowledge status %q: %w", in.Status, ErrMemoryInvalid)
 	}
 	switch in.Scope {
 	case "global", "environment":
 		if in.CompanyID != 0 || in.TaskID != 0 {
-			return KnowledgeEntry{}, 0, fmt.Errorf("%s entry must not carry ids: %w", in.Scope, ErrMemoryInvalid)
+			return in, 0, fmt.Errorf("%s entry must not carry ids: %w", in.Scope, ErrMemoryInvalid)
 		}
 	case "company":
 		if in.CompanyID <= 0 || in.TaskID != 0 {
-			return KnowledgeEntry{}, 0, fmt.Errorf("company entry needs a company id: %w", ErrMemoryInvalid)
+			return in, 0, fmt.Errorf("company entry needs a company id: %w", ErrMemoryInvalid)
 		}
 	case "task":
 		if in.TaskID <= 0 {
-			return KnowledgeEntry{}, 0, fmt.Errorf("task entry needs a task id: %w", ErrMemoryInvalid)
+			return in, 0, fmt.Errorf("task entry needs a task id: %w", ErrMemoryInvalid)
 		}
 	default:
-		return KnowledgeEntry{}, 0, fmt.Errorf("knowledge scope %q: %w", in.Scope, ErrMemoryInvalid)
+		return in, 0, fmt.Errorf("knowledge scope %q: %w", in.Scope, ErrMemoryInvalid)
 	}
 	machine := in.Source != "operator"
 	if machine && (in.Scope != "task" || in.Status != "candidate") {
-		return KnowledgeEntry{}, 0, fmt.Errorf("agent knowledge must be a task candidate: %w", ErrMemoryInvalid)
+		return in, 0, fmt.Errorf("agent knowledge must be a task candidate: %w", ErrMemoryInvalid)
 	}
 
 	title := memoryLine(in.Title, knowledgeTitleMax)
 	if title == "" {
-		return KnowledgeEntry{}, 0, fmt.Errorf("empty knowledge title: %w", ErrMemoryInvalid)
+		return in, 0, fmt.Errorf("empty knowledge title: %w", ErrMemoryInvalid)
 	}
 	body := memoryBody(in.Body, knowledgeBodyMax)
 	tags := memoryTags(in.Tags)
@@ -323,7 +383,7 @@ func (d *DB) AddKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeEntr
 		// condition and the mechanism.
 		ids, err := d.TaskScopeIdentifiers(ctx, in.TaskID)
 		if err != nil {
-			return KnowledgeEntry{}, 0, err
+			return in, 0, err
 		}
 		title, n = ScrubTargetIdentifiers(title, ids)
 		redactions += n
@@ -338,42 +398,23 @@ func (d *DB) AddKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeEntr
 	if in.Scope == "task" && in.OriginTaskID == 0 {
 		in.OriginTaskID = in.TaskID
 	}
-	if machine {
-		// shortcut: the cap is advisory under concurrency (check-then-insert);
-		// per-task volume is low and one extra row is harmless.
-		// An idempotent re-write of an existing title refreshes it and must not
-		// consume a cap slot: only genuinely new entries are bounded.
-		var existing bool
-		if err := d.QueryRowContext(ctx, `
-SELECT EXISTS(SELECT 1 FROM knowledge_entries
-WHERE scope='task' AND task_id=$1 AND lower(title)=lower($2))`, in.TaskID, title).Scan(&existing); err != nil {
-			return KnowledgeEntry{}, 0, fmt.Errorf("count knowledge: %w", err)
-		}
-		if !existing {
-			var count int
-			if err := d.QueryRowContext(ctx, `
-SELECT count(*) FROM knowledge_entries
-WHERE scope='task' AND task_id=$1 AND source<>'operator'`, in.TaskID).Scan(&count); err != nil {
-				return KnowledgeEntry{}, 0, fmt.Errorf("count knowledge: %w", err)
-			}
-			if count >= MaxKnowledgePerTask {
-				return KnowledgeEntry{}, 0, ErrMemoryCapReached
-			}
-		}
-	}
+	in.Title, in.Body, in.Tags = title, body, tags
+	return in, redactions, nil
+}
 
-	row := d.QueryRowContext(ctx, `
-INSERT INTO knowledge_entries(scope,company_id,task_id,kind,title,body,tags,status,source,origin_task_id)
-VALUES($1,NULLIF($2,0),NULLIF($3,0),$4,$5,$6,COALESCE($7::text[],'{}'::text[]),$8,$9,NULLIF($10,0))
-ON CONFLICT (task_id, lower(title)) WHERE scope='task'
-DO UPDATE SET body=EXCLUDED.body, tags=EXCLUDED.tags, updated_at=now()
-RETURNING `+knowledgeColumns,
-		in.Scope, in.CompanyID, in.TaskID, in.Kind, title, body, tags, in.Status, in.Source, in.OriginTaskID)
-	entry, err := scanKnowledge(row)
+// DryRunKnowledge runs the write validation and scrubbing without inserting
+// anything, returning the entry that WOULD be stored and the redaction count.
+// The returned entry has no id and no timestamps; it is not a row.
+func (d *DB) DryRunKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeEntry, int, error) {
+	in, redactions, err := d.prepareKnowledge(ctx, in)
 	if err != nil {
-		return KnowledgeEntry{}, 0, fmt.Errorf("add knowledge: %w", err)
+		return KnowledgeEntry{}, 0, err
 	}
-	return entry, redactions, nil
+	return KnowledgeEntry{
+		Scope: in.Scope, CompanyID: in.CompanyID, TaskID: in.TaskID,
+		Kind: in.Kind, Title: in.Title, Body: in.Body, Tags: in.Tags,
+		Status: in.Status, Source: in.Source, OriginTaskID: in.OriginTaskID,
+	}, redactions, nil
 }
 
 // taskCompanyIDs lists the companies a task is associated with.
@@ -516,43 +557,51 @@ LIMIT $5`, companies, taskID, q, kinds, limit)
 // listed (owner view). A query narrows the list by ANDing its words; see
 // ListKnowledgeMatch for what happens when that matches nothing.
 func (d *DB) ListKnowledge(ctx context.Context, f KnowledgeFilter) ([]KnowledgeEntry, error) {
-	entries, _, err := d.ListKnowledgeMatch(ctx, f)
+	entries, _, _, err := d.ListKnowledgeMatch(ctx, f)
 	return entries, err
 }
 
-// ListKnowledgeMatch is ListKnowledge plus whether the query was relaxed. The
-// operator's words are ANDed first, because a browse filter should narrow as
-// they type; when that matches nothing the shared OR tokenizer runs instead,
-// so the operator sees related entries rather than an empty page and relaxed
-// says the result is not an exact match. relaxed is false when there was no
-// query, when the exact pass found something, or when the query has no second
-// form to try.
-func (d *DB) ListKnowledgeMatch(ctx context.Context, f KnowledgeFilter) ([]KnowledgeEntry, bool, error) {
+// ListKnowledgeMatch is ListKnowledge plus the filtered total and whether the
+// query was relaxed. The operator's words are ANDed first, because a browse
+// filter should narrow as they type; when that matches nothing the shared OR
+// tokenizer runs instead, so the operator sees related entries rather than an
+// empty page and relaxed says the result is not an exact match. relaxed is
+// false when there was no query, when the exact pass found something, or when
+// the query has no second form to try. total is the size of the whole filtered
+// set, not the page.
+func (d *DB) ListKnowledgeMatch(ctx context.Context, f KnowledgeFilter) ([]KnowledgeEntry, int, bool, error) {
 	query := strings.TrimSpace(f.Query)
-	entries, err := d.listKnowledge(ctx, f, query)
-	if err != nil || len(entries) > 0 || query == "" {
-		return entries, false, err
+	entries, total, err := d.listKnowledge(ctx, f, query)
+	if err != nil || total > 0 || query == "" {
+		return entries, total, false, err
 	}
 	relaxed := MemorySearchTerms(query)
 	if relaxed == query {
-		return entries, false, nil
+		return entries, 0, false, nil
 	}
-	entries, err = d.listKnowledge(ctx, f, relaxed)
+	entries, total, err = d.listKnowledge(ctx, f, relaxed)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
-	return entries, true, nil
+	return entries, total, true, nil
 }
 
-// listKnowledge runs one list pass. tsquery goes to
-// websearch_to_tsquery('english', ...); "" means no text filter.
-func (d *DB) listKnowledge(ctx context.Context, f KnowledgeFilter, tsquery string) ([]KnowledgeEntry, error) {
+// listKnowledge runs one list pass and returns the page plus the filtered
+// total. tsquery goes to websearch_to_tsquery('english', ...); "" means no
+// text filter. The total comes from a second COUNT over the same WHERE clause
+// rather than COUNT(*) OVER(): a window function disappears with the page, so
+// an offset past the end would report total=0 and a pager could not recover.
+func (d *DB) listKnowledge(ctx context.Context, f KnowledgeFilter, tsquery string) ([]KnowledgeEntry, int, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 50
 	}
 	if limit > 200 {
 		limit = 200
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
 	}
 	args := []any{}
 	where := []string{}
@@ -563,7 +612,7 @@ func (d *DB) listKnowledge(ctx context.Context, f KnowledgeFilter, tsquery strin
 	if f.TaskID > 0 {
 		companies, err := d.taskCompanyIDs(ctx, f.TaskID)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		args = append(args, companies, f.TaskID)
 		where = append(where, fmt.Sprintf(`status <> 'retired' AND ((scope='global' AND status='adopted')
@@ -580,33 +629,79 @@ func (d *DB) listKnowledge(ctx context.Context, f KnowledgeFilter, tsquery strin
 	if f.Status != "" {
 		add(`status = $%d`, f.Status)
 	}
+	if f.Source != "" {
+		add(`source = $%d`, f.Source)
+	}
+	if f.Tag != "" {
+		add(`$%d = ANY(tags)`, f.Tag)
+	}
+	if f.OriginTaskID > 0 {
+		add(`COALESCE(origin_task_id,0) = $%d`, f.OriginTaskID)
+	}
+	if f.CompanyID > 0 {
+		add(`COALESCE(company_id,0) = $%d`, f.CompanyID)
+	}
+	if !f.CreatedAfter.IsZero() {
+		add(`created_at >= $%d`, f.CreatedAfter)
+	}
+	if !f.CreatedBefore.IsZero() {
+		add(`created_at <= $%d`, f.CreatedBefore)
+	}
+	tsArg := 0
 	if tsquery != "" {
+		tsArg = len(args) + 1
 		add(`tsv @@ websearch_to_tsquery('english', $%d)`, tsquery)
 	}
-	args = append(args, limit)
-	sqlText := `SELECT ` + knowledgeColumns + ` FROM knowledge_entries`
+	whereSQL := ""
 	if len(where) > 0 {
-		sqlText += ` WHERE ` + strings.Join(where, " AND ")
+		whereSQL = ` WHERE ` + strings.Join(where, " AND ")
 	}
-	sqlText += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
 
-	rows, err := d.QueryContext(ctx, sqlText, args...)
+	var total int
+	if err := d.QueryRowContext(ctx,
+		`SELECT count(*) FROM knowledge_entries`+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("list knowledge: %w", err)
+	}
+
+	// Sort is a whitelist, never interpolated from the request. Ranked only
+	// applies to a text query and never overrides an explicit sort.
+	sortCol := "created_at"
+	switch f.Sort {
+	case "updated":
+		sortCol = "updated_at"
+	case "title":
+		sortCol = "title"
+	}
+	order := "DESC"
+	if strings.EqualFold(f.Order, "asc") {
+		order = "ASC"
+	}
+	orderBy := fmt.Sprintf("%s %s, id %s", sortCol, order, order)
+	if f.Ranked && tsArg > 0 && f.Sort == "" {
+		orderBy = fmt.Sprintf("ts_rank_cd(tsv, websearch_to_tsquery('english', $%d)) DESC, created_at DESC, id DESC", tsArg)
+	}
+
+	args = append(args, limit, offset)
+	rows, err := d.QueryContext(ctx,
+		`SELECT `+knowledgeColumns+` FROM knowledge_entries`+whereSQL+
+			fmt.Sprintf(` ORDER BY %s LIMIT $%d OFFSET $%d`, orderBy, len(args)-1, len(args)),
+		args...)
 	if err != nil {
-		return nil, fmt.Errorf("list knowledge: %w", err)
+		return nil, 0, fmt.Errorf("list knowledge: %w", err)
 	}
 	defer rows.Close()
 	out := []KnowledgeEntry{}
 	for rows.Next() {
 		e, err := scanKnowledge(rows)
 		if err != nil {
-			return nil, fmt.Errorf("list knowledge: %w", err)
+			return nil, 0, fmt.Errorf("list knowledge: %w", err)
 		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list knowledge: %w", err)
+		return nil, 0, fmt.Errorf("list knowledge: %w", err)
 	}
-	return out, nil
+	return out, total, nil
 }
 
 // GetKnowledge returns one entry; sql.ErrNoRows when it does not exist.
@@ -778,6 +873,95 @@ func (d *DB) DeleteKnowledge(ctx context.Context, id int64) error {
 		return fmt.Errorf("knowledge %d: %w", id, sql.ErrNoRows)
 	}
 	return nil
+}
+
+// KnowledgeStats is the operator dashboard's counter set. Every entry has
+// exactly one scope/status/kind/source, so Total is the sum of ByScope.
+type KnowledgeStats struct {
+	Total    int64            `json:"total"`
+	ByScope  map[string]int64 `json:"by_scope"`
+	ByStatus map[string]int64 `json:"by_status"`
+	ByKind   map[string]int64 `json:"by_kind"`
+	BySource map[string]int64 `json:"by_source"`
+}
+
+// KnowledgeStats counts the whole base per dimension in one round trip.
+func (d *DB) KnowledgeStats(ctx context.Context) (KnowledgeStats, error) {
+	rows, err := d.QueryContext(ctx, `
+SELECT 'scope', scope, count(*) FROM knowledge_entries GROUP BY scope
+UNION ALL
+SELECT 'status', status, count(*) FROM knowledge_entries GROUP BY status
+UNION ALL
+SELECT 'kind', kind, count(*) FROM knowledge_entries GROUP BY kind
+UNION ALL
+SELECT 'source', source, count(*) FROM knowledge_entries GROUP BY source`)
+	if err != nil {
+		return KnowledgeStats{}, fmt.Errorf("knowledge stats: %w", err)
+	}
+	defer rows.Close()
+	out := KnowledgeStats{
+		ByScope:  map[string]int64{},
+		ByStatus: map[string]int64{},
+		ByKind:   map[string]int64{},
+		BySource: map[string]int64{},
+	}
+	for rows.Next() {
+		var dim, value string
+		var n int64
+		if err := rows.Scan(&dim, &value, &n); err != nil {
+			return KnowledgeStats{}, fmt.Errorf("knowledge stats: %w", err)
+		}
+		switch dim {
+		case "scope":
+			out.ByScope[value] = n
+			out.Total += n
+		case "status":
+			out.ByStatus[value] = n
+		case "kind":
+			out.ByKind[value] = n
+		case "source":
+			out.BySource[value] = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return KnowledgeStats{}, fmt.Errorf("knowledge stats: %w", err)
+	}
+	return out, nil
+}
+
+// DemoteKnowledge is the inverse of PromoteKnowledge: an adopted company,
+// environment or global entry becomes a candidate of taskID again, with that
+// task as its origin. It cannot restore identifiers that promotion
+// generalised - the stored text is already the generalised form and is left
+// untouched - so the caller must expect the narrower entry to read as a rule
+// rather than a report. A task-scoped or non-adopted entry is refused.
+func (d *DB) DemoteKnowledge(ctx context.Context, id, taskID int64) (KnowledgeEntry, error) {
+	if taskID <= 0 {
+		return KnowledgeEntry{}, fmt.Errorf("demote knowledge needs a task id: %w", ErrMemoryInvalid)
+	}
+	cur, err := d.GetKnowledge(ctx, id)
+	if err != nil {
+		return KnowledgeEntry{}, err
+	}
+	if cur.Scope == "task" {
+		return KnowledgeEntry{}, fmt.Errorf("knowledge %d is already task-scoped: %w", id, ErrMemoryInvalid)
+	}
+	if cur.Status != "adopted" {
+		return KnowledgeEntry{}, fmt.Errorf("only an adopted entry can be demoted: %w", ErrMemoryInvalid)
+	}
+	row := d.QueryRowContext(ctx, `
+UPDATE knowledge_entries
+SET scope='task', task_id=$2, company_id=NULL, status='candidate', origin_task_id=$2, updated_at=now()
+WHERE id=$1 AND scope<>'task'
+RETURNING `+knowledgeColumns, id, taskID)
+	entry, err := scanKnowledge(row)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return KnowledgeEntry{}, fmt.Errorf("the task already has an entry with this title: %w", ErrMemoryInvalid)
+		}
+		return KnowledgeEntry{}, fmt.Errorf("demote knowledge %d: %w", id, err)
+	}
+	return entry, nil
 }
 
 // memoryInjectionMarkers are instruction-looking fragments neutralised in
