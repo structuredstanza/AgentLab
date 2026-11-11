@@ -12,10 +12,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/sidequestion"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/intercept"
+	"github.com/structuredstanza/AgentLab/artex-global/sidequestion"
 )
 
 const (

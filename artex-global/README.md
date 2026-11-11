@@ -26,7 +26,7 @@ The application UI is English; model-generated output is requested in English.
 
 ---
 
-> **This repository is an English-only edition of the Chinese open-source project [Autumn-27/ARTEX](https://github.com/Autumn-27/ARTEX) (AGPL-3.0 · upstream repository currently unreachable, checked 2026-10).**
+> **This repository is the English-only AgentLab edition of ARTEX (AGPL-3.0), tracked through [structuredstanza/ARTEX](https://github.com/structuredstanza/ARTEX). The original Chinese upstream repository is no longer published; its copyright notices are preserved in [LICENSE](LICENSE).**
 
 ARTEX is a system in which several LLM-driven agents autonomously run a penetration test: they **break goals down on their own, execute real tools, and accumulate discovered assets and vulnerabilities into a graph** as they go. A single Go binary ships with the Next.js frontend embedded, and all data is stored in PostgreSQL.
 
@@ -226,7 +226,7 @@ ARTEX is an **autonomous penetration system driven by LLM multi-agents.** It use
 
 ### Owned SDK and native history
 
-The root `go.mod` selects `./third_party/norma`; normal builds do not fetch the retired SDK implementation. Its Apache-2.0 license and modification notices stay with the source. The nested module has its own tests: run `go test github.com/Autumn-27/norma/...` as well as `go test ./...`.
+The root `go.mod` selects `./third_party/norma`; normal builds do not fetch the retired SDK implementation. Its Apache-2.0 license and modification notices stay with the source. The nested module has its own tests: run `go test github.com/structuredstanza/norma/...` as well as `go test ./...`.
 
 Native Codex, Claude Code, and Antigravity turns use Complete mode even through profile, fallback, pool, and compaction boundaries. Judges and side questions do not reuse the main transcript's signed provider state.
 
@@ -465,4 +465,4 @@ This project is provided "AS IS" without any warranty, express or implied. The o
 
 - Upstream repository: [BaaRai/ARTEX](https://github.com/BaaRai/ARTEX)
 - Original online demo: [https://artex-demo.vercel.app/](https://artex-demo.vercel.app/) (currently unreachable, checked 2026-10)
-- Agent SDK: owned [Norma source](third_party/norma), based on [BaaRai/Norma v0.4.4](https://github.com/BaaRai/Norma/tree/v0.4.4)
+- Agent SDK: owned [Norma source](third_party/norma), based on [BaaRai/Norma v0.4.6](https://github.com/BaaRai/Norma/tree/v0.4.6)

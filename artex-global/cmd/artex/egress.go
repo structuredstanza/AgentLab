@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Autumn-27/artex/egress"
-	"github.com/Autumn-27/artex/limits"
+	"github.com/structuredstanza/AgentLab/artex-global/egress"
+	"github.com/structuredstanza/AgentLab/artex-global/limits"
 )
 
 // runEgressProxy is the guest's outbound HTTP path, run as a separate process so

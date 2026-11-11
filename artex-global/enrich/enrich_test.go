@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/egress"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/egress"
 	"github.com/andybalholm/brotli"
 )
 

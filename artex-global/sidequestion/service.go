@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/norma/llm"
 )
 
 // User-facing side-question outputs are Korean. The agent-brain prompts

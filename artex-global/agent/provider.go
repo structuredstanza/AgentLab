@@ -20,13 +20,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/artex/nativeproxy"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/compaction"
-	"github.com/Autumn-27/norma/llm"
-	acperm "github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/AgentLab/artex-global/llmrec"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
+	"github.com/structuredstanza/norma/agentcore"
+	"github.com/structuredstanza/norma/compaction"
+	"github.com/structuredstanza/norma/llm"
+	acperm "github.com/structuredstanza/norma/permission"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 const FormatAntigravity llm.Format = "antigravity"

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // A long tool-heavy run writes several activity rows per turn. The planner's

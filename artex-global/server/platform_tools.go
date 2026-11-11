@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 // Platform operation tools (for the built-in Auto agent): create/modify skills, custom tools, and MCP. All are host tools,

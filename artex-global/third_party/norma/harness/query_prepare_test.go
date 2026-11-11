@@ -6,7 +6,7 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/norma/llm"
 )
 
 func TestModelRouteRenegotiationStopsAtOutputBoundary(t *testing.T) {

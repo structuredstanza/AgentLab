@@ -8,31 +8,6 @@
 #
 # Format: one URL per line. Text after `#` is a comment; blank and comment-only lines are ignored.
 
-# Contributor GitHub profile credited in the upstream (Autumn-27/ARTEX) changelog:539.
-# The account was renamed or deleted, so it returns 404. Under the upstream source-preservation policy
-# (BRIEF boundary #1), the upstream changelog stays as it is, so we do not fix it. Confirmed 2026-10-07.
-https://github.com/begininvoke
-
-# Upstream (Autumn-27/ARTEX) repository, online demo, and release/compare assets are not publicly
-# accessible (404), confirmed 2026-10. The URLs below are upstream assets that this fork is based
-# on and credits. As of 2026-10, all of them return 404 and cannot be reached. Because AGPL-3.0
-# attribution must be kept (BRIEF boundary #1), the links themselves are not deleted. Instead, the
-# curated documents (README, CONTRIBUTING, SECURITY, docs/defense) add the note
-# "(currently unreachable, confirmed 2026-10)" next to each link (decision G138a-A). They are
-# upstream-owned assets that we cannot revive, so they go in the allowlist. The compare and releases
-# links are inherited from upstream source-preservation files (upstream changelog and README), so they
-# are kept verbatim.
+# The original project's online demo, credited in the README. It is upstream-owned, has been offline
+# since 2026-10, and cannot be revived here, so it stays allowlisted rather than removed.
 https://artex-demo.vercel.app/
-https://github.com/Autumn-27/ARTEX
-https://github.com/Autumn-27/norma
-https://github.com/Autumn-27/ARTEX/releases
-https://github.com/Autumn-27/ARTEX/compare/v0.3.1...v0.3.2
-https://github.com/Autumn-27/ARTEX/compare/v0.3.2...v0.3.3
-https://github.com/Autumn-27/ARTEX/compare/v0.3.3...v0.3.4
-https://github.com/Autumn-27/ARTEX/compare/v0.3.4...v0.3.5
-https://github.com/Autumn-27/ARTEX/compare/v0.3.5...v0.3.6
-https://github.com/Autumn-27/ARTEX/compare/v0.3.6...v0.3.7
-https://github.com/Autumn-27/ARTEX/compare/v0.3.7...v0.3.8
-https://github.com/Autumn-27/ARTEX/compare/v0.3.8...v0.3.9
-https://github.com/Autumn-27/ARTEX/compare/v0.3.9...v0.3.10
-https://github.com/Autumn-27/ARTEX/compare/v0.3.10...HEAD

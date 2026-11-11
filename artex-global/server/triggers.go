@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // ---------- P3 agent triggers (for user-defined agents only) ----------

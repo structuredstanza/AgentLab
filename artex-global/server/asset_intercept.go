@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // There are four user-facing errors returned by the asset interception rule validator (validateAssetInterceptRuleReq).

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/manifest"
-	"github.com/Autumn-27/artex/useragent"
+	"github.com/structuredstanza/AgentLab/artex-global/manifest"
+	"github.com/structuredstanza/AgentLab/artex-global/useragent"
 )
 
 // Every shipped manifest must load and validate. A manifest that parses but

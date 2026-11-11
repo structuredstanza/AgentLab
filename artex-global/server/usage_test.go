@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/nativeproxy"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
 )
 
 func TestUsageStatusFailurePreservesLastGoodAsStale(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // Rendering for the "Export" function on the vulnerabilities page: multiple findings table rows are summarized into Markdown,

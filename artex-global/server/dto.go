@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/traffic"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/traffic"
 )
 
 // DTO/serialization layer: each handler emits EXACTLY the frontend's spec shapes

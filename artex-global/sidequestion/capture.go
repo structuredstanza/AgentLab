@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/norma/harness"
+	"github.com/structuredstanza/norma/llm"
 )
 
 type Parent struct {

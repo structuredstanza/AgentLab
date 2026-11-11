@@ -19,17 +19,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/llmpool"
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/artex/nativeproxy"
-	"github.com/Autumn-27/artex/report"
-	"github.com/Autumn-27/artex/traffic"
-	"github.com/Autumn-27/norma/llm"
-	actool "github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/intercept"
+	"github.com/structuredstanza/AgentLab/artex-global/llmpool"
+	"github.com/structuredstanza/AgentLab/artex-global/llmrec"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
+	"github.com/structuredstanza/AgentLab/artex-global/report"
+	"github.com/structuredstanza/AgentLab/artex-global/traffic"
+	"github.com/structuredstanza/norma/llm"
+	actool "github.com/structuredstanza/norma/tool"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 // BuildVersion is the backend application version, injected from cmd/artex at

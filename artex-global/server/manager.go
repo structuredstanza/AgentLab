@@ -15,13 +15,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	pgdb "github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/enrich"
-	"github.com/Autumn-27/artex/guard"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/traffic"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	pgdb "github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/enrich"
+	"github.com/structuredstanza/AgentLab/artex-global/guard"
+	"github.com/structuredstanza/AgentLab/artex-global/intercept"
+	"github.com/structuredstanza/AgentLab/artex-global/traffic"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 // Task is one engagement: a description + goal + its own exploration store,

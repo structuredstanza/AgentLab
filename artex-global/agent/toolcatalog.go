@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	actool "github.com/Autumn-27/norma/tool"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 // This file turns the "built-in tools" from pure code into an enumerable catalog that the DB can override:

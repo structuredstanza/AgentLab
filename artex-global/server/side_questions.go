@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/artex/sidequestion"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/llmrec"
+	"github.com/structuredstanza/AgentLab/artex-global/sidequestion"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 // User-facing side-question (side-question) messages surfaced through the HTTP API and

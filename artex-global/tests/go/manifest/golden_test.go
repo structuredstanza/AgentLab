@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/manifest"
+	"github.com/structuredstanza/AgentLab/artex-global/manifest"
 )
 
 // A golden case pins one tool's parsing: a captured output file and the records

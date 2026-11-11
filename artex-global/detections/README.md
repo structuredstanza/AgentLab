@@ -42,7 +42,7 @@ it is kept out of this tested rule tree because it cannot be grounded in ARTEX s
 
 Sigma covers host and log telemetry. One ARTEX User-Agent is observable on the wire, and it ships as a
 [Suricata](https://suricata.io) rule in [`suricata/`](suricata/): the norma SDK WebFetch tool's
-attack-phase `norma/0.4` (`github.com/Autumn-27/norma/tool/webfetch.go`), presence signature sid 1000003.
+attack-phase `norma/0.4` (`github.com/structuredstanza/norma/tool/webfetch.go`), presence signature sid 1000003.
 The enrichment prober carries **no** static target-side fingerprint: it presents the engagement's masked
 browser identity, so it looks like ordinary browser traffic and there is no User-Agent rule for it —
 enrichment is caught by behaviour (see the correlation rules above and the defense guide), not by a wire

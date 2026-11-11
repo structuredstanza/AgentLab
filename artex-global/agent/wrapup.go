@@ -3,7 +3,7 @@ package agent
 import (
 	"strings"
 
-	"github.com/Autumn-27/norma/harness"
+	"github.com/structuredstanza/norma/harness"
 )
 
 // Wrap-up / settlement prompt: when the agent is terminated because the step budget is exhausted (MaxTurns) or

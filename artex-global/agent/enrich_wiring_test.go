@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/egress"
-	"github.com/Autumn-27/artex/enrich"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/egress"
+	"github.com/structuredstanza/AgentLab/artex-global/enrich"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 // startMaskingProxyForTest runs the real masking egress proxy on loopback with a

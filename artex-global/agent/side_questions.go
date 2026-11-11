@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/sidequestion"
-	"github.com/Autumn-27/norma/agentcore"
+	"github.com/structuredstanza/AgentLab/artex-global/sidequestion"
+	"github.com/structuredstanza/norma/agentcore"
 )
 
 func attachSideCapture(ctx context.Context, opts *agentcore.Options) context.Context {

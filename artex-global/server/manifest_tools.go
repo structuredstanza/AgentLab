@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	pgdb "github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/limits"
-	"github.com/Autumn-27/artex/manifest"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	pgdb "github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/limits"
+	"github.com/structuredstanza/AgentLab/artex-global/manifest"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 // manifestTools is the shipped tool manifest set, loaded once.

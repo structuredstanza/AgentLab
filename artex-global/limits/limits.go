@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/manifest"
+	"github.com/structuredstanza/AgentLab/artex-global/manifest"
 )
 
 // Policy is one engagement's ceiling. The zero value enforces nothing, which is

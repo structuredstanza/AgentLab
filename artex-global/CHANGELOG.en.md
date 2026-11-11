@@ -8,6 +8,11 @@ The upstream ARTEX project's per-version release history (0.3.x and earlier) and
 
 ## [Unreleased]
 
+### Ownership and SDK
+
+- Move the Go module to `github.com/structuredstanza/AgentLab/artex-global` and the vendored agent SDK to `github.com/structuredstanza/norma`, matching where the code is actually published. Every import, the `replace` directive and the CI invocations follow. The retired upstream account is no longer named anywhere outside the AGPL copyright notice in `third_party/norma/LICENSE`, and the README, SECURITY, defense guide and external-link allowlist now point at the published upstream this fork tracks.
+- Update the vendored SDK from Norma v0.4.4 to v0.4.6 as a three-way merge, so the local changes (`llm/prepare.go`, `llm/snippet.go`, the cache and prepare tests, the agentcore, summarizer, query, openai, retry, types and archive edits) survive. Upstream's new `harness/untrusted.go` comes in with it.
+
 ### Deployment
 
 - Stop the VM from running whatever the image was built with. `lab start` rebuilds the application into `deployment/guest-dist/` (frontend export plus the `embedui` binary, the skills, `guest-start.py` and `guest-export.py`) whenever a source file is newer than that build, and the directory is mounted read-only at `/dist`. The supervisor copies the binary and syncs the skills into `/state/skills` at every start, so a code, skill or supervisor change reaches the VM on the next start. A skill deleted upstream is removed; a skill created in the UI is kept. `./lab build` forces the build without starting the VM, and `lab start` names the recreate command when a sandbox predates the mount. The image's copies remain only as the fallback for such a sandbox.
@@ -203,7 +208,7 @@ The release that turns the Korean edition (`0.3.15-ko.1`) into ARTEX-global, a m
 
 ### Repository rename (artex-ko → artex-global)
 
-- **Renamed the repository to `artex-global`.** Changed the GitHub slug to `jiwoochris/artex-global` (old URLs kept via GitHub redirects) and the container image path to `ghcr.io/jiwoochris/artex-global`. Replaced 126 occurrences across 37 files in the repo — badges, clone URLs, `docker-compose.yml`, `release.yml`, `install.sh`, docs, edition labels, detection-rule authors, the MISP event name. The upstream Go module (`github.com/Autumn-27/artex`) and the historical version tag (`0.3.15-ko.1`) were left unchanged.
+- **Renamed the repository to `artex-global`.** Changed the GitHub slug to `jiwoochris/artex-global` (old URLs kept via GitHub redirects) and the container image path to `ghcr.io/jiwoochris/artex-global`. Replaced 126 occurrences across 37 files in the repo — badges, clone URLs, `docker-compose.yml`, `release.yml`, `install.sh`, docs, edition labels, detection-rule authors, the MISP event name. The Go module path and the historical version tag (`0.3.15-ko.1`) were left unchanged.
 
 ### Localization (i18n)
 

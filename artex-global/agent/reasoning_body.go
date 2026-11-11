@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/norma/llm"
 )
 
 // responsesEncryptedInclude asks Responses for encrypted reasoning state. The

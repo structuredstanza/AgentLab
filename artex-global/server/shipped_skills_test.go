@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Autumn-27/norma/skill"
+	"github.com/structuredstanza/norma/skill"
 )
 
 // Every skill shipped in the repository's skills/ directory must parse cleanly

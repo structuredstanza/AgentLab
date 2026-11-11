@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 // A crash can leave the last transcript record half-written. Resume rejects the

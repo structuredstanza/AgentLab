@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/notify"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/notify"
 )
 
 // This file covers the end-to-end behavior of the push feature: vulnerability persisted → event → dispatch → real HTTP send.

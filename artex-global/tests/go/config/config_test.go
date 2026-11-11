@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Autumn-27/artex/config"
+	"github.com/structuredstanza/AgentLab/artex-global/config"
 )
 
 func TestPostgresDSNPrecedence(t *testing.T) {

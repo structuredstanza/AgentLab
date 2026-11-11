@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/AgentLab/artex-global/llmrec"
+	"github.com/structuredstanza/norma/llm"
 )
 
 // sseMaxLine bounds the per-line buffer. Longer lines are skipped without

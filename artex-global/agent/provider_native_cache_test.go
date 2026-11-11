@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/norma/llm"
 )
 
 // The native Claude path must send blocks, not a joined string, or the cache

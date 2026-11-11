@@ -3,13 +3,13 @@ package server
 import (
 	"context"
 	"fmt"
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/traffic"
+	"github.com/structuredstanza/AgentLab/artex-global/traffic"
 )
 
 // ingestServer wires a Server with a live traffic store, like

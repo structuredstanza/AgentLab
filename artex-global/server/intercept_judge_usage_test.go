@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // This test covers the behavior that was in upstream ARTEX (0.3.15 series)

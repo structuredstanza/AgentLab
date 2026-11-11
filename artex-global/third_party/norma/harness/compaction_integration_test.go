@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/permission"
+	"github.com/structuredstanza/norma/tool"
 )
 
 // recordingCompactor captures the lastInputTokens the loop passes to each Pre.

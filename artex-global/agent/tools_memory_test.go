@@ -9,9 +9,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/llm"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/norma/llm"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 // fakeMemory is a MemoryStore that records what the tools asked for.

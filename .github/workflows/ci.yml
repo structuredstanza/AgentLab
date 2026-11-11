@@ -40,11 +40,11 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: go vet (owned SDK)
-        run: go vet github.com/Autumn-27/norma/...
+        run: go vet github.com/structuredstanza/norma/...
       - name: go test (no DB — integration tests skipped)
         run: go test ./... -count=1
       - name: go test (owned SDK)
-        run: go test github.com/Autumn-27/norma/... -count=1
+        run: go test github.com/structuredstanza/norma/... -count=1
 
   # Takes charge of DB integration tests (notifications, evidence, usage metering, etc.) that only run when a real PostgreSQL is available.
   # Forces the paths the go job above skips (notification channel validation, evidence storage, llm_usage metering, etc.) against a real

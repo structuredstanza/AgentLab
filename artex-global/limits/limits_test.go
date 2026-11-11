@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/manifest"
+	"github.com/structuredstanza/AgentLab/artex-global/manifest"
 )
 
 func rpsManifest() *manifest.Manifest {

@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/AgentLab/artex-global/llmrec"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 func TestNativeAntigravityPromptRefusalPreservesReceiptWithoutInventingHistory(t *testing.T) {

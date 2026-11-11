@@ -5,7 +5,7 @@
 #
 # SCOPE AND HONESTY - read before deploying:
 #  - These rules target the one ARTEX artifact observable on the wire: the norma SDK's
-#    WebFetch User-Agent "norma/0.4" (github.com/Autumn-27/norma/tool/webfetch.go).
+#    WebFetch User-Agent "norma/0.4" (github.com/structuredstanza/norma/tool/webfetch.go).
 #    The recording proxy (traffic/traffic.go) does not modify request headers, so that
 #    UA reaches the target on the wire. Other worker tools (curl, nmap, etc.) use their
 #    own default User-Agents — detect those with generic scanner signatures and ../sigma/.

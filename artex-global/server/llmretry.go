@@ -3,8 +3,8 @@ package server
 import (
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // Server-side retry policy resolution; see docs/LLM\u91cd\u8bd5\u8bbe\u8ba1.md. Of the five layers:

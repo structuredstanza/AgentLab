@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/scope"
+	"github.com/structuredstanza/AgentLab/artex-global/scope"
 )
 
 // TaskScope is one row of a task's test scope — the coverage denominator and the

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/permission"
+	"github.com/structuredstanza/norma/tool"
 )
 
 // drainWithCtx is drain() over a caller-supplied ctx, so a test can cancel the

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/notify"
+	"github.com/structuredstanza/AgentLab/artex-global/notify"
 )
 
 // The test cases in this file connect to a real PostgreSQL instance (skipped when no database is available). These SQL statements use

@@ -13,11 +13,11 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/artex/nativeproxy"
-	"github.com/Autumn-27/artex/sidequestion"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/AgentLab/artex-global/llmrec"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
+	"github.com/structuredstanza/AgentLab/artex-global/sidequestion"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 const nativeStateBlock llm.BlockType = "provider_state"

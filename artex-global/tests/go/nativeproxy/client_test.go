@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/nativeproxy"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
 )
 
 func proxyServer(t *testing.T, h http.HandlerFunc) *httptest.Server {

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 func TestCamelToSnake(t *testing.T) {

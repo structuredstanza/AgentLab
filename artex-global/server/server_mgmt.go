@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Autumn-27/artex/useragent"
+	"github.com/structuredstanza/AgentLab/artex-global/useragent"
 	"io"
 	"log"
 	"net/http"
@@ -24,11 +24,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/nativeproxy"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/skill"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/skill"
 )
 
 // validSkillName checks the agentskills.io name constraints, widened so a skill can

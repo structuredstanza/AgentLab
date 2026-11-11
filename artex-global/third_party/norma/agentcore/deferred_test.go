@@ -6,10 +6,10 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/norma/harness"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/permission"
+	"github.com/structuredstanza/norma/tool"
 )
 
 func deferredEcho() tool.CoreTool {

@@ -3,7 +3,7 @@ package scope_test
 import (
 	"testing"
 
-	"github.com/Autumn-27/artex/scope"
+	"github.com/structuredstanza/AgentLab/artex-global/scope"
 )
 
 func rule(effect scope.Effect, pattern, note string) scope.Rule {

@@ -7,7 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"github.com/Autumn-27/artex/useragent"
+	"github.com/structuredstanza/AgentLab/artex-global/useragent"
 	"io"
 	"log"
 	"net/http"
@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/norma/permission"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 // This file implements the custom tool executor (docs/\u81ea\u5b9a\u4e49\u5de5\u5177\u8bbe\u8ba1.md). Rows in tools with system=false are dispatched by

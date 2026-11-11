@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // User-visible intercept verdict and approval messages, shown in approval reasons,

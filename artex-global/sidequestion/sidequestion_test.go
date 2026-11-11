@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/llmpool"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/AgentLab/artex-global/llmpool"
+	"github.com/structuredstanza/norma/harness"
+	"github.com/structuredstanza/norma/llm"
 )
 
 type fakeProvider struct {

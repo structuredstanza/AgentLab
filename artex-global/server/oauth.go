@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/nativeproxy"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
 )
 
 // Subscription login is proxied to the host native proxy. The proxy holds the

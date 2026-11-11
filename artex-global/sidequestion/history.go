@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/norma/llm"
 )
 
 func formatReadableToolInput(raw json.RawMessage) string {

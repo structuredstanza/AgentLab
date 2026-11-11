@@ -7,7 +7,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // TestMain acquires the same PostgreSQL advisory lock (7337741002) that agent,

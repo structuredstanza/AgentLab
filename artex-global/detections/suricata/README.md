@@ -10,7 +10,7 @@ under [`../sigma/`](../sigma/); the [English defense guide](../../docs/defense-e
 ## Rules — [`artex.rules`](artex.rules)
 
 - **sid 1000003** — `ARTEX worker WebFetch User-Agent`. An inbound HTTP request whose User-Agent starts with
-  `norma/` — the norma SDK's WebFetch tool (`github.com/Autumn-27/norma/tool/webfetch.go`). This UA is hardcoded across all norma
+  `norma/` — the norma SDK's WebFetch tool (`github.com/structuredstanza/norma/tool/webfetch.go`). This UA is hardcoded across all norma
   versions (v0.1.0–v0.4.3, verified) and reaches the target through the recording proxy, which does not
   modify request headers (`traffic/traffic.go`). It fires during the **attack phase** (active vulnerability
   probing). `classtype: attempted-recon`.
@@ -21,7 +21,7 @@ longer sends a distinctive User-Agent, so those signatures could never match aga
 ## Scope and honesty — read before deploying
 
 - **One ARTEX User-Agent is network-observable.** The norma SDK's WebFetch tool sends `norma/0.4`
-  (`github.com/Autumn-27/norma/tool/webfetch.go`) during the attack phase. The recording proxy
+  (`github.com/structuredstanza/norma/tool/webfetch.go`) during the attack phase. The recording proxy
   (`traffic/traffic.go`) does not modify request headers, so that UA reaches the target on the wire. The
   asset-enrichment prober has **no** static fingerprint: it presents the engagement's masked browser
   identity, so at the target it is indistinguishable from ordinary browser traffic and there is no

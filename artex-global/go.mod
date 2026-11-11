@@ -1,9 +1,9 @@
-module github.com/Autumn-27/artex
+module github.com/structuredstanza/AgentLab/artex-global
 
 go 1.26.3
 
 require (
-	github.com/Autumn-27/norma v0.4.4
+	github.com/structuredstanza/norma v0.4.6
 	github.com/BurntSushi/toml v1.4.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
@@ -63,4 +63,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/Autumn-27/norma => ./third_party/norma
+replace github.com/structuredstanza/norma => ./third_party/norma

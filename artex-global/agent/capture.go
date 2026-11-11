@@ -6,12 +6,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/sidequestion"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/intercept"
+	"github.com/structuredstanza/AgentLab/artex-global/sidequestion"
+	"github.com/structuredstanza/norma/agentcore"
+	"github.com/structuredstanza/norma/harness"
+	"github.com/structuredstanza/norma/llm"
 )
 
 func newSession(ctx context.Context, opts agentcore.Options) (context.Context, *agentcore.Session) {

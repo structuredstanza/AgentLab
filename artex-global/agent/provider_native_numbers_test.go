@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/norma/harness"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/permission"
+	"github.com/structuredstanza/norma/tool"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 const nativeNumberArguments = `{"id":9007199254740993,"nested":[-9007199254740993,1.234567890123456789,1e40]}`

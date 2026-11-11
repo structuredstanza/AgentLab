@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 const findingIDGuidance = "\n\n**Finding ID convention**: finding_id is the independent vulnerability record ID; finding_node_id is the exploration node ID. The id arguments of list_findings / list_task_findings / node_detail / get_task_node_detail remain exploration node IDs; read the independent number from the finding_id in the same response. get_finding_traffic / bind_finding_traffic use the independent finding_id. The finding_id parameter of the legacy update_finding_report still takes finding_node_id. Do not use the number on the first line of report_finding for evidence tools, and do not guess other numbers after an ID error."

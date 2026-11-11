@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/nativeproxy"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
 )
 
 const (

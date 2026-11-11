@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // memoryTestServer builds a Manager against the disposable test Postgres and a

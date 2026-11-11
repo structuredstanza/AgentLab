@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 func callReadJSON(t *testing.T, tool actool.CoreTool, input string) any {

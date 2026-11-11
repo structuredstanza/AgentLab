@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/norma/permission"
+	"github.com/structuredstanza/norma/tool"
 )
 
 // Tools returns the RecallMemory and RecordMemory tools bound to a store.

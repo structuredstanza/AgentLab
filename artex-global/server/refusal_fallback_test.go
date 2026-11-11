@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/nativeproxy"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 // TestRefusalFallbackChainTriedInOrderOnSameProfile verifies that when a model refuses,

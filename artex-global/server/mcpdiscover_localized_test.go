@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // TestConnectMCPErrors checks that connectMCP rejects each invalid transport config with an error.

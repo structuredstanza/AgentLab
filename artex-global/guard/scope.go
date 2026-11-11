@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Autumn-27/norma/hook"
+	"github.com/structuredstanza/norma/hook"
 )
 
 // Asset extraction for scope enforcement.

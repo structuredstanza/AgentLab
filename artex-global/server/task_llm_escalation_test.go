@@ -6,8 +6,8 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/norma/llm"
 )
 
 type failingProvider struct{ err error }

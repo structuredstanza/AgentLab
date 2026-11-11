@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // Overview of the manual CRUD interface for "constraint management" + parsing of the injection scope toggles. Operating constraints (allow/deny) and the agent side

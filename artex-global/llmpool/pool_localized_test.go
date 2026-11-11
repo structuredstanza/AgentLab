@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/norma/llm"
 )
 
 // TestExhaustedErrorIdentity: callers branch on the ErrExhausted sentinel with

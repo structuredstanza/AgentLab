@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 const askOperatorMaxImage = 10 << 20

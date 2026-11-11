@@ -8,8 +8,8 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/AgentLab/artex-global/llmrec"
+	"github.com/structuredstanza/norma/llm"
 )
 
 func TestObserveRefusalSSESignals(t *testing.T) {

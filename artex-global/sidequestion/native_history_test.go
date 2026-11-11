@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 func nativeMainSnapshot(t *testing.T, provider string) Snapshot {

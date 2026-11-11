@@ -3,7 +3,7 @@ package agent
 import (
 	"encoding/json"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/norma/llm"
 )
 
 // RefusalInRawResponse detects refusal signals from complete raw provider responses.

@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 // repairTranscript drops a partial trailing line from a session transcript.

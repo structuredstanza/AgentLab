@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/notify"
+	"github.com/structuredstanza/AgentLab/artex-global/notify"
 )
 
 // This file holds the channel configuration and event layer for IM push. Claiming and state transitions for delivery tasks are in

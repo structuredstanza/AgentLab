@@ -4,7 +4,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/Autumn-27/artex/manifest"
+	"github.com/structuredstanza/AgentLab/artex-global/manifest"
 )
 
 // Runs a real tool against the loopback and parses its real output through the

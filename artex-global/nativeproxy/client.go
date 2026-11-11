@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Autumn-27/artex/useragent"
+	"github.com/structuredstanza/AgentLab/artex-global/useragent"
 	"io"
 	"net"
 	"net/http"

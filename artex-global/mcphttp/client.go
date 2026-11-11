@@ -16,7 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Autumn-27/artex/useragent"
+	"github.com/structuredstanza/AgentLab/artex-global/useragent"
 	"io"
 	"net/http"
 	"net/url"
@@ -24,9 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/permission"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 const protocolVersion = "2025-06-18"

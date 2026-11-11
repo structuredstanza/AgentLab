@@ -11,15 +11,15 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Autumn-27/artex/llmpool"
-	"github.com/Autumn-27/artex/nativeproxy"
-	"github.com/Autumn-27/artex/sidequestion"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/AgentLab/artex-global/llmpool"
+	"github.com/structuredstanza/AgentLab/artex-global/nativeproxy"
+	"github.com/structuredstanza/AgentLab/artex-global/sidequestion"
+	"github.com/structuredstanza/norma/agentcore"
+	"github.com/structuredstanza/norma/harness"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/permission"
+	"github.com/structuredstanza/norma/tool"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 type modeBindingKey struct{}

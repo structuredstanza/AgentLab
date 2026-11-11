@@ -4,7 +4,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/Autumn-27/artex/scope"
+	"github.com/structuredstanza/AgentLab/artex-global/scope"
 )
 
 // TaskScopeChecker answers the guard's scope question for one task.

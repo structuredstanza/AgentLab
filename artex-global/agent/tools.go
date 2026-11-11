@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
-	acperm "github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	acperm "github.com/structuredstanza/norma/permission"
+	actool "github.com/structuredstanza/norma/tool"
 )
 
 // normalizeDirection fingerprints summaries while ignoring case, whitespace, and changing digits.

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // Error response text that goals_api.go returns to the user. Command and request field names (text, vulnclass, ...) are kept unchanged.

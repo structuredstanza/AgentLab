@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/config"
+	"github.com/structuredstanza/AgentLab/artex-global/config"
 )
 
 // TestPostgresDSNErrorKeepsIdentifiers pins that the missing-config startup error

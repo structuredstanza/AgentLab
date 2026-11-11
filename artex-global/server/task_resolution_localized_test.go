@@ -3,7 +3,7 @@ package server
 import (
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // TestTaskLLMResolution pins the no-DB reasons returned by resolutionFromProfile for a

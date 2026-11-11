@@ -10,11 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/structuredstanza/norma/harness"
+	"github.com/structuredstanza/norma/llm"
+	"github.com/structuredstanza/norma/permission"
+	"github.com/structuredstanza/norma/tool"
+	"github.com/structuredstanza/norma/transcript"
 )
 
 // Definition configures a named subagent (FR-09.1).
@@ -38,6 +38,12 @@ type Config struct {
 	// file under the parent session (whose id is read from the context). Subagent
 	// tokens are recorded there, separate from the parent's totals.
 	Transcript *transcript.Store
+	// ToolOutputDir, MaxToolOutputChars and UntrustedOutputBoundary are passed
+	// to the subagent's loop unchanged (see harness.QueryInput), so its tool
+	// output is spilled, capped and framed the same way as the parent's.
+	ToolOutputDir           string
+	MaxToolOutputChars      int
+	UntrustedOutputBoundary bool
 }
 
 type ctxKey int
@@ -122,16 +128,19 @@ func run(ctx context.Context, cfg Config, def Definition, agentType, prompt, wor
 
 	seed := llm.UserText(prompt)
 	in := harness.QueryInput{
-		Provider:       cfg.Provider,
-		System:         def.Prompt,
-		Messages:       []llm.Message{seed},
-		Tools:          registry,
-		MaxTurns:       def.MaxTurns,
-		WorkingDir:     workDir,
-		AgentID:        agentType,
-		PermissionMode: def.PermissionMode,
-		CanUseTool:     cfg.CanUseTool,
-		Hooks:          cfg.Hooks,
+		Provider:                cfg.Provider,
+		System:                  def.Prompt,
+		Messages:                []llm.Message{seed},
+		Tools:                   registry,
+		MaxTurns:                def.MaxTurns,
+		WorkingDir:              workDir,
+		AgentID:                 agentType,
+		ToolOutputDir:           cfg.ToolOutputDir,
+		MaxToolOutputChars:      cfg.MaxToolOutputChars,
+		UntrustedOutputBoundary: cfg.UntrustedOutputBoundary,
+		PermissionMode:          def.PermissionMode,
+		CanUseTool:              cfg.CanUseTool,
+		Hooks:                   cfg.Hooks,
 	}
 	// Persist this run to its own sidechain under the parent session.
 	if cfg.Transcript != nil {

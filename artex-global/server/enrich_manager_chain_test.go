@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/egress"
-	"github.com/Autumn-27/artex/enrich"
-	"github.com/Autumn-27/artex/traffic"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/egress"
+	"github.com/structuredstanza/AgentLab/artex-global/enrich"
+	"github.com/structuredstanza/AgentLab/artex-global/traffic"
 )
 
 // With traffic capture ON, a real recorder, a real masking proxy and TLS origins,

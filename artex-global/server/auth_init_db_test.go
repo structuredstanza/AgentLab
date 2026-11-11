@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // This is an integration test that verifies end to end, against a real DB, the fix for the first-run admin account takeover report (unauthenticated calls to /api/auth/init).

@@ -4,10 +4,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/llmpool"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/llmpool"
+	"github.com/structuredstanza/norma/llm"
 )
 
 // Server-side wiring for LLM rotation (failover). See docs/LLM\u8f6e\u8be2\u8bbe\u8ba1.md for the design:

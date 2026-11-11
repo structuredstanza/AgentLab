@@ -2,7 +2,7 @@ package manifest
 
 import (
 	"fmt"
-	"github.com/Autumn-27/artex/useragent"
+	"github.com/structuredstanza/AgentLab/artex-global/useragent"
 	"os"
 	"strconv"
 	"strings"

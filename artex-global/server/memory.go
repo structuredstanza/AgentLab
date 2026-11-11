@@ -8,8 +8,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 )
 
 // memoryMode reads the knowledge/reflection injection switch:

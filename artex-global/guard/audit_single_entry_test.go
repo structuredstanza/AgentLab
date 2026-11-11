@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/intercept"
 )
 
 // One blocked call must appear in the audit exactly once, as a block, carrying
