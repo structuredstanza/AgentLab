@@ -203,7 +203,10 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	}
 
 	status := lifecycle.Status
-	if wasTerminal {
+	if wasTerminal || lifecycle.Status == db.StatusNeedsOperator {
+		// needs_operator is recoverable: admitting new work (a goal added to a
+		// blocked task, a rerun) is the human answering the block, so the task
+		// returns to running instead of staying gated by the planner's check.
 		status = "running"
 	}
 	if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, status, shouldQueue, mode, wasQueued); err != nil {

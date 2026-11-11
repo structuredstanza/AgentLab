@@ -188,7 +188,9 @@ func TestKnowledgeCandidateStaysTaskPrivate(t *testing.T) {
 }
 
 // TestPromoteKnowledgeGeneralisesOriginIdentifiers proves the only way out of
-// a task scrubs that task's own identifiers.
+// a task scrubs that task's own identifiers. The fixture is operator-written
+// because an agent write is already generalised at write time; promotion must
+// still generalise a task entry an operator kept concrete.
 func TestPromoteKnowledgeGeneralisesOriginIdentifiers(t *testing.T) {
 	d := memoryTestDB(t)
 	ctx := context.Background()
@@ -208,7 +210,7 @@ func TestPromoteKnowledgeGeneralisesOriginIdentifiers(t *testing.T) {
 	entry := mustAddKnowledge(t, d, KnowledgeInput{
 		TaskID: tk.ID, Kind: "technique", Title: "header injection on api.secret-target.example",
 		Body:   "send X-Forwarded-Host to https://api.secret-target.example/admin from 10.9.9.9; company Promote Target Co",
-		Source: "agent"})
+		Source: "operator"})
 	if _, _, err := d.UpdateKnowledge(ctx, entry.ID, KnowledgePatch{Status: new("adopted")}); !errors.Is(err, ErrMemoryInvalid) {
 		t.Fatalf("adopting a task entry must be refused, got %v", err)
 	}
@@ -565,9 +567,11 @@ func TestSearchKnowledgeWithoutCompanies(t *testing.T) {
 	}
 }
 
-// TestOperatorGeneralisationOnWrite: an entry written straight to global or
-// company scope has no origin task, so IP literals and emails are generalised
-// on the write itself. A task-scope entry keeps them (the task is the boundary).
+// TestOperatorGeneralisationOnWrite: an entry written straight to global,
+// environment or company scope has no origin task, so IP literals and emails
+// are generalised on the write itself. A task entry written by an agent is
+// generalised with that task's identifiers (it is read on the next target); an
+// operator's task entry keeps them.
 func TestOperatorGeneralisationOnWrite(t *testing.T) {
 	d := memoryTestDB(t)
 	ctx := context.Background()
@@ -596,8 +600,14 @@ func TestOperatorGeneralisationOnWrite(t *testing.T) {
 	taskEntry := mustAddKnowledge(t, d, KnowledgeInput{
 		TaskID: tk.ID, Kind: "indicator", Source: "agent",
 		Title: "host 203.0.113.9 flagged", Body: "contact ops@corp.tld"})
-	if taskEntry.Title != "host 203.0.113.9 flagged" || taskEntry.Body != "contact ops@corp.tld" {
-		t.Fatalf("task entry must keep its identifiers: %+v", taskEntry)
+	if taskEntry.Title != "host <ip> flagged" || taskEntry.Body != "contact <email>" {
+		t.Fatalf("an agent task entry must be generalised at write time: %+v", taskEntry)
+	}
+	operatorEntry := mustAddKnowledge(t, d, KnowledgeInput{
+		TaskID: tk.ID, Kind: "indicator", Source: "operator",
+		Title: "operator kept 203.0.113.9", Body: "contact ops@corp.tld"})
+	if operatorEntry.Title != "operator kept 203.0.113.9" || operatorEntry.Body != "contact ops@corp.tld" {
+		t.Fatalf("an operator task entry must keep its identifiers: %+v", operatorEntry)
 	}
 
 	// An operator UPDATE of a non-task entry generalises too.
@@ -646,5 +656,170 @@ func TestPromoteKnowledgeRejectsRetiredAndForeignCompany(t *testing.T) {
 	}
 	if _, _, err := d.PromoteKnowledge(ctx, second.ID, "global", 0); !errors.Is(err, ErrMemoryInvalid) {
 		t.Fatalf("promoting a retired entry must be refused, got %v", err)
+	}
+}
+
+// TestSearchKnowledgeMatchesAnyTerm: websearch_to_tsquery ANDs every whitespace
+// term, so a natural-language query used to match nothing. Search ORs the terms
+// and still ranks by how many an entry matches.
+func TestSearchKnowledgeMatchesAnyTerm(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	suffix := fmt.Sprintf(" [%d]", tk.ID)
+	entry := mustAddKnowledge(t, d, KnowledgeInput{
+		TaskID: tk.ID, Kind: "technique", Source: "operator",
+		Title: "writable php-fpm socket" + suffix,
+		Body:  "A world-writable php-fpm socket let the mail spool be read."})
+	other := mustAddKnowledge(t, d, KnowledgeInput{
+		TaskID: tk.ID, Kind: "note", Source: "operator",
+		Title: "unrelated note" + suffix, Body: "alpha beta gamma delta"})
+
+	hits, err := d.SearchKnowledge(ctx, tk.ID, "check the mail host for a writable socket", nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, h := range hits {
+		if h.ID == entry.ID {
+			found = true
+		}
+		if h.ID == other.ID {
+			t.Fatalf("an entry sharing no term was returned: %+v", h)
+		}
+	}
+	if !found {
+		t.Fatalf("natural-language query missed an entry matching its terms: %+v", hits)
+	}
+
+	// A single-term query behaves exactly as before.
+	hits, err = d.SearchKnowledge(ctx, tk.ID, "writable", nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ID != entry.ID {
+		t.Fatalf("single-term search changed: %+v", hits)
+	}
+}
+
+// TestEnvironmentScopeVisibility: an adopted environment entry is a fact about
+// the platform every task runs on, so it reaches every task whatever the
+// target; a candidate does not, and only an operator promotes into the scope.
+func TestEnvironmentScopeVisibility(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	a := memoryTask(t, d)
+	b := memoryTask(t, d)
+	suffix := fmt.Sprintf(" [%d]", a.ID)
+
+	adopted := mustAddKnowledge(t, d, KnowledgeInput{
+		Scope: "environment", Kind: "opsec", Source: "operator", Status: "adopted",
+		Title: "proxy answers CONNECT before dialling" + suffix,
+		Body:  "both proxies return 200 for CONNECT before the upstream dial, so a port-open reading through them is an artefact",
+		Tags:  []string{"env:test-deployment"}})
+	t.Cleanup(func() { _ = d.DeleteKnowledge(ctx, adopted.ID) })
+	candidate := mustAddKnowledge(t, d, KnowledgeInput{
+		Scope: "environment", Kind: "opsec", Source: "operator", Status: "candidate",
+		Title: "unadopted environment candidate" + suffix, Body: "b"})
+	t.Cleanup(func() { _ = d.DeleteKnowledge(ctx, candidate.ID) })
+
+	if adopted.TaskID != 0 || adopted.CompanyID != 0 {
+		t.Fatalf("environment entry carries ids: %+v", adopted)
+	}
+	if len(adopted.Tags) != 1 || adopted.Tags[0] != "env:test-deployment" {
+		t.Fatalf("environment tag lost: %v", adopted.Tags)
+	}
+	for _, taskID := range []int64{a.ID, b.ID} {
+		for _, q := range []string{"", "proxy connect"} {
+			hits, err := d.SearchKnowledge(ctx, taskID, q, nil, 10)
+			if err != nil {
+				t.Fatalf("search %q: %v", q, err)
+			}
+			seen := map[int64]bool{}
+			for _, h := range hits {
+				seen[h.ID] = true
+			}
+			if !seen[adopted.ID] {
+				t.Fatalf("task %d, search %q missed the adopted environment entry", taskID, q)
+			}
+			if seen[candidate.ID] {
+				t.Fatalf("task %d, search %q leaked an unadopted environment candidate", taskID, q)
+			}
+		}
+		listed, err := d.ListKnowledge(ctx, KnowledgeFilter{TaskID: taskID, Scope: "environment"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[int64]bool{}
+		for _, e := range listed {
+			seen[e.ID] = true
+		}
+		if !seen[adopted.ID] || seen[candidate.ID] {
+			t.Fatalf("task %d list lens wrong: %+v", taskID, listed)
+		}
+	}
+
+	// Scope rules: no ids, and a machine source still cannot write it.
+	if _, _, err := d.AddKnowledge(ctx, KnowledgeInput{
+		Scope: "environment", TaskID: a.ID, Kind: "note", Title: "ids on environment", Body: "b",
+		Source: "operator"}); !errors.Is(err, ErrMemoryInvalid) {
+		t.Fatalf("an environment entry with a task id must be refused, got %v", err)
+	}
+	if _, _, err := d.AddKnowledge(ctx, KnowledgeInput{
+		Scope: "environment", Kind: "note", Title: "agent environment", Body: "b",
+		Source: "agent"}); !errors.Is(err, ErrMemoryInvalid) {
+		t.Fatalf("an agent must not write environment scope, got %v", err)
+	}
+
+	// An operator promotes a task entry into it: the ids are dropped and it is
+	// adopted. A company id is refused.
+	entry := mustAddKnowledge(t, d, KnowledgeInput{
+		TaskID: a.ID, Kind: "opsec", Title: "promote me to environment", Body: "b", Source: "operator"})
+	second := mustAddKnowledge(t, d, KnowledgeInput{
+		TaskID: a.ID, Kind: "opsec", Title: "promote me badly", Body: "b", Source: "operator"})
+	if _, _, err := d.PromoteKnowledge(ctx, second.ID, "environment", 7); !errors.Is(err, ErrMemoryInvalid) {
+		t.Fatalf("environment promotion must take no company id, got %v", err)
+	}
+	promoted, _, err := d.PromoteKnowledge(ctx, entry.ID, "environment", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteKnowledge(ctx, promoted.ID) })
+	if promoted.Scope != "environment" || promoted.Status != "adopted" || promoted.TaskID != 0 || promoted.CompanyID != 0 {
+		t.Fatalf("environment promotion wrong: %+v", promoted)
+	}
+}
+
+// TestKnowledgeAgentWriteGeneralisesIdentifiers: an agent writes for the next
+// target, so the origin task's scope identifiers are generalised at write time,
+// not only at promotion. The exploration graph keeps the concrete facts.
+func TestKnowledgeAgentWriteGeneralisesIdentifiers(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	if _, err := d.Exec(`INSERT INTO task_scope(task_id, kind, domain, source)
+		VALUES ($1,'root_domain','write-scrub.example','manual')`, tk.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, redactions, err := d.AddKnowledge(ctx, KnowledgeInput{
+		TaskID: tk.ID, Kind: "technique", Source: "agent",
+		Title: "php-fpm socket on write-scrub.example",
+		Body:  "the socket at 10.10.17.49 was 0666; fetch https://write-scrub.example/x",
+		Tags:  []string{"10.10.17.49"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redactions < 3 {
+		t.Fatalf("redactions = %d, want the host, the IP and the tag counted", redactions)
+	}
+	for _, leak := range []string{"write-scrub.example", "10.10.17.49"} {
+		if strings.Contains(entry.Title, leak) || strings.Contains(entry.Body, leak) ||
+			strings.Contains(strings.Join(entry.Tags, " "), leak) {
+			t.Fatalf("%q leaked into the stored entry: %+v", leak, entry)
+		}
+	}
+	if !strings.Contains(entry.Body, scrubIP) || !strings.Contains(entry.Body, scrubTarget) {
+		t.Fatalf("body not generalised: %q", entry.Body)
 	}
 }

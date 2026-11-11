@@ -12,14 +12,18 @@ import (
 )
 
 // Knowledge base and reflection pool, owner side. Mirrors server/lessons.go:
-// the agent may only write task-scoped candidates, while promotion to company
-// or global scope (and adoption) is an owner action performed here. Every
-// rendered or stored string is scrubbed by the store; the redaction count is
-// returned so the owner sees what was generalised.
+// the agent may only write task-scoped candidates, while promotion to company,
+// environment or global scope (and adoption) is an owner action performed here.
+// Every rendered or stored string is scrubbed by the store; the redaction count
+// is returned so the owner sees what was generalised.
+//
+// An environment entry describes the platform the agents run on (proxy
+// behaviour, network shape, sandbox edges), not a target; it is visible to every
+// task and SHOULD be tagged "env:<name>" for the deployment it was seen on.
 
 var (
-	knowledgeScopes   = map[string]bool{"global": true, "company": true, "task": true}
-	knowledgeKinds    = map[string]bool{"technique": true, "tool": true, "opsec": true, "indicator": true, "playbook": true, "note": true}
+	knowledgeScopes   = map[string]bool{"global": true, "environment": true, "company": true, "task": true}
+	knowledgeKinds    = map[string]bool{"technique": true, "tool": true, "opsec": true, "indicator": true, "playbook": true, "lead": true, "note": true}
 	knowledgeStatuses = map[string]bool{"candidate": true, "adopted": true, "retired": true}
 	reflectionKinds   = map[string]bool{"opsec": true, "noise": true, "lookfor": true, "learning": true, "mistake": true}
 )
@@ -126,8 +130,8 @@ func (s *Server) listKnowledge(w http.ResponseWriter, r *http.Request) {
 }
 
 // createKnowledge serves POST /api/knowledge: the operator writes any scope
-// directly as adopted. Global and company entries carry no origin task, so the
-// store only scrubs secrets and IP/email literals.
+// directly as adopted. Global, environment and company entries carry no origin
+// task, so the store only scrubs secrets and IP/email literals.
 func (s *Server) createKnowledge(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Scope     string   `json:"scope"`
@@ -158,9 +162,9 @@ func (s *Server) createKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch scope {
-	case "global":
+	case "global", "environment":
 		if body.CompanyID != 0 || body.TaskID != 0 {
-			writeErr(w, 400, "global entry takes no ids")
+			writeErr(w, 400, scope+" entry takes no ids")
 			return
 		}
 	case "company":
@@ -247,8 +251,10 @@ func (s *Server) patchKnowledge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"entry": entry, "redactions": redactions})
 }
 
-// promoteKnowledge serves POST /api/knowledge/{id}/promote: task -> company or
-// global, adopted, re-scrubbed with the origin task's identifiers.
+// promoteKnowledge serves POST /api/knowledge/{id}/promote: task -> company,
+// environment or global, adopted, re-scrubbed with the origin task's
+// identifiers. An environment promotion SHOULD carry an "env:<name>" tag; the
+// operator adds it with the create/patch tags.
 func (s *Server) promoteKnowledge(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -264,16 +270,16 @@ func (s *Server) promoteKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scope := strings.TrimSpace(body.Scope)
-	if scope != "company" && scope != "global" {
-		writeErr(w, 400, "promotion scope must be company or global")
+	if scope != "company" && scope != "environment" && scope != "global" {
+		writeErr(w, 400, "promotion scope must be company, environment or global")
 		return
 	}
 	if scope == "company" && body.CompanyID <= 0 {
 		writeErr(w, 400, "company promotion needs a company id")
 		return
 	}
-	if scope == "global" && body.CompanyID != 0 {
-		writeErr(w, 400, "global promotion takes no company id")
+	if scope != "company" && body.CompanyID != 0 {
+		writeErr(w, 400, scope+" promotion takes no company id")
 		return
 	}
 	entry, redactions, err := s.m.PG().PromoteKnowledge(r.Context(), id, scope, body.CompanyID)

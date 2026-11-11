@@ -11,12 +11,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/structuredstanza/AgentLab/artex-global/agent"
 	"github.com/structuredstanza/AgentLab/artex-global/db"
 	"github.com/structuredstanza/AgentLab/artex-global/intercept"
 	"github.com/structuredstanza/norma/harness"
 	"github.com/structuredstanza/norma/llm"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // isFKViolation reports whether err is a Postgres foreign-key violation (SQLSTATE
@@ -801,11 +801,22 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
 	}
 	e.startDeadlineCoordinator(ctx, t) // Task-level timeout timer (only when timeout>0; deduplicated)
-	// Only kick the first planning round when there are no active intents at all (open+running). For tasks with seed intents, the seed is already
-	// It is open, or it has already been claimed as running by the worker that was just started above — both cases count as "has work to do", so skip them all
-	// the first planner round; workers claim the seed intents directly and start running, then NotifyDone/heartbeat wakes the planner when they finish.
-	// ⚠️ Cannot use Frontier (it only counts open): worker claiming (open→running) races with this check and may kick by mistake.
-	// After an automatic restart recovery, there may also be only running intents left; these should be skipped too.
+	e.kickFirstRound(t)
+}
+
+// kickFirstRound wakes the planner once for a task that has no work in play.
+// Only kick when there are no active intents at all (open/running/paused). For
+// tasks with seed intents, the seed is already open, or it has already been
+// claimed as running by the worker that was just started above — both cases
+// count as "has work to do", so skip the first planner round; workers claim the
+// seed intents directly and start running, then NotifyDone/heartbeat wakes the
+// planner when they finish. A paused intent is waiting on a human, not stalled,
+// so it skips the round too.
+// ⚠️ Cannot use Frontier (it only counts open): worker claiming (open→running)
+// races with this check and may kick by mistake. After an automatic restart
+// recovery, there may also be only running intents left; these should be skipped
+// too.
+func (e *Engine) kickFirstRound(t *Task) {
 	if has, _ := t.Store.HasActiveIntent(); !has {
 		t.Notify() // kick the first planning round (acted on once LLM is ready)
 	}
@@ -834,8 +845,10 @@ func resetPlannerTimer(timer *time.Timer, d time.Duration) {
 
 // quietSkipEdge reports whether an edge-triggered planning round should be
 // dropped (#79): the open-goal set is unchanged since the last completed round
-// AND active work exists (open or running intents). Fails open (false) on any
-// store error: when in doubt, plan, preserving the pre-quiet-mode behavior.
+// AND work is actually in flight (open or running intents). A paused intent is
+// in play but not in flight, so a pause wake always gets its round.
+// Fails open (false) on any store error: when in doubt, plan, preserving the
+// pre-quiet-mode behavior.
 func (e *Engine) quietSkipEdge(t *Task) bool {
 	fp, err := t.Store.OpenGoalFingerprint()
 	if err != nil {
@@ -844,7 +857,7 @@ func (e *Engine) quietSkipEdge(t *Task) bool {
 	if last, ok := e.goalFP.Load(t.ID); !ok || last != fp {
 		return false
 	}
-	active, err := t.Store.HasActiveIntent()
+	active, err := t.Store.HasOpenOrRunningIntent()
 	return err == nil && active
 }
 
@@ -881,7 +894,10 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// terminal task (goals all met → done, or failed): the run is over. A
 		// resume/nudge — e.g. auto-resume of the active task on restart — must NOT
 		// re-plan (it would burn an LLM round and re-confirm a settled result).
-		if isTerminalStatus(t.lifecycleSnapshot().Status) {
+		// needs_operator is not terminal but is the same "do not plan" state: the
+		// planner itself reported that the engagement cannot continue without a
+		// human, so every further round would re-derive the same block.
+		if status := t.lifecycleSnapshot().Status; isTerminalStatus(status) || status == db.StatusNeedsOperator {
 			return
 		}
 		// A task-level timeout wind-down is in progress: ordinary wakeups are discarded, so neither the worker's wind-down write-back nor Resume's Notify will proceed anymore.
@@ -1010,11 +1026,11 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 			}
 			continue // Task is wrapping up after timeout: no longer claim new intents (running ones finish on their own; the coordinator waits for their drain).
 		}
-		if isTerminalStatus(e.m.TaskStatus(t.ID)) {
+		if status := e.m.TaskStatus(t.ID); isTerminalStatus(status) || status == db.StatusNeedsOperator {
 			if sleepCtx(ctx, 1000*time.Millisecond) {
 				return
 			}
-			continue // Task is in a terminal state (done/failed/timeout): stop claiming leftover intents and don't run the frontier idle after completion.
+			continue // Task is in a terminal state (done/failed/timeout) or waiting on a human (needs_operator): stop claiming intents.
 		}
 		if !e.beginTaskOperation(t.ID) {
 			return
@@ -1142,13 +1158,12 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	var controlErr error
 	defer func() { completeWork(controlErr) }()
 	if action == "pause" {
-		controlErr = transitionIntentState(t.Store, intent.ID, "running", "paused")
+		controlErr = e.pauseIntent(t, intent.ID)
 		if controlErr != nil {
 			log.Printf("[worker %s] task %s intent #%d failed to persist paused state: %v", name, t.ID, intent.ID, controlErr)
 			return true
 		}
 		log.Printf("[worker %s] task %s intent #%d paused", name, t.ID, intent.ID)
-		e.touch(t.ID)
 		return true
 	}
 	if action == "cancel" {
@@ -1237,6 +1252,22 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	e.touch(t.ID)
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true
+}
+
+// pauseIntent parks a running intent as paused, then finishes it the way a
+// terminal intent ends: derive its reflections and wake the planner. A pause is
+// a live signal (a human question is pending, see ask_operator), so the planner
+// must see it now instead of at the next heartbeat - otherwise the following
+// round reads a drained frontier and dispatches fresh work against the very
+// block it is waiting on.
+func (e *Engine) pauseIntent(t *Task, intentID int64) error {
+	if err := transitionIntentState(t.Store, intentID, "running", "paused"); err != nil {
+		return err
+	}
+	e.deriveIntentReflections(t.ID, intentID)
+	e.touch(t.ID)
+	t.NotifyDone(intentID) // the graph changed -> wake the planner (with the just-paused intent id)
+	return nil
 }
 
 // deriveIntentReflections records the deterministic end-of-batch reflections of

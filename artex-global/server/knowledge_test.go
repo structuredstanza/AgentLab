@@ -117,11 +117,22 @@ func TestKnowledgeRoutesAuthValidationAndCRUD(t *testing.T) {
 		{"company without id", `{"scope":"company","kind":"note","title":"x"}`, http.StatusBadRequest},
 		{"task without id", `{"scope":"task","kind":"note","title":"x"}`, http.StatusBadRequest},
 		{"unknown task", `{"scope":"task","kind":"note","title":"x","task_id":999999999}`, http.StatusNotFound},
+		{"environment with ids", `{"scope":"environment","kind":"note","title":"x","task_id":5}`, http.StatusBadRequest},
 		{"not json", `nope`, http.StatusBadRequest},
 	} {
 		if code, _ := memoryAPI(t, s, token, http.MethodPost, "/api/knowledge", tc.body); code != tc.want {
 			t.Errorf("%s: status=%d want %d", tc.name, code, tc.want)
 		}
+	}
+
+	// The environment scope and the lead kind are accepted by the API.
+	code, out = memoryAPI(t, s, token, http.MethodPost, "/api/knowledge",
+		`{"scope":"environment","kind":"lead","title":"mtestenvlead","body":"b","tags":["env:test-deployment"]}`)
+	if code != http.StatusOK {
+		t.Fatalf("create environment lead status=%d body=%v", code, out)
+	}
+	if entry, _ := out["entry"].(map[string]any); entry["scope"] != "environment" || entry["kind"] != "lead" || entry["status"] != "adopted" {
+		t.Fatalf("environment lead create wrong: %v", entry)
 	}
 
 	for _, tc := range []struct {
@@ -196,6 +207,11 @@ func TestKnowledgePromoteAndTaskIsolation(t *testing.T) {
 	if cand.Status != "candidate" || cand.Scope != "task" {
 		t.Fatalf("agent write must be a task candidate: %+v", cand)
 	}
+	// An agent write is generalised at write time, so the IP is already gone
+	// before promotion.
+	if !strings.Contains(cand.Body, "<ip>") || strings.Contains(cand.Body, "203.0.113.9") {
+		t.Fatalf("agent write kept the target IP: %q", cand.Body)
+	}
 	path := "/api/knowledge/" + strconv.FormatInt(cand.ID, 10)
 
 	// Adopting a task-scoped entry is refused: promotion is the only way out.
@@ -236,11 +252,8 @@ func TestKnowledgePromoteAndTaskIsolation(t *testing.T) {
 	if entry["scope"] != "global" || entry["status"] != "adopted" {
 		t.Fatalf("promote did not adopt global: %v", entry)
 	}
-	if redactions, _ := out["redactions"].(float64); redactions < 1 {
-		t.Fatalf("promote redactions=%v want >=1 (the IP literal)", out["redactions"])
-	}
 	if body, _ := entry["body"].(string); !strings.Contains(body, "<ip>") || strings.Contains(body, "203.0.113.9") {
-		t.Fatalf("promote did not generalise the target IP: %q", body)
+		t.Fatalf("promote did not keep the body generalised: %q", body)
 	}
 
 	// The adopted global entry is visible to the other task.
@@ -260,6 +273,34 @@ func TestKnowledgePromoteAndTaskIsolation(t *testing.T) {
 	}
 	if code, _ := memoryAPI(t, s, token, http.MethodPost, "/api/knowledge/999999999/promote", `{"scope":"global"}`); code != http.StatusNotFound {
 		t.Fatalf("promote unknown status=%d want 404", code)
+	}
+
+	// Promotion into the environment scope: no company id, adopted, visible to
+	// the other task whatever the query.
+	envCand, _, err := m.pg.AddKnowledge(context.Background(), db.KnowledgeInput{
+		Scope: "task", TaskID: aID, Kind: "opsec", Title: "mtestenvpromote",
+		Body: "the proxy answers CONNECT before dialling", Source: "agent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envPath := "/api/knowledge/" + strconv.FormatInt(envCand.ID, 10) + "/promote"
+	if code, _ := memoryAPI(t, s, token, http.MethodPost, envPath, `{"scope":"environment","company_id":7}`); code != http.StatusBadRequest {
+		t.Fatalf("environment promote with a company id status=%d want 400", code)
+	}
+	code, out = memoryAPI(t, s, token, http.MethodPost, envPath, `{"scope":"environment"}`)
+	if code != http.StatusOK {
+		t.Fatalf("environment promote status=%d body=%v", code, out)
+	}
+	if entry, _ := out["entry"].(map[string]any); entry["scope"] != "environment" || entry["status"] != "adopted" {
+		t.Fatalf("environment promote did not adopt: %v", entry)
+	}
+	code, out = memoryAPI(t, s, token, http.MethodGet, "/api/knowledge?task_id="+taskB.ID+"&scope=environment", "")
+	if code != http.StatusOK {
+		t.Fatalf("task B environment list status=%d body=%v", code, out)
+	}
+	if n, _ := out["count"].(float64); n < 1 {
+		t.Fatalf("promoted environment entry invisible to task B: %v", out)
 	}
 }
 

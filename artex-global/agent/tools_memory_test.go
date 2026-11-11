@@ -227,6 +227,97 @@ func TestKnowledgeAddCapsRuneSafelyAndPassesTaskScope(t *testing.T) {
 	}
 }
 
+// A playbook claims a proven chain. Only an executed basis backs that claim;
+// anything else is stored as a lead, and the result says so.
+func TestKnowledgeAddDowngradesUnprovenPlaybook(t *testing.T) {
+	store := &fakeMemory{}
+	ts := NewToolSet(nil, "worker")
+	ts.SetTaskID(11)
+	ts.SetMemory(store)
+
+	text, isErr := callMemory(t, ts.knowledgeAddTool(), memoryJSON(t, map[string]any{
+		"title": "import job to admin", "body": "reasoned route through the import job",
+		"kind": "playbook",
+	}))
+	if isErr {
+		t.Fatalf("knowledge_add: %s", text)
+	}
+	if got := store.lastKnowledge.Kind; got != "lead" {
+		t.Fatalf("playbook without an executed basis stored as %q, want lead", got)
+	}
+	var out struct {
+		Kind       string `json:"kind"`
+		Downgraded bool   `json:"downgraded"`
+		Note       string `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("unmarshal %q: %v", text, err)
+	}
+	if out.Kind != "lead" || !out.Downgraded || !strings.Contains(out.Note, "lead") {
+		t.Fatalf("result does not say it was stored as lead: %+v", out)
+	}
+
+	// A static conclusion is not an executed basis either.
+	text, isErr = callMemory(t, ts.knowledgeAddTool(), memoryJSON(t, map[string]any{
+		"title": "import job to admin", "body": "same route, unexecuted",
+		"kind": "playbook", "proof_basis": "static-analysis-unexecuted",
+	}))
+	if isErr || store.lastKnowledge.Kind != "lead" {
+		t.Fatalf("a static-analysis basis must stay a lead: isError=%v %s", isErr, text)
+	}
+
+	// An executed basis keeps the playbook.
+	text, isErr = callMemory(t, ts.knowledgeAddTool(), memoryJSON(t, map[string]any{
+		"title": "import job to admin", "body": "ran it end to end",
+		"kind": "playbook", "proof_basis": "executed-live",
+	}))
+	if isErr {
+		t.Fatalf("knowledge_add: %s", text)
+	}
+	if got := store.lastKnowledge.Kind; got != "playbook" {
+		t.Fatalf("an executed playbook was stored as %q", got)
+	}
+	if strings.Contains(text, "downgraded") {
+		t.Fatalf("an executed playbook reported a downgrade: %s", text)
+	}
+
+	// kind=lead is accepted on its own.
+	if _, isErr := callMemory(t, ts.knowledgeAddTool(), memoryJSON(t, map[string]any{
+		"title": "unrun route", "body": "b", "kind": "lead"})); isErr {
+		t.Fatal("knowledge_add refused kind=lead")
+	}
+}
+
+// Recall scores reflections by term overlap: a natural-language query cannot
+// appear verbatim in a one-line summary, so the old whole-query substring match
+// returned nothing.
+func TestRecallScoresReflectionsByTermOverlap(t *testing.T) {
+	store := &fakeMemory{reflections: []db.Reflection{
+		{ID: 1, Kind: "noise", Summary: "duplicate requests wasted the round"},
+		{ID: 2, Kind: "opsec", Summary: "WAF blocked the upload on the mail host", Detail: "429 after three tries"},
+		{ID: 3, Kind: "learning", Summary: "unrelated conclusion"},
+	}}
+	ts := NewToolSet(nil, "worker")
+	ts.SetTaskID(11)
+	ts.SetMemory(store)
+
+	text, isErr := callMemory(t, ts.recallTool(), `{"query":"why did the mail host block the upload"}`)
+	if isErr {
+		t.Fatalf("recall: %s", text)
+	}
+	var out struct {
+		Reflections []struct {
+			ID int64 `json:"id"`
+		} `json:"reflections"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("unmarshal %q: %v", text, err)
+	}
+	if len(out.Reflections) != 2 || out.Reflections[0].ID != 2 || out.Reflections[1].ID != 1 {
+		t.Fatalf("reflections = %+v, want the two matches ranked by overlap (2 then 1)", out.Reflections)
+	}
+}
+
 // reflect attributes the intent from the run info and the source from the role.
 func TestReflectUsesRunInfoIntentAndRole(t *testing.T) {
 	for _, tc := range []struct{ role, want string }{{"worker", "worker"}, {"planner", "planner"}} {
@@ -336,7 +427,7 @@ func TestMemoryGuidanceIsBoundedASCII(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"reflect", "recall", "knowledge_add", "429", "denial of service", "testing-bounds"} {
+	for _, want := range []string{"reflect", "recall", "knowledge_add", "429", "denial of service", "testing-bounds", "not the box"} {
 		if !strings.Contains(workerMemoryGuidance, want) {
 			t.Errorf("worker guidance missing %q", want)
 		}
@@ -371,9 +462,17 @@ func TestReflectionsBlockFramesCapsAndSkipsHeader(t *testing.T) {
 	if n := strings.Count(rendered, "Recent reflections"); n != 1 {
 		t.Errorf("header appears %d times, want 1: %q", n, rendered)
 	}
+	// The provider now also carries the knowledge half, which opens with its
+	// own data header; it must not be relabelled as reflections.
+	memory := reflectionsBlock(ctx, func(context.Context) string {
+		return "## Operational memory from earlier work\n\n- [technique, task] x: y"
+	})
+	if strings.Contains(memory, "Recent reflections") || !strings.Contains(memory, "Operational memory") {
+		t.Errorf("knowledge block mislabelled: %q", memory)
+	}
 	long := reflectionsBlock(ctx, func(context.Context) string { return strings.Repeat("z", 5000) })
-	if n := utf8.RuneCountInString(long); n > reflectionsPromptMaxChars+80 {
-		t.Errorf("block = %d runes, want it capped near %d", n, reflectionsPromptMaxChars)
+	if n := utf8.RuneCountInString(long); n > memoryRoundMaxChars+80 {
+		t.Errorf("block = %d runes, want it capped near %d", n, memoryRoundMaxChars)
 	}
 }
 
@@ -533,6 +632,36 @@ func TestMemoryToolsAgainstRealStore(t *testing.T) {
 	}
 	if strings.Contains(text, "abc123def456ghi789") {
 		t.Error("recall leaked the secret that knowledge_add should have scrubbed")
+	}
+
+	// An unproven playbook is stored as a lead, and a target IP in a write is
+	// generalised: the tool and the store agree end to end.
+	if text, isErr = callMemory(t, ts.knowledgeAddTool(), memoryJSON(t, map[string]any{
+		"title": "unproven chain to admin", "body": "route reasoned out, never run",
+		"kind": "playbook",
+	})); isErr {
+		t.Fatalf("knowledge_add playbook: %s", text)
+	}
+	if text, isErr = callMemory(t, ts.knowledgeAddTool(), memoryJSON(t, map[string]any{
+		"title": "socket permissions on the mail host",
+		"body":  "the php-fpm socket at 10.10.17.49 was 0666",
+		"kind":  "technique",
+	})); isErr {
+		t.Fatalf("knowledge_add ip: %s", text)
+	}
+	stored, err := d.ListKnowledge(context.Background(), db.KnowledgeFilter{TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byTitle := map[string]db.KnowledgeEntry{}
+	for _, e := range stored {
+		byTitle[e.Title] = e
+	}
+	if got := byTitle["unproven chain to admin"]; got.Kind != "lead" {
+		t.Errorf("unproven playbook stored as %q, want lead", got.Kind)
+	}
+	if got := byTitle["socket permissions on the mail host"]; strings.Contains(got.Body, "10.10.17.49") || !strings.Contains(got.Body, "<ip>") {
+		t.Errorf("agent knowledge kept a target IP: %q", got.Body)
 	}
 
 	ctx := WithRunInfo(context.Background(), RunInfo{TaskID: task.ID, IntentID: 4242})

@@ -42,7 +42,8 @@ func rsiLessonsMode() string {
 // The operational-memory block (server/memory.go) rides this same wiring and
 // the same SetLessonsBlock call, so the prompt has one code-owned tail instead
 // of two competing ones. The memory store is bound first and unconditionally;
-// the reflections provider and the block follow the injection switch.
+// the per-round memory provider and the start-of-task block follow the
+// injection switch.
 func (s *Server) wireTaskLessons(t *Task, wk *agent.Worker, pl *agent.Planner) {
 	if t == nil {
 		return

@@ -1087,10 +1087,12 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	list := s.m.List()
 	metrics, _ := s.m.PG().TaskListMetricsAll()
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
+	blockedReasons, _ := s.m.PG().TaskBlockedReasons()
 	dtos := make([]TaskDTO, 0, len(list))
 	for _, t := range list {
 		dto := taskDTO(t, s.resolvedTaskStatus(t))
 		applyTaskArchiveBlocker(&dto, archiveBlockers)
+		applyTaskBlockedReason(&dto, blockedReasons)
 		s.applyTaskMetrics(&dto, t, metrics[t.ExpID])
 		dtos = append(dtos, dto)
 	}
@@ -1128,6 +1130,10 @@ func (s *Server) resolvedTaskStatus(t *Task) string {
 	switch {
 	case isTerminalStatus(lifecycle.Status):
 		return lifecycle.Status
+	case lifecycle.Status == db.StatusNeedsOperator:
+		// A blocked task is also engine-paused; report the block, not the pause,
+		// so the UI can show why it stopped and what the operator must do.
+		return db.StatusNeedsOperator
 	case lifecycle.Queued:
 		return "queued"
 	case lifecycle.Paused || s.engine.IsPaused(t.ID):
@@ -1857,7 +1863,7 @@ func (s *Server) seed(t *Task, text string) {
 		}
 	}
 	log.Printf("[seed] task %s: target site %s", t.ID, u)
-	// Do not Notify here: whether the first round fires is decided uniformly by HasActiveIntent in engine.Run (seed-intent tasks skip the first round).
+	// Do not Notify here: whether the first round fires is decided uniformly by kickFirstRound (HasActiveIntent) in engine.Run (seed-intent tasks skip the first round).
 	// seed runs before Run; if Notify were called here, it would be buffered into the channel and consumed when plannerLoop starts,
 	// bypassing Run's gate, so seed tasks would still wrongly trigger the first round.
 }
@@ -1894,6 +1900,8 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	s.applyTaskMetrics(&dto, t, metrics[t.ExpID])
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
 	applyTaskArchiveBlocker(&dto, archiveBlockers)
+	blockedReasons, _ := s.m.PG().TaskBlockedReasons()
+	applyTaskBlockedReason(&dto, blockedReasons)
 	writeJSON(w, 200, dto)
 }
 

@@ -31,6 +31,8 @@ var (
 		"The user paused the task via the task control API (POST /api/tasks/{id}/control, action=pause). This Planner/Worker run was cancelled; running intents return to frontier(open) and are claimed and restarted from scratch when the task resumes.")
 	AbortPausedByOrchestrator = cause("paused_by_orchestrator", "The orchestrator Agent paused the task",
 		"The orchestrator Agent called the pause_task tool to pause this task. This Planner/Worker run was cancelled; running intents return to frontier(open) and are restarted when the task resumes.")
+	AbortBlockedOnOperator = cause("blocked_on_operator", "The planner handed the task back to the operator",
+		"The planner called report_blocked: the engagement cannot continue without a human (an absent target, a missing credential, a path this runtime cannot take). This Planner/Worker run was cancelled; running intents return to frontier(open) and are restarted when the operator resumes the task.")
 	AbortTaskDeleted = cause("task_deleted", "The task was deleted",
 		"The task is being deleted (DELETE /api/tasks/{id}); the deletion barrier cancelled its running Planner, Worker, and main Agent. This run's result will no longer be used.")
 	AbortPausedOnReload = cause("paused_on_reload", "The backend restored the task's paused state",

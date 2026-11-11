@@ -30,16 +30,19 @@ func rawString(raw json.RawMessage) string {
 
 // ---- Task (frontend "Task") ---- created_at as RFC3339, plus a derived status.
 type TaskDTO struct {
-	ID                 string             `json:"id"`
-	ExplorationID      int64              `json:"exploration_id"`
-	Name               string             `json:"name"` // Optional task name; empty = unnamed
-	CategoryID         *int64             `json:"category_id,omitempty"`
-	CategoryName       string             `json:"category_name,omitempty"`
-	Pinned             bool               `json:"pinned"`
-	PinnedAt           string             `json:"pinned_at,omitempty"`
-	Description        string             `json:"description"`
-	Goal               string             `json:"goal"`
-	Status             string             `json:"status"` // created | running | paused | done | failed
+	ID            string `json:"id"`
+	ExplorationID int64  `json:"exploration_id"`
+	Name          string `json:"name"` // Optional task name; empty = unnamed
+	CategoryID    *int64 `json:"category_id,omitempty"`
+	CategoryName  string `json:"category_name,omitempty"`
+	Pinned        bool   `json:"pinned"`
+	PinnedAt      string `json:"pinned_at,omitempty"`
+	Description   string `json:"description"`
+	Goal          string `json:"goal"`
+	Status        string `json:"status"` // created | running | paused | needs_operator | done | failed | timeout
+	// BlockedReason is why a needs_operator task stopped, as the planner reported
+	// it; "" for every other status. Filled from PostgreSQL by the task API.
+	BlockedReason      string             `json:"blocked_reason"`
 	CreatedAt          string             `json:"created_at"`
 	CreatedUnix        int64              `json:"created_unix"`       // created_at as unix seconds (for run-duration calc)
 	CompletedAt        string             `json:"completed_at"`       // RFC3339 finish time (done/failed); "" if unfinished
@@ -73,6 +76,18 @@ type FindingSeverityDTO struct {
 	High     int `json:"high"`
 	Medium   int `json:"medium"`
 	Low      int `json:"low"`
+}
+
+// applyTaskBlockedReason fills blocked_reason from the persisted task rows: the
+// in-memory task handle carries the status but not the reason, so the task API
+// reads it from PostgreSQL.
+func applyTaskBlockedReason(dto *TaskDTO, reasons map[int64]string) {
+	if dto == nil || len(reasons) == 0 {
+		return
+	}
+	if id, err := strconv.ParseInt(dto.ID, 10, 64); err == nil {
+		dto.BlockedReason = reasons[id]
+	}
 }
 
 func applyTaskArchiveBlocker(dto *TaskDTO, blockers map[int64]int64) {

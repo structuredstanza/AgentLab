@@ -108,6 +108,10 @@ ALTER TABLE assets ALTER COLUMN company_source SET NOT NULL;
 ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_company_source_check;
 ALTER TABLE assets ADD CONSTRAINT assets_company_source_check
     CHECK (company_source IN ('explicit','scope'));
+-- Liveness: when a direct (proxy-free) probe last found this host unreachable.
+-- last_seen records contact; this records the absence that ends an engagement
+-- rather than looping on it. Cleared on the next successful contact.
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_unreachable_at TIMESTAMPTZ;
 DROP TRIGGER IF EXISTS trg_av2_upd ON assets;
 CREATE TRIGGER trg_av2_upd BEFORE UPDATE ON assets
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -535,7 +539,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     exploration_id BIGINT NOT NULL UNIQUE
                      REFERENCES explorations(id) ON DELETE RESTRICT,
     status         TEXT NOT NULL DEFAULT 'created'
-                     CHECK (status IN ('created','running','paused','done','failed','timeout')),
+                     CHECK (status IN ('created','running','paused','needs_operator','done','failed','timeout')),
     paused         BOOLEAN NOT NULL DEFAULT false,
     queued         BOOLEAN NOT NULL DEFAULT false,
     queued_at      TIMESTAMPTZ,
@@ -561,6 +565,13 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
+-- needs_operator: the planner stopped because the engagement cannot continue
+-- without a human (an absent target, a missing credential, a blocked path).
+-- It is not terminal: resuming returns the task to 'running'.
+ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_status_check;
+ALTER TABLE tasks ADD CONSTRAINT tasks_status_check
+    CHECK (status IN ('created','running','paused','needs_operator','done','failed','timeout'));
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS blocked_reason TEXT NOT NULL DEFAULT '';
 DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;
 CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -1534,15 +1545,18 @@ LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT array_to_string(tags, ' ') $$;
 
 CREATE TABLE IF NOT EXISTS knowledge_entries (
     id             BIGSERIAL PRIMARY KEY,
-    scope          TEXT NOT NULL CHECK (scope IN ('global','company','task')),
+    scope          TEXT NOT NULL CHECK (scope IN ('global','environment','company','task')),
     company_id     BIGINT REFERENCES companies(id) ON DELETE CASCADE,
     task_id        BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
     CONSTRAINT ck_knowledge_scope CHECK (
-        (scope='global'  AND company_id IS NULL AND task_id IS NULL) OR
-        (scope='company' AND company_id IS NOT NULL AND task_id IS NULL) OR
-        (scope='task'    AND task_id IS NOT NULL)
+        (scope='global'      AND company_id IS NULL AND task_id IS NULL) OR
+        (scope='environment' AND company_id IS NULL AND task_id IS NULL) OR
+        (scope='company'     AND company_id IS NOT NULL AND task_id IS NULL) OR
+        (scope='task'        AND task_id IS NOT NULL)
     ),
-    kind           TEXT NOT NULL CHECK (kind IN ('technique','tool','opsec','indicator','playbook','note')),
+    -- lead = a route that was reasoned out but never executed. Kept apart from
+    -- playbook so an unproven chain can never be read as a proven one.
+    kind           TEXT NOT NULL CHECK (kind IN ('technique','tool','opsec','indicator','playbook','lead','note')),
     title          TEXT NOT NULL,
     body           TEXT NOT NULL,
     tags           TEXT[] NOT NULL DEFAULT '{}',
@@ -1567,6 +1581,20 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_task  ON knowledge_entries(task_id);
 -- Deduplication inside one task: the same title written twice is one entry.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_task_title
     ON knowledge_entries(task_id, lower(title)) WHERE scope='task';
+-- Existing databases: widen the scope and kind sets in place.
+ALTER TABLE knowledge_entries DROP CONSTRAINT IF EXISTS knowledge_entries_scope_check;
+ALTER TABLE knowledge_entries ADD CONSTRAINT knowledge_entries_scope_check
+    CHECK (scope IN ('global','environment','company','task'));
+ALTER TABLE knowledge_entries DROP CONSTRAINT IF EXISTS ck_knowledge_scope;
+ALTER TABLE knowledge_entries ADD CONSTRAINT ck_knowledge_scope CHECK (
+    (scope='global'      AND company_id IS NULL AND task_id IS NULL) OR
+    (scope='environment' AND company_id IS NULL AND task_id IS NULL) OR
+    (scope='company'     AND company_id IS NOT NULL AND task_id IS NULL) OR
+    (scope='task'        AND task_id IS NOT NULL)
+);
+ALTER TABLE knowledge_entries DROP CONSTRAINT IF EXISTS knowledge_entries_kind_check;
+ALTER TABLE knowledge_entries ADD CONSTRAINT knowledge_entries_kind_check
+    CHECK (kind IN ('technique','tool','opsec','indicator','playbook','lead','note'));
 
 CREATE TABLE IF NOT EXISTS task_reflections (
     id         BIGSERIAL PRIMARY KEY,

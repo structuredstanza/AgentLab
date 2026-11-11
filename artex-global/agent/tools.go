@@ -3,9 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/structuredstanza/AgentLab/artex-global/db"
 	acperm "github.com/structuredstanza/norma/permission"
@@ -635,6 +639,20 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			if len(m) > 0 {
 				out["coverage"] = m
 			}
+		}
+	}
+	// target_liveness: hosts a direct probe could not reach. It exists so a
+	// host that has gone dark is a machine fact: without it the planner spends
+	// rounds dispatching availability checks it could already know are futile.
+	// Absence of a host here means no probe has failed, not that it is up.
+	const targetLivenessCap = 10
+	if t.as != nil && t.ts != nil {
+		if hosts, err := t.as.UnreachableHosts(t.taskID, targetLivenessCap); err == nil && len(hosts) > 0 {
+			lv := make([]map[string]any, 0, len(hosts))
+			for _, h := range hosts {
+				lv = append(lv, map[string]any{"host": h.Host, "unreachable_since": h.Since.Unix()})
+			}
+			out["target_liveness"] = lv
 		}
 	}
 	return out
@@ -2148,6 +2166,105 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 			}
 			return jsonResult(map[string]any{"works": out})
 		})
+}
+
+const (
+	// tcpProbeTimeout is the default dial timeout for tcp_probe. It is longer
+	// than the egress proxy's CONNECT probe because the model asked for this
+	// specific check and a filtered port is a real answer worth waiting for;
+	// tcpProbeMaxTimeout bounds what a caller may request so one call cannot
+	// outlive a worker's remaining budget by much.
+	tcpProbeTimeout    = 5 * time.Second
+	tcpProbeMaxTimeout = 30 * time.Second
+)
+
+// tcpProbe dials one host:port directly, so the answer is the target's.
+//
+// It deliberately bypasses the environment proxy the worker injects into every
+// tool's environment (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY) and the egress proxy:
+// both answer CONNECT before the target is dialled, so a "port open" reading
+// taken through them is the proxy's answer, not the host's. net.Dialer reads no
+// proxy variables, so a direct dial is what this tool does by construction.
+//
+// The outcome is also recorded as target liveness: a failure marks the host
+// unreachable in graph_overview until a later successful probe clears it, which
+// is how the planner stops re-dispatching checks against a host already known
+// to be dark.
+func (t *ToolSet) tcpProbe() actool.CoreTool {
+	return writeTool("tcp_probe",
+		"Check whether a TCP port on a host actually accepts a connection, by dialling it directly (no HTTP proxy). Use this instead of a proxied curl/nc for availability: a proxy answers CONNECT before it dials the target, so through it a dead host still looks open. Reports connected / refused / timed-out / dns-failure, and records the result as target liveness (a failure marks the host unreachable in graph_overview until a later successful probe clears it). A successful probe also records the port with provenance=probe on the host's IP asset.",
+		obj(map[string]any{
+			"host":            str("Hostname or IP address to dial"),
+			"port":            intp("TCP port (1-65535)"),
+			"timeout_seconds": intp("Dial timeout in seconds (default 5, max 30)"),
+		}, "host", "port"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Host    string `json:"host"`
+				Port    int    `json:"port"`
+				Timeout int    `json:"timeout_seconds"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("invalid input: " + err.Error()), nil
+			}
+			host := strings.TrimSpace(a.Host)
+			if host == "" {
+				return actool.Errorf("host is required"), nil
+			}
+			if a.Port < 1 || a.Port > 65535 {
+				return actool.Errorf("port must be 1-65535"), nil
+			}
+			timeout := tcpProbeTimeout
+			if a.Timeout > 0 {
+				timeout = min(time.Duration(a.Timeout)*time.Second, tcpProbeMaxTimeout)
+			}
+			started := time.Now()
+			conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(a.Port)))
+			result := classifyDial(err)
+			if err == nil {
+				conn.Close()
+			}
+			// Liveness is best-effort state, not a probe result: a write failure
+			// must not turn a successful connection into a failed tool call.
+			if t.as != nil {
+				if err == nil {
+					_ = t.as.ClearUnreachable(host)
+					_ = t.as.AppendIPPort(host, a.Port, "", db.PortProvenanceProbe)
+				} else {
+					_ = t.as.MarkUnreachable(host)
+				}
+			}
+			out := map[string]any{
+				"host": host, "port": a.Port, "result": result,
+				"duration_ms": time.Since(started).Milliseconds(),
+			}
+			if err != nil && result == "error" {
+				out["detail"] = err.Error()
+			}
+			return jsonResult(out)
+		})
+}
+
+// classifyDial names a dial outcome for the model. A refusal and a timeout are
+// different facts (nothing listening vs. filtered or overloaded), and a DNS
+// failure means the name never resolved, so they are reported apart rather than
+// collapsed into one "unreachable".
+func classifyDial(err error) string {
+	if err == nil {
+		return "connected"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns-failure"
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return "refused"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timed-out"
+	}
+	return "error"
 }
 
 // PlannerTools is the read + intent-generation + goal-judgement tool set.

@@ -86,9 +86,18 @@ Two stores feed an agent's working memory. Neither edits a prompt body, a gate
 or a skill; both stay inside Loop B (data an agent may read), never Loop C.
 
 - **Knowledge base** (`knowledge_entries`). Searchable technique, tool, opsec,
-  indicator and playbook notes. Retrieval is Postgres full-text search over
-  title, tags and body. Shortcut: keyword recall only, no semantic search;
-  upgrade to pgvector when an embedding provider is configured.
+  indicator, playbook, lead and note entries. Retrieval is Postgres full-text
+  search over title, tags and body: the query is tokenised and the terms are
+  ORed, ranked by overlap, because ANDing a natural-language question against
+  one entry returns nothing. Scopes are `global`, `environment`, `company` and
+  `task`; `environment` holds what is true of the platform the agents run on
+  (proxy behaviour, network shape) rather than of a target, carries an
+  `env:<name>` tag, and its adopted entries are injected at task start whatever
+  the task is about. `lead` is a route that was reasoned out but never executed:
+  `knowledge_add` takes a `proof_basis`, and a `playbook` that cannot cite
+  `executed-live` or `executed-lab` is stored as a `lead`. Shortcut: keyword
+  recall only, no semantic search; upgrade to pgvector when an embedding
+  provider is configured.
 - **Reflection pool** (`task_reflections`). What one task learned, per
   kind: `opsec` (what a defender could see), `noise` (redundant or low-yield
   work), `lookfor` (leads not chased), `learning`, `mistake`. Two sources: the
@@ -99,8 +108,10 @@ or a skill; both stay inside Loop B (data an agent may read), never Loop C.
 
 Loop closure: the planner prompt carries a "Recent reflections" block every
 round and each worker intent receives the same block, so the next batch sees
-what the last one learned. At task start the knowledge hits for the task name
-and goal are added to the code-owned memory block next to the lesson block.
+what the last one learned. The block is rebuilt every round, so a lesson written
+mid-task is read by the next one. At task start the adopted environment entries
+and the knowledge hits for the task name and goal are added to the code-owned
+memory block next to the lesson block.
 Everything rendered is flattened to one line, length capped and framed as data
 from earlier work, because it can contain target-controlled text.
 
@@ -108,8 +119,11 @@ Operational security rules, all enforced in code:
 
 1. Every write is scrubbed for credentials (bearer tokens, key=value secrets,
    JWTs, cloud keys, private keys, URL userinfo, cookies, long opaque blobs).
-2. Agent-written entries are task-private candidates. A candidate never leaves
-   its task, so nothing crosses an engagement until the owner promotes it.
+2. Agent-written entries are task-private candidates, generalised on write with
+   the task's own identifiers replaced, so a lesson reads as a condition and a
+   mechanism rather than as one box's address (the concrete values stay in the
+   exploration graph). A candidate never leaves its task, so nothing crosses an
+   engagement until the owner promotes it.
 3. Promotion to company or global scope is an owner action and re-scrubs the
    entry with the origin task's scope identifiers (hosts, IPs, company names)
    replaced by `<target>`, `<ip>` and `<email>`. The response reports how many

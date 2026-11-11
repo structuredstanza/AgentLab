@@ -8,6 +8,27 @@ The upstream ARTEX project's per-version release history (0.3.x and earlier) and
 
 ## [Unreleased]
 
+### Stopping the absence loop
+
+- A task can now be handed back to the human instead of being planned at forever. `report_blocked` (planner-only) parks the task in the new `needs_operator` status with a `blocked_reason` and an operator action, the planner and worker loops refuse to run while it holds, and resuming clears both. Admission of new work (a goal added, a rerun) also answers the block.
+- The pause path no longer swallows its own signal: pausing an intent now wakes the planner and derives that intent's reflections, as the terminal path always did. A paused intent counts as active (`HasActiveIntent`), so an intent waiting on a human no longer reads as a stalled frontier and no longer triggers the "zero intents is not allowed" lead. Quiet mode keeps the narrower `HasOpenOrRunningIntent`, so the pause wake still gets its round.
+- The planner prompt lists environmental absence as a third legitimate reason to produce no intent, and both the hard floor and the empty-frontier lead now name `report_blocked` as the move when the target is unreachable. In a real engagement the old behaviour spent roughly a quarter of 63 intents re-asking whether a dead host had come back.
+
+### Memory that can be read back
+
+- `recall` could not find what the same task had just written: the knowledge query ANDed every token of a natural-language question and the reflection half was a whole-query substring match. Both now share one tokenizer (`db.MemoryTokens` / `db.MemorySearchTerms`); knowledge matches any term and ranks by overlap, reflections are scored by term overlap. The tsvector configuration is unchanged.
+- Knowledge written during a task reaches the next round: the memory block is a per-round provider instead of a snapshot taken before the task started.
+- New `environment` knowledge scope for lessons about the platform rather than the target (proxy behaviour, network shape). Adopted environment entries are always injected at task start, independent of the name/goal term match, with their own cap; the `env:<name>` tag names the deployment. Agents still write only task-scoped candidates; promotion stays an owner action.
+- New `lead` kind: a route that was reasoned out but never executed. `knowledge_add` takes a `proof_basis`, and a `playbook` that cannot cite `executed-live` or `executed-lab` is stored as a `lead` and says so.
+- Agent-written knowledge and reflections are generalized at write time with the same identifier scrubbing promotion uses, so a lesson reads as a condition and a mechanism rather than as one box's address. Operator entries keep their identifiers; the concrete values stay in the exploration graph.
+
+### A proxy that cannot fake reachability
+
+- The masking egress proxy answered `CONNECT` with `200 Connection Established` before it had dialled anything, so a tool saw a successful tunnel and a forged certificate for a host that does not exist, and the real failure arrived inside the tunnel as a 502 that read like the site's answer. CONNECT is now preceded by a TCP probe (3 s timeout) cached per authority (2 min, 4096 entries), and an unreachable target gets a 502 labelled `X-Artex-Egress: dial-failed` with no certificate minted.
+- Every proxy-generated failure carries that header, and enrichment drops a response that has it: no service row, no `last_seen` bump, no exchange recorded against the target. A 502 the masker produced can no longer be stored as the target's status code.
+- Assets carry `last_unreachable_at`, `open_ports` entries carry provenance (`model` for an `insert_assets` claim, `probe` for an observed connection), and `graph_overview` exposes a `target_liveness` block, so absence is a fact the planner reads instead of prose it infers.
+- New `tcp_probe` worker tool: a direct dial that ignores the proxy environment, distinguishes connected / refused / timed-out / DNS failure, and writes the liveness result.
+
 ### Ownership and SDK
 
 - Move the Go module to `github.com/structuredstanza/AgentLab/artex-global` and the vendored agent SDK to `github.com/structuredstanza/norma`, matching where the code is actually published. Every import, the `replace` directive and the CI invocations follow. The retired upstream account is no longer named anywhere outside the AGPL copyright notice in `third_party/norma/LICENSE`, and the README, SECURITY, defense guide and external-link allowlist now point at the published upstream this fork tracks.

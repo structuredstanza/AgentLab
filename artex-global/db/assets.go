@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 )
 
 // =====================================================================
@@ -77,10 +78,19 @@ type ParamItem struct {
 	Type     string `json:"type,omitempty"`
 }
 
+// Port provenance values. A port is either asserted by a model (insert_assets
+// and every other writer) or observed by a connection this process made. Rows
+// written before the field existed carry none and read as model.
+const (
+	PortProvenanceModel = "model"
+	PortProvenanceProbe = "probe"
+)
+
 // PortService is one entry in open_ports: {"port":22,"service":"ssh"}.
 type PortService struct {
-	Port    int    `json:"port"`
-	Service string `json:"service,omitempty"`
+	Port       int    `json:"port"`
+	Service    string `json:"service,omitempty"`
+	Provenance string `json:"provenance,omitempty"`
 }
 
 // AssetStore operates on the assets table.
@@ -227,7 +237,11 @@ func marshalStringArray(items []string) string {
 func marshalPortServices(ps []PortService) (string, error) {
 	items := make([]map[string]any, len(ps))
 	for i, p := range ps {
-		items[i] = map[string]any{"port": p.Port, "service": p.Service}
+		provenance := p.Provenance
+		if provenance == "" {
+			provenance = PortProvenanceModel
+		}
+		items[i] = map[string]any{"port": p.Port, "service": p.Service, "provenance": provenance}
 	}
 	return marshalJSONBArray(items)
 }
@@ -382,7 +396,8 @@ ON CONFLICT (ip) WHERE type = 'ip' DO UPDATE SET
             SELECT DISTINCT ON ((elem->>'port')::int) elem
             FROM unnest(assets.open_ports || EXCLUDED.open_ports) AS elem
             ORDER BY (elem->>'port')::int,
-                     CASE WHEN elem->>'service' IS NOT NULL AND elem->>'service' <> '' THEN 0 ELSE 1 END
+                     CASE WHEN elem->>'service' IS NOT NULL AND elem->>'service' <> '' THEN 0 ELSE 1 END,
+                     CASE WHEN elem->>'provenance' = 'probe' THEN 0 ELSE 1 END
         )
     ),
     c_segment  = COALESCE(assets.c_segment, EXCLUDED.c_segment),
@@ -401,12 +416,18 @@ RETURNING id`, req.IP, csegVal, boundDomains, openPortsJSON, companyID, taskIDs)
 	return id, err
 }
 
-// AppendIPPort appends a {port, service} entry to an existing IP asset's open_ports.
-func (s *AssetStore) AppendIPPort(ipStr string, port int, serviceName string) error {
+// AppendIPPort appends a {port, service, provenance} entry to an existing IP
+// asset's open_ports. The merge keeps one entry per port and prefers a named
+// service, then a probe-derived entry, so an observed port wins a tie without
+// losing a service name the model supplied.
+func (s *AssetStore) AppendIPPort(ipStr string, port int, serviceName, provenance string) error {
 	if ipStr == "" || port == 0 {
 		return nil
 	}
-	entry, _ := json.Marshal(map[string]any{"port": port, "service": serviceName})
+	if provenance == "" {
+		provenance = PortProvenanceModel
+	}
+	entry, _ := json.Marshal(map[string]any{"port": port, "service": serviceName, "provenance": provenance})
 	_, err := s.db.Exec(`
 UPDATE assets SET
     open_ports = (
@@ -414,12 +435,80 @@ UPDATE assets SET
             SELECT DISTINCT ON ((elem->>'port')::int) elem
             FROM unnest(open_ports || ARRAY[$1::jsonb]) AS elem
             ORDER BY (elem->>'port')::int,
-                     CASE WHEN elem->>'service' IS NOT NULL AND elem->>'service' <> '' THEN 0 ELSE 1 END
+                     CASE WHEN elem->>'service' IS NOT NULL AND elem->>'service' <> '' THEN 0 ELSE 1 END,
+                     CASE WHEN elem->>'provenance' = 'probe' THEN 0 ELSE 1 END
         )
     ),
     last_seen = now()
 WHERE type = 'ip' AND ip = $2`, string(entry), ipStr)
 	return err
+}
+
+// MarkUnreachable records that a direct probe could not reach host. graph_overview
+// exposes it, so a host that has gone dark is a machine fact the planner reads
+// instead of prose it must infer from a run of failures.
+//
+// Only rows that already exist are touched: a probe reports liveness, it does
+// not create an asset. The host may be a domain or an address; stored domains
+// are lowercased, so the comparison is too.
+func (s *AssetStore) MarkUnreachable(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`
+UPDATE assets SET last_unreachable_at = now()
+WHERE ip = $1 OR domain = lower($1)`, host)
+	return err
+}
+
+// ClearUnreachable clears the liveness marker after a successful contact.
+func (s *AssetStore) ClearUnreachable(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`
+UPDATE assets SET last_unreachable_at = NULL
+WHERE last_unreachable_at IS NOT NULL AND (ip = $1 OR domain = lower($1))`, host)
+	return err
+}
+
+// UnreachableHost is one host whose last direct probe failed, and when.
+type UnreachableHost struct {
+	Host  string    `json:"host"`
+	Since time.Time `json:"since"`
+}
+
+// UnreachableHosts lists the hosts in a task's scope whose last direct probe
+// failed, newest first. taskID 0 means every host. The result is bounded
+// because graph_overview is read every planning round.
+func (s *AssetStore) UnreachableHosts(taskID int64, limit int) ([]UnreachableHost, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.db.Query(`
+SELECT COALESCE(NULLIF(domain,''), ip) AS host, MAX(last_unreachable_at) AS since
+FROM assets
+WHERE last_unreachable_at IS NOT NULL
+  AND COALESCE(NULLIF(domain,''), ip) IS NOT NULL
+  AND ($1::bigint = 0 OR $1::bigint = ANY(task_ids))
+GROUP BY host
+ORDER BY since DESC
+LIMIT $2`, taskID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UnreachableHost
+	for rows.Next() {
+		var h UnreachableHost
+		if err := rows.Scan(&h.Host, &h.Since); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }
 
 // AppendIPBoundDomain appends a domain to an existing IP asset's bound_domains.

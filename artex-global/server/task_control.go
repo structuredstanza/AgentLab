@@ -155,9 +155,30 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 		out.Paused, out.Status = true, "paused"
 		go s.reconcileConcurrency()
 	case "resume":
-		queued, err := s.admitPausedTask(t)
+		lifecycle := t.lifecycleSnapshot()
+		blocked := lifecycle.Status == db.StatusNeedsOperator
+		var queued bool
+		var err error
+		if blocked && !lifecycle.Paused {
+			// A block whose pause never committed (the pause write failed): admit
+			// without the paused precondition so resume is not rejected and the
+			// task cannot be stranded in a state the resume path refuses.
+			queued, err = s.admitTask(t, "resume")
+		} else {
+			queued, err = s.admitPausedTask(t)
+		}
 		if err != nil {
 			return out, err
+		}
+		if blocked {
+			// needs_operator is recoverable, not terminal: clearing the block and
+			// returning the status to running is what lets the planner plan again.
+			// Admission keeps the old status, and the wake-up it sent while blocked
+			// was dropped by the needs_operator gate, hence the explicit Notify.
+			if err := s.m.SetTaskStatus(t.ID, "running"); err != nil {
+				return out, err
+			}
+			t.Notify()
 		}
 		out.Queued = queued
 		out.Status = map[bool]string{true: "queued", false: "running"}[queued]

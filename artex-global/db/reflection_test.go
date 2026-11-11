@@ -268,3 +268,41 @@ func TestAddReflectionDedupeAfterScrub(t *testing.T) {
 		t.Fatalf("scrubbed summaries did not collapse: created=%v ids=%d/%d", created, first.ID, second.ID)
 	}
 }
+
+// TestReflectionWriteGeneralisesIdentifiers: a reflection is read on later
+// targets, so the origin task's identifiers are generalised at write time and
+// two observations that differ only in the address collapse into one.
+func TestReflectionWriteGeneralisesIdentifiers(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	if _, err := d.Exec(`INSERT INTO task_scope(task_id, kind, domain, source)
+		VALUES ($1,'root_domain','reflect-scrub.example','manual')`, tk.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	first, created, err := d.AddReflection(ctx, ReflectionInput{
+		TaskID: tk.ID, Kind: "opsec", Source: "worker",
+		Summary: "WAF answered 429 for requests from 10.30.40.50",
+		Detail:  "the rule matched reflect-scrub.example"})
+	if err != nil || !created {
+		t.Fatalf("first write: created=%v err=%v", created, err)
+	}
+	if strings.Contains(first.Summary+first.Detail, "reflect-scrub.example") ||
+		strings.Contains(first.Summary+first.Detail, "10.30.40.50") {
+		t.Fatalf("reflection kept a target identifier: %+v", first)
+	}
+	if !strings.Contains(first.Detail, scrubTarget) || !strings.Contains(first.Summary, scrubIP) {
+		t.Fatalf("reflection not generalised: %+v", first)
+	}
+
+	second, created, err := d.AddReflection(ctx, ReflectionInput{
+		TaskID: tk.ID, Kind: "opsec", Source: "worker",
+		Summary: "WAF answered 429 for requests from 10.30.40.51"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Fatalf("generalised summaries should still dedupe, got a second row %d", second.ID)
+	}
+}

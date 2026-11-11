@@ -236,7 +236,16 @@ function fmtDateTime(unix?: number): string {
 
 // Status filter options. Labels are translated at render time under the status.task namespace, so here we only keep
 // the values (including their order).
-const STATUS_OPTIONS: readonly TaskStatus[] = ["created", "queued", "running", "paused", "done", "failed", "timeout"];
+const STATUS_OPTIONS: readonly TaskStatus[] = [
+  "created",
+  "queued",
+  "running",
+  "paused",
+  "needs_operator",
+  "done",
+  "failed",
+  "timeout",
+];
 
 // Select does not accept an empty string as a value, so "uncategorized" uses this sentinel value consistently in the filter, the new-task form, and bulk move,
 // and it is translated back to the backend's null on submit.
@@ -246,10 +255,12 @@ const UNCATEGORIZED_VALUE = "uncategorized";
 // (done/failed/timeout are terminal); only paused can be resumed. Inline buttons and bulk controls share this check,
 // so the two can never disagree, with one clickable and the other not.
 const PAUSABLE_STATUSES = new Set<TaskStatus>(["created", "queued", "running"]);
-const ARCHIVABLE_STATUSES = new Set<TaskStatus>(["paused", "done", "failed", "timeout"]);
+const ARCHIVABLE_STATUSES = new Set<TaskStatus>(["paused", "needs_operator", "done", "failed", "timeout"]);
 
 function taskControlAction(status: TaskStatus): "pause" | "resume" | null {
-  if (status === "paused") return "resume";
+  // needs_operator stopped the loops the same way a pause does, so the human's
+  // answer to it is the same action: resume.
+  if (status === "paused" || status === "needs_operator") return "resume";
   if (PAUSABLE_STATUSES.has(status)) return "pause";
   return null;
 }

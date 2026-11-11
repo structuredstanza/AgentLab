@@ -322,7 +322,10 @@ function TaskDetailInner() {
 
   const completed = task.status === "done";
   const terminal = ["done", "failed", "timeout"].includes(task.status);
-  const archiveLifecycleEligible = terminal || paused || task.status === "paused";
+  // The planner handed this task back: show its own status instead of an engine
+  // mode, because "idle" would hide the fact that a human has to act.
+  const needsOperator = task.status === "needs_operator";
+  const archiveLifecycleEligible = terminal || paused || task.status === "paused" || needsOperator;
   const canArchive = archiveLifecycleEligible && !task.archive_blocked_by_task_id;
   let archiveDisabledReason = task.queued ? t("archive.disabledQueued") : t("archive.disabledRunning");
   if (archiveLifecycleEligible && task.archive_blocked_by_task_id) {
@@ -371,7 +374,11 @@ function TaskDetailInner() {
           </code>
           <Separator orientation="vertical" className="mx-1 hidden h-4 sm:block" />
           <TaskLLMControl task={task} profiles={profiles} onUpdated={load} />
-          <StatusBadge domain={terminal ? "task" : "engine"} value={terminal ? task.status : engineMode} dot />
+          <StatusBadge
+            domain={terminal || needsOperator ? "task" : "engine"}
+            value={terminal || needsOperator ? task.status : engineMode}
+            dot
+          />
           {canArchive ? (
             <AlertDialog>
               <AlertDialogTrigger asChild>{archiveTrigger}</AlertDialogTrigger>
@@ -400,6 +407,11 @@ function TaskDetailInner() {
           </Button>
         </div>
         <p className="truncate text-xs text-muted-foreground">{task.goal}</p>
+        {needsOperator && task.blocked_reason ? (
+          <p className="truncate text-xs text-violet-600 dark:text-violet-400" title={task.blocked_reason}>
+            {t("blocked.reason", { reason: task.blocked_reason })}
+          </p>
+        ) : null}
         {/* Tabs */}
         <div className="no-scrollbar min-w-0 overflow-x-auto">
           <TabsList variant="default" className="min-w-max">

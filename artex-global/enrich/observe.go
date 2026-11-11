@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/structuredstanza/AgentLab/artex-global/egress"
 )
 
 // maxObservedBody caps the response body handed to Options.Observe, matching the
@@ -19,7 +21,11 @@ type Observation struct {
 	Status int
 	// Failed means no response arrived (proxy down, TLS verification failed,
 	// timeout); ResponseHeaders then carries "x-capture-error".
-	Failed          bool
+	Failed bool
+	// ProxyFailure means a response did arrive but the egress proxy produced it
+	// (it could not dial the target or read its reply). It is not an exchange
+	// with the target and must not be stored as one.
+	ProxyFailure    bool
 	RequestHeaders  map[string]string
 	ResponseHeaders map[string]string
 	// Complete is true only when the whole response body was read, matched any
@@ -54,6 +60,10 @@ func (t *observingTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, err
 	}
 	declared := resp.ContentLength
+	// A response carrying the proxy's failure header is the proxy's, not the
+	// target's: the proxy could not reach the target and said so. Marking it
+	// Failed keeps it out of the site's status and out of the traffic store.
+	proxyFailure := resp.Header.Get(egress.HeaderEgress) != ""
 	resp.Body = &observedBody{
 		ReadCloser: resp.Body,
 		declared:   declared,
@@ -62,11 +72,13 @@ func (t *observingTransport) RoundTrip(req *http.Request) (*http.Response, error
 				Method:          req.Method,
 				URL:             req.URL.String(),
 				Status:          resp.StatusCode,
+				Failed:          proxyFailure,
+				ProxyFailure:    proxyFailure,
 				RequestHeaders:  flattenHeader(req.Header),
 				ResponseHeaders: flattenHeader(resp.Header),
 				Complete:        complete,
 			}
-			if complete {
+			if complete && !proxyFailure {
 				o.ResponseBody = body
 			}
 			t.observe(o)

@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/structuredstanza/AgentLab/artex-global/db"
+	"github.com/structuredstanza/AgentLab/artex-global/egress"
 	"github.com/structuredstanza/AgentLab/artex-global/useragent"
 
 	"github.com/miekg/dns"
@@ -555,6 +556,14 @@ func (e *Engine) doHTTP(taskID, id int64, rawURL string) {
 		return
 	}
 	defer resp.Body.Close()
+	// The proxy answers a CONNECT before it dials the target, so a failure it
+	// hit on the way can arrive here as an ordinary response. The header says
+	// so; storing that status would record the proxy's failure as the site's
+	// answer and bump last_seen for a host that never answered.
+	if origin := resp.Header.Get(egress.HeaderEgress); origin != "" {
+		log.Printf("[enrich] http %s (task %d): egress proxy reported %s; the target did not answer", host, taskID, origin)
+		return
+	}
 	// The masking proxy forwards the origin's Content-Encoding untouched and the
 	// transport does not decode, so undo it here (gzip, deflate, br). Reading at
 	// most maxBodyBytes+1 DECODED bytes bounds the work whatever the compression

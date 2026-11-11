@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // The knowledge base is durable operational memory: reusable techniques,
@@ -22,6 +23,13 @@ import (
 // ts_rank_cd), not pgvector.
 // shortcut: keyword recall only, no semantic search; upgrade to pgvector when
 // an embedding provider is configured.
+//
+// Scope 'environment' is knowledge about the platform the agents themselves run
+// on - proxy behaviour, network shape, sandbox edges - true for every task on
+// this installation and independent of any target. An environment entry SHOULD
+// carry a tag "env:<name>" naming the deployment (for example "env:prod-egress")
+// so two installations can be told apart by tag; the tag is ordinary metadata
+// and is not enforced.
 
 const (
 	// MaxKnowledgePerTask bounds machine-written knowledge per task.
@@ -47,7 +55,7 @@ var (
 // KnowledgeEntry is one knowledge base row.
 type KnowledgeEntry struct {
 	ID           int64     `json:"id"`
-	Scope        string    `json:"scope"` // global | company | task
+	Scope        string    `json:"scope"` // global | environment | company | task
 	CompanyID    int64     `json:"company_id,omitempty"`
 	TaskID       int64     `json:"task_id,omitempty"`
 	Kind         string    `json:"kind"`
@@ -105,7 +113,7 @@ type KnowledgePatch struct {
 var (
 	knowledgeKindSet = map[string]bool{
 		"technique": true, "tool": true, "opsec": true,
-		"indicator": true, "playbook": true, "note": true,
+		"indicator": true, "playbook": true, "lead": true, "note": true,
 	}
 	knowledgeStatusSet = map[string]bool{"candidate": true, "adopted": true, "retired": true}
 	knowledgeSourceSet = map[string]bool{"operator": true, "agent": true, "reflection": true}
@@ -241,8 +249,10 @@ func scanKnowledge(sc interface{ Scan(dest ...any) error }, extra ...any) (Knowl
 // AddKnowledge writes one entry, scrubbing secrets and enforcing the scope
 // rules and the per-task cap. A machine source (agent, reflection) can only
 // write a task-scoped candidate: anything wider is ErrMemoryInvalid, because
-// promotion is the only way out of a task. Re-writing the same title inside a
-// task updates that entry instead of creating a second one.
+// promotion is the only way out of a task. A machine write is also generalised
+// with the task's own identifiers, so it reads as a rule for the next target
+// rather than a report about this one. Re-writing the same title inside a task
+// updates that entry instead of creating a second one.
 func (d *DB) AddKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeEntry, int, error) {
 	if in.Source == "" || !knowledgeSourceSet[in.Source] {
 		return KnowledgeEntry{}, 0, fmt.Errorf("knowledge source %q: %w", in.Source, ErrMemoryInvalid)
@@ -267,9 +277,9 @@ func (d *DB) AddKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeEntr
 		return KnowledgeEntry{}, 0, fmt.Errorf("knowledge status %q: %w", in.Status, ErrMemoryInvalid)
 	}
 	switch in.Scope {
-	case "global":
+	case "global", "environment":
 		if in.CompanyID != 0 || in.TaskID != 0 {
-			return KnowledgeEntry{}, 0, fmt.Errorf("global entry must not carry ids: %w", ErrMemoryInvalid)
+			return KnowledgeEntry{}, 0, fmt.Errorf("%s entry must not carry ids: %w", in.Scope, ErrMemoryInvalid)
 		}
 	case "company":
 		if in.CompanyID <= 0 || in.TaskID != 0 {
@@ -298,12 +308,31 @@ func (d *DB) AddKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeEntr
 	tags, n = memoryScrubTags(tags)
 	redactions += n
 	if in.Scope != "task" {
-		// An entry written straight to company/global scope has no origin task
-		// to learn identifiers from, so the no-origin generalisation applies:
-		// every IP literal and email becomes a placeholder.
+		// An entry written straight to company/global/environment scope has no
+		// origin task to learn identifiers from, so the no-origin
+		// generalisation applies: every IP literal and email becomes a
+		// placeholder.
 		redactions += memoryGeneralise(&title, &body)
 		tags, n = memoryGeneraliseTags(tags)
 		redactions += n
+	} else if in.Source != "operator" {
+		// An agent writes for the NEXT target, so the origin task's own
+		// identifiers (scope domains, hosts, company names) are generalised
+		// here, at write time, instead of waiting for promotion. The
+		// exploration graph keeps the concrete facts; knowledge keeps the
+		// condition and the mechanism.
+		ids, err := d.TaskScopeIdentifiers(ctx, in.TaskID)
+		if err != nil {
+			return KnowledgeEntry{}, 0, err
+		}
+		title, n = ScrubTargetIdentifiers(title, ids)
+		redactions += n
+		body, n = ScrubTargetIdentifiers(body, ids)
+		redactions += n
+		for i := range tags {
+			tags[i], n = ScrubTargetIdentifiers(tags[i], ids)
+			redactions += n
+		}
 	}
 
 	if in.Scope == "task" && in.OriginTaskID == 0 {
@@ -372,6 +401,50 @@ SELECT company_id FROM tasks WHERE id=$1 AND company_id IS NOT NULL`, taskID)
 	return out, nil
 }
 
+// memoryMaxSearchTerms bounds how many terms one query contributes.
+const memoryMaxSearchTerms = 12
+
+// MemoryTokens is the tokenizer behind MemorySearchTerms: lowercase letters and
+// digits only, so no tsquery operator (quotes, "-", "or") can survive; terms
+// shorter than three bytes dropped; de-duplicated; at most
+// memoryMaxSearchTerms kept. Recall uses it to score reflections by overlap
+// with the same terms the knowledge search used.
+func MemoryTokens(q string) []string {
+	var terms []string
+	seen := map[string]bool{}
+	flat := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return ' '
+	}, strings.ToLower(q))
+	for _, term := range strings.Fields(flat) {
+		if len(term) < 3 || term == "or" || seen[term] {
+			continue
+		}
+		seen[term] = true
+		terms = append(terms, term)
+		if len(terms) == memoryMaxSearchTerms {
+			break
+		}
+	}
+	return terms
+}
+
+// MemorySearchTerms turns a natural-language query into the tsquery string to
+// pass to websearch_to_tsquery('simple', ...). websearch_to_tsquery ANDs every
+// whitespace term, so a sentence-shaped query ("the mail host exposed a
+// writable socket") would demand a single entry containing all of it and match
+// nothing; the terms are ORed instead and ts_rank_cd still ranks an entry
+// matching more of them higher. A query with no indexable term is returned
+// trimmed and unchanged, so a short keyword search behaves as before.
+func MemorySearchTerms(q string) string {
+	if terms := MemoryTokens(q); len(terms) > 0 {
+		return strings.Join(terms, " OR ")
+	}
+	return strings.TrimSpace(q)
+}
+
 // SearchKnowledge returns what taskID may see, best match first. An empty
 // query means "newest visible". limit<=0 defaults to 5 and is capped at 10.
 func (d *DB) SearchKnowledge(ctx context.Context, taskID int64, q string, kinds []string, limit int) ([]KnowledgeHit, error) {
@@ -391,7 +464,7 @@ func (d *DB) SearchKnowledge(ctx context.Context, taskID int64, q string, kinds 
 	if err != nil {
 		return nil, err
 	}
-	q = strings.TrimSpace(q)
+	q = MemorySearchTerms(q)
 	out := []KnowledgeHit{}
 	var rows *sql.Rows
 	if q == "" {
@@ -400,6 +473,7 @@ SELECT `+knowledgeColumns+`, 0::float8
 FROM knowledge_entries
 WHERE status <> 'retired'
   AND ((scope='global' AND status='adopted')
+    OR (scope='environment' AND status='adopted')
     OR (scope='company' AND status='adopted' AND company_id = ANY($1::bigint[]))
     OR (scope='task' AND task_id=$2))
   AND (cardinality($3::text[]) = 0 OR kind = ANY($3::text[]))
@@ -411,6 +485,7 @@ SELECT `+knowledgeColumns+`, ts_rank_cd(tsv, q)
 FROM knowledge_entries, websearch_to_tsquery('simple', $3) AS q
 WHERE status <> 'retired'
   AND ((scope='global' AND status='adopted')
+    OR (scope='environment' AND status='adopted')
     OR (scope='company' AND status='adopted' AND company_id = ANY($1::bigint[]))
     OR (scope='task' AND task_id=$2))
   AND (cardinality($4::text[]) = 0 OR kind = ANY($4::text[]))
@@ -460,6 +535,7 @@ func (d *DB) ListKnowledge(ctx context.Context, f KnowledgeFilter) ([]KnowledgeE
 		}
 		args = append(args, companies, f.TaskID)
 		where = append(where, fmt.Sprintf(`status <> 'retired' AND ((scope='global' AND status='adopted')
+    OR (scope='environment' AND status='adopted')
     OR (scope='company' AND status='adopted' AND company_id = ANY($%d::bigint[]))
     OR (scope='task' AND task_id=$%d))`, len(args)-1, len(args)))
 	}
@@ -575,10 +651,12 @@ RETURNING `+knowledgeColumns, id, title, body, kind, status, tags)
 	return entry, redactions, nil
 }
 
-// PromoteKnowledge moves a task entry to company or global scope, adopts it,
-// and re-scrubs it with the origin task's identifiers so no hostname, IP or
-// company name travels with it. The redaction count is returned so the owner
-// sees how much was generalised.
+// PromoteKnowledge moves a task entry to company, environment or global scope,
+// adopts it, and re-scrubs it with the origin task's identifiers so no
+// hostname, IP or company name travels with it. The redaction count is returned
+// so the owner sees how much was generalised. An environment promotion means
+// "this is a fact about the platform every task runs on"; it SHOULD be tagged
+// "env:<name>" for the deployment it was observed on.
 func (d *DB) PromoteKnowledge(ctx context.Context, id int64, scope string, companyID int64) (KnowledgeEntry, int, error) {
 	cur, err := d.GetKnowledge(ctx, id)
 	if err != nil {
@@ -616,9 +694,9 @@ func (d *DB) PromoteKnowledge(ctx context.Context, id int64, scope string, compa
 		if !allowed {
 			return KnowledgeEntry{}, 0, fmt.Errorf("company %d is not associated with the origin task: %w", companyID, ErrMemoryInvalid)
 		}
-	case "global":
+	case "global", "environment":
 		if companyID != 0 {
-			return KnowledgeEntry{}, 0, fmt.Errorf("global promotion takes no company id: %w", ErrMemoryInvalid)
+			return KnowledgeEntry{}, 0, fmt.Errorf("%s promotion takes no company id: %w", scope, ErrMemoryInvalid)
 		}
 	default:
 		return KnowledgeEntry{}, 0, fmt.Errorf("promotion target %q: %w", scope, ErrMemoryInvalid)

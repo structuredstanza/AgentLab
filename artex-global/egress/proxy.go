@@ -70,6 +70,7 @@ type Proxy struct {
 	Gate     Gate
 
 	dialer *dialer
+	reach  *reachCache
 	ln     net.Listener
 
 	// slots is the connection bound, as a counting semaphore: one token per
@@ -92,7 +93,7 @@ func New(addr string, ca *CA, id Identity, gate Gate) (*Proxy, error) {
 	}
 	return &Proxy{
 		CA: ca, Identity: id, Gate: gate,
-		dialer: newDialer(), ln: ln,
+		dialer: newDialer(), reach: newReachCache(connectProbeLimit), ln: ln,
 		slots: make(chan struct{}, maxConnections),
 		conns: map[net.Conn]context.CancelFunc{},
 	}, nil
@@ -271,7 +272,17 @@ func (p *Proxy) handle(ctx context.Context, conn net.Conn) {
 // mitm terminates the client's TLS with a leaf certificate and forwards the
 // plaintext requests inside it, re-encrypting upstream with the browser
 // fingerprint.
+//
+// The target is probed first. A 200 to CONNECT is a promise that the target was
+// reached, and the proxy used to make that promise for a host it had never
+// dialled: the failure then arrived inside the tunnel as a 502 the client read
+// as the site's answer. A probe keeps "the port is open" a fact about the
+// target.
 func (p *Proxy) mitm(ctx context.Context, conn net.Conn, br *bufio.Reader, authority string) {
+	if !p.reachable(ctx, authority) {
+		writeEgressFailure(conn, egressDialFailed)
+		return
+	}
 	host := hostFromAddr(authority)
 	leaf, err := p.CA.Leaf(host)
 	if err != nil {
@@ -300,6 +311,35 @@ func (p *Proxy) mitm(ctx context.Context, conn net.Conn, br *bufio.Reader, autho
 			return
 		}
 	}
+}
+
+// reachable reports whether authority accepted a TCP connection, dialling once
+// per TTL.
+//
+// The probe dials and closes rather than handing the socket to the request that
+// follows: that request re-dials through the uTLS path because its ALPN depends
+// on what the origin negotiates, and a successful probe must not leave a socket
+// leaking. A cached failure short-circuits the dial entirely, which is what
+// keeps a retry loop against a dark host from costing one dial per request.
+func (p *Proxy) reachable(ctx context.Context, authority string) bool {
+	if ok, cached := p.reach.lookup(authority); cached {
+		return ok
+	}
+	c, err := (&net.Dialer{Timeout: connectProbeTimeout}).DialContext(ctx, "tcp", authority)
+	if err == nil {
+		c.Close()
+	}
+	p.reach.put(authority, err == nil)
+	return err == nil
+}
+
+// writeEgressFailure answers a request the proxy could not complete against the
+// target. The header is what makes the failure attributable: without it a
+// client inside the tunnel stores the proxy's status as the site's.
+func writeEgressFailure(conn net.Conn, reason string) {
+	body := "artex egress: upstream " + reason + "\n"
+	fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\n%s: %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		HeaderEgress, reason, len(body), body)
 }
 
 // forwardPlain forwards a non-CONNECT proxy request, whose target is absolute.
@@ -370,7 +410,7 @@ func (p *Proxy) forward(ctx context.Context, conn net.Conn, br *bufio.Reader, me
 	if err != nil {
 		logEvent(ctx, Event{Time: started, Method: method, Host: hostOnly, Path: path,
 			Refused: true, Reason: "dial: " + err.Error(), Duration: time.Since(started)})
-		fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+		writeEgressFailure(conn, egressDialFailed)
 		return false
 	}
 	defer upstream.Close()
@@ -396,7 +436,7 @@ func (p *Proxy) forward(ctx context.Context, conn net.Conn, br *bufio.Reader, me
 	if err != nil {
 		logEvent(ctx, Event{Time: started, Method: method, Host: hostOnly, Path: path,
 			Refused: true, Reason: "read: " + err.Error(), Duration: time.Since(started)})
-		fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+		writeEgressFailure(conn, egressReadFailed)
 		return false
 	}
 	// The origin socket is closed before the response body. Closing the body

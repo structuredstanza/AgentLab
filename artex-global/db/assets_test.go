@@ -160,10 +160,10 @@ func TestAppendIPPort(t *testing.T) {
 	}
 	defer deleteAsset(d, id)
 
-	if err := av2.AppendIPPort("10.9.8.7", 3306, "mysql"); err != nil {
+	if err := av2.AppendIPPort("10.9.8.7", 3306, "mysql", PortProvenanceModel); err != nil {
 		t.Fatal(err)
 	}
-	if err := av2.AppendIPPort("10.9.8.7", 22, "ssh"); err != nil {
+	if err := av2.AppendIPPort("10.9.8.7", 22, "ssh", PortProvenanceModel); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,6 +171,86 @@ func TestAppendIPPort(t *testing.T) {
 	d.QueryRow(`SELECT cardinality(open_ports) FROM assets WHERE id = $1`, id).Scan(&cnt)
 	if cnt != 2 {
 		t.Errorf("AppendIPPort: want 2 ports, got %d", cnt)
+	}
+}
+
+// A port carries where it came from: model assertion by default, probe when a
+// connection observed it. A probe entry outranks a model one for the same port,
+// and rows written before the field existed stay readable.
+func TestPortProvenance(t *testing.T) {
+	d, av2, _ := testSetup(t)
+	t.Cleanup(func() { d.Close() })
+
+	id, err := av2.UpsertIP(UpsertIPReq{IP: "10.9.8.77", OpenPorts: []PortService{{Port: 8080}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteAsset(d, id)
+
+	ports := func() []map[string]any {
+		t.Helper()
+		rows, err := av2.GetByIDs([]int64{id})
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("load asset %d: %v", id, err)
+		}
+		return rows[0].OpenPorts
+	}
+
+	if got := ports(); len(got) != 1 || got[0]["provenance"] != PortProvenanceModel {
+		t.Fatalf("a port written without provenance must default to model: %v", got)
+	}
+	if err := av2.AppendIPPort("10.9.8.77", 8080, "", PortProvenanceProbe); err != nil {
+		t.Fatal(err)
+	}
+	if got := ports(); len(got) != 1 || got[0]["provenance"] != PortProvenanceProbe {
+		t.Fatalf("a probe-derived port must outrank a model assertion: %v", got)
+	}
+
+	// A row written before the field existed.
+	if _, err := d.Exec(`UPDATE assets SET open_ports = ARRAY['{"port": 9000}'::jsonb] WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	got := ports()
+	if len(got) != 1 || got[0]["port"] != float64(9000) {
+		t.Fatalf("a legacy port entry is not readable: %v", got)
+	}
+	if _, has := got[0]["provenance"]; has {
+		t.Fatalf("a legacy port entry gained a provenance field: %v", got[0])
+	}
+}
+
+// The liveness marker is a per-host fact, scoped to the tasks that hold the
+// host, and cleared by a successful contact.
+func TestLivenessMarker(t *testing.T) {
+	d, av2, _ := testSetup(t)
+	t.Cleanup(func() { d.Close() })
+
+	const ip = "10.9.8.88"
+	id, err := av2.UpsertIP(UpsertIPReq{IP: ip, TaskID: 424242})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteAsset(d, id)
+
+	if err := av2.MarkUnreachable(ip); err != nil {
+		t.Fatal(err)
+	}
+	hosts, err := av2.UnreachableHosts(424242, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 1 || hosts[0].Host != ip || hosts[0].Since.IsZero() {
+		t.Fatalf("unreachable hosts = %+v, want one entry for %s", hosts, ip)
+	}
+	if other, err := av2.UnreachableHosts(424243, 10); err != nil || len(other) != 0 {
+		t.Fatalf("a host outside the task scope was listed: %+v (%v)", other, err)
+	}
+
+	if err := av2.ClearUnreachable(ip); err != nil {
+		t.Fatal(err)
+	}
+	if hosts, err := av2.UnreachableHosts(424242, 10); err != nil || len(hosts) != 0 {
+		t.Fatalf("a successful contact did not clear the marker: %+v (%v)", hosts, err)
 	}
 }
 

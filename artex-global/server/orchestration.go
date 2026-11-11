@@ -68,6 +68,7 @@ func (s *Server) orchestrationTools() []actool.CoreTool {
 		s.toolListLLMProfiles(),
 		s.toolSpawnTask(),
 		s.toolAskOperator(),
+		s.toolReportBlocked(),
 		s.toolPauseTask(),
 		s.toolGetTaskGraph(),
 		s.toolListTaskFindings(),
@@ -460,6 +461,8 @@ func (s *Server) deriveTaskStatus(t *Task) string {
 	switch {
 	case isTerminalStatus(lifecycle.Status):
 		return lifecycle.Status
+	case lifecycle.Status == db.StatusNeedsOperator:
+		return db.StatusNeedsOperator
 	case lifecycle.Paused || s.engine.IsPaused(t.ID):
 		return "paused"
 	case s.engine.ReadyFor(t) && s.engine.Started(t.ID):
@@ -486,6 +489,11 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 		}
 		if t.Name() == "ask_operator" {
 			bindings = json.RawMessage(`["worker","pentest"]`)
+		}
+		// The planner is the one that decides the engagement cannot continue, so
+		// report_blocked is a planner tool: no other agent can park a whole task.
+		if t.Name() == "report_blocked" {
+			bindings = json.RawMessage(`["planner"]`)
 		}
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, bindings)
 	}
@@ -649,12 +657,15 @@ func (s *Server) reseedMainAgentPrompt() {
 
 // reseedPlannerPrompt refreshes the planner prompt to the [current code default]: the default body underwent a streamlined restructuring, and 'restraint' was downgraded to
 // Deduplicate only; add "depth over coverage" and "hard floor: if the goal is unmet and no run is in progress, output is required"; add an upper bound to the negative-conclusion review.
-// Each time there is a substantive change by default, bump the flag below (currently v2) so that existing legacy databases get re-seeded once more. SeedPromptIfEmpty only inserts on first seed, so databases that already have versions won't receive it; hence version management is used.
+// v3 adds the third legitimate reason to produce no intents (environmental
+// absence) and makes report_blocked the correct move when the target is
+// unreachable, instead of another availability check.
+// Each time there is a substantive change by default, bump the flag below so that existing legacy databases get re-seeded once more. SeedPromptIfEmpty only inserts on first seed, so databases that already have versions won't receive it; hence version management is used.
 // [Append a new version] and switch to it (ResetPromptToDefault). The old version is still kept in history, so if the user has customized it, they can recover it from the version records.
 // Recovery. Settings flag guard → run only once. No handling needed for a fresh database (SeedPromptIfEmpty already seeds the latest defaults). And
 // reseedGoalsPrompt, fully isomorphic.
 func (s *Server) reseedPlannerPrompt() {
-	const flag = "planner_prompt_compact_realistic_v2"
+	const flag = "planner_prompt_operator_block_v3"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -675,7 +686,7 @@ func (s *Server) reseedPlannerPrompt() {
 		log.Printf("[prompts] planner prompt reset to new default failed: %v", err)
 		return
 	}
-	log.Printf("[prompts] planner prompt appended new default version (streamlined rewrite, dedup of restraint downgrade, depth-first, negative-review upper bound; one-time)")
+	log.Printf("[prompts] planner prompt appended new default version (environmental absence is a legitimate zero-intent reason; report_blocked when the target is unreachable; one-time)")
 }
 
 // reseedWorkerPrompt resets the worker prompt to the current code default—the default body's record_fact section removes the sentence "For negative conclusions,

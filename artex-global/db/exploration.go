@@ -1148,15 +1148,43 @@ ORDER BY priority DESC, id ASC LIMIT $2`, s.expID, limit)
 }
 
 // HasActiveIntent reports whether this exploration has any intent still in play
-// (state open OR running). Used to decide whether to kick the FIRST planner round:
-// a seeded task's intent may already have been claimed (open→running) by a worker
-// before the check, so counting only 'open' (Frontier) races with worker claim and
-// wrongly kicks a redundant first round. Counting open+running is race-proof.
+// (state open, running OR paused). Used to decide whether to kick the FIRST
+// planner round: a seeded task's intent may already have been claimed
+// (open→running) by a worker before the check, so counting only 'open'
+// (Frontier) races with worker claim and wrongly kicks a redundant first round.
+// Counting open+running is race-proof.
+//
+// paused is included because a paused intent is waiting on a human
+// (ask_operator), not abandoned: reading it as a drained frontier would let the
+// planner treat a live engagement as stalled and dispatch more work against the
+// same block.
 func (s *ExplorationStore) HasActiveIntent() (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running','paused'))`, s.expID).Scan(&exists)
+	return exists, err
+}
+
+// HasOpenOrRunningIntent reports whether any intent is actually moving work
+// (open or running). Quiet-mode uses it to decide whether an edge round is
+// redundant: a paused intent is waiting on a human, so it is in play
+// (HasActiveIntent) but not in flight: a wake that reports a pause must not be
+// swallowed as "nothing changed".
+func (s *ExplorationStore) HasOpenOrRunningIntent() (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
 WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running'))`, s.expID).Scan(&exists)
 	return exists, err
+}
+
+// CountPausedIntents counts intents waiting on the operator (ask_operator). The
+// planner prompt names them so a paused intent is not mistaken for a stalled
+// frontier with nothing in play.
+func (s *ExplorationStore) CountPausedIntents() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT count(*) FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND state='paused'`, s.expID).Scan(&n)
+	return n, err
 }
 
 // HasOpenGoal reports whether this exploration still has any goal in state 'open'.

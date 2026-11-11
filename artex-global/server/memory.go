@@ -6,10 +6,31 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/structuredstanza/AgentLab/artex-global/agent"
 	"github.com/structuredstanza/AgentLab/artex-global/db"
+)
+
+// Memory block budgets. The start-of-task block is the big one; the per-round
+// block is refreshed every round, so it is smaller and split between the
+// knowledge half and the reflections half.
+const (
+	memoryStartMaxChars = 2200
+	// memoryRoundKnowledgeChars / memoryRoundReflectionChars split the
+	// per-round budget, so the knowledge half cannot squeeze the reflections
+	// out.
+	memoryRoundKnowledgeChars  = 700
+	memoryRoundReflectionChars = 500
+	// memoryTargetHits is how many name/goal matches the start block shows.
+	memoryTargetHits = 4
+	// memoryEnvironmentHits caps adopted environment entries so they cannot
+	// crowd out target knowledge, and memoryEnvironmentBodyRunes bounds one.
+	memoryEnvironmentHits      = 2
+	memoryEnvironmentBodyRunes = 400
+	// memoryRoundOwnHits / memoryRoundBodyRunes bound the per-round knowledge
+	// half: the task's newest entries, clipped to leave room for reflections.
+	memoryRoundOwnHits   = 2
+	memoryRoundBodyRunes = 250
 )
 
 // memoryMode reads the knowledge/reflection injection switch:
@@ -27,10 +48,10 @@ func memoryMode() string {
 }
 
 // bindTaskMemory attaches the memory store and, unless injection is off, the
-// per-round reflections provider to one task's planner and worker. Both are
-// bound per task because the provider only ever reads that task's reflections:
-// memory never crosses an engagement boundary. The store is bound even with
-// injection off, so the recall/knowledge_add/reflect tools stay available.
+// per-round memory provider to one task's planner and worker. Both are bound
+// per task because the provider only ever reads that task's memory: it never
+// crosses an engagement boundary. The store is bound even with injection off,
+// so the recall/knowledge_add/reflect tools stay available.
 func (s *Server) bindTaskMemory(t *Task, wk *agent.Worker, pl *agent.Planner, mode string) {
 	taskID, err := strconv.ParseInt(t.ID, 10, 64)
 	if err != nil {
@@ -42,65 +63,124 @@ func (s *Server) bindTaskMemory(t *Task, wk *agent.Worker, pl *agent.Planner, mo
 	if mode == "off" {
 		return
 	}
-	provider := func(ctx context.Context) string {
-		refl, err := pg.ListReflections(ctx, taskID, nil, 6)
-		if err != nil {
-			log.Printf("[memory] reflections provider failed for task %s: %v", t.ID, err)
-			return ""
-		}
-		return db.RenderReflections(refl, 1200)
-	}
+	provider := s.memoryProvider(t, taskID)
 	wk.SetReflectionsProvider(provider)
 	pl.SetReflectionsProvider(provider)
 }
 
-// taskMemoryBlock builds the start-of-task memory block: visible knowledge
-// matched by the task's name and goal (top 4) plus the task's latest 4
-// opsec/noise reflections from earlier runs and resumes. It is data from
-// earlier work, never instructions, and the whole block is capped.
+// memoryProvider is the per-round memory block, on the same provider hook that
+// used to carry reflections alone: the task's newest knowledge plus the latest
+// reflections, so a lesson written mid-task reaches the next round instead of
+// waiting for the next task. Environment and goal-matched knowledge are stable
+// and already in the start-of-task block, so they are not repeated here.
+func (s *Server) memoryProvider(t *Task, taskID int64) func(context.Context) string {
+	pg := s.m.PG()
+	return func(ctx context.Context) string {
+		refl, err := pg.ListReflections(ctx, taskID, nil, 6)
+		if err != nil {
+			log.Printf("[memory] reflections provider failed for task %s: %v", t.ID, err)
+			refl = nil
+		}
+		parts := make([]string, 0, 2)
+		if block := db.RenderMemory(s.roundKnowledge(ctx, t, taskID), nil, memoryRoundKnowledgeChars); block != "" {
+			parts = append(parts, block)
+		}
+		if block := db.RenderReflections(refl, memoryRoundReflectionChars); block != "" {
+			parts = append(parts, block)
+		}
+		return strings.Join(parts, "\n")
+	}
+}
+
+// roundKnowledge is the knowledge half of the per-round block: the task's own
+// newest entries, whatever their wording, so a lesson the agent just wrote is
+// shown again. Bodies are clipped because the per-round budget is small.
+func (s *Server) roundKnowledge(ctx context.Context, t *Task, taskID int64) []db.KnowledgeHit {
+	entries, err := s.m.PG().ListKnowledge(ctx, db.KnowledgeFilter{
+		TaskID: taskID, Scope: "task", Limit: memoryRoundOwnHits,
+	})
+	if err != nil {
+		log.Printf("[memory] round knowledge selection failed for task %s: %v", t.ID, err)
+		return nil
+	}
+	hits := make([]db.KnowledgeHit, 0, len(entries))
+	for _, e := range entries {
+		if r := []rune(e.Body); len(r) > memoryRoundBodyRunes {
+			e.Body = string(r[:memoryRoundBodyRunes])
+		}
+		hits = append(hits, db.KnowledgeHit{KnowledgeEntry: e})
+	}
+	return hits
+}
+
+// taskMemoryBlock builds the start-of-task memory block: the knowledge visible
+// to the task plus its latest 4 opsec/noise reflections from earlier runs and
+// resumes. It is data from earlier work, never instructions, and the whole
+// block is capped.
 func (s *Server) taskMemoryBlock(t *Task, taskID int64, mode string) string {
 	ctx := context.Background()
-	hits, err := s.m.PG().SearchKnowledge(ctx, taskID, memoryQuery(t), nil, 4)
-	if err != nil {
-		log.Printf("[memory] knowledge search failed for task %s: %v", t.ID, err)
-		hits = nil
-	}
+	hits := s.memoryHits(ctx, t, taskID)
 	refl, err := s.m.PG().ListReflections(ctx, taskID, []string{"opsec", "noise"}, 4)
 	if err != nil {
 		log.Printf("[memory] reflection selection failed for task %s: %v", t.ID, err)
 		refl = nil
 	}
-	block := db.RenderMemory(hits, refl, 2200)
+	block := db.RenderMemory(hits, refl, memoryStartMaxChars)
 	log.Printf("[memory] task %s: %d knowledge hits, %d reflections (mode %s)",
 		t.ID, len(hits), len(refl), mode)
 	return block
 }
 
-// memoryQuery is the retrieval query: the task's name and goal. Postgres
-// websearch_to_tsquery ANDs space-separated terms, which would demand a single
-// entry mention the whole task, so the terms are ORed and ranked by overlap.
-func memoryQuery(t *Task) string {
-	var terms []string
-	seen := map[string]bool{}
-	// Keep only letters and digits so no task text can smuggle in tsquery
-	// operators (quotes, "-", "or").
-	flat := strings.Map(func(r rune) rune {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			return r
+// memoryHits selects the knowledge a task sees at start: every adopted
+// environment entry first (platform facts such as proxy behaviour, true for
+// every task here and independent of the target), then the entries matching the
+// task's name and goal. Environment entries are always included, whatever the
+// task is about, but get their own small cap and a clipped body so they cannot
+// crowd out target knowledge.
+func (s *Server) memoryHits(ctx context.Context, t *Task, taskID int64) []db.KnowledgeHit {
+	pg := s.m.PG()
+	env, err := pg.ListKnowledge(ctx, db.KnowledgeFilter{
+		TaskID: taskID, Scope: "environment", Status: "adopted", Limit: memoryEnvironmentHits,
+	})
+	if err != nil {
+		log.Printf("[memory] environment selection failed for task %s: %v", t.ID, err)
+		env = nil
+	}
+	hits := make([]db.KnowledgeHit, 0, len(env)+memoryTargetHits)
+	seen := make(map[int64]bool, len(env))
+	for _, e := range env {
+		if r := []rune(e.Body); len(r) > memoryEnvironmentBodyRunes {
+			e.Body = string(r[:memoryEnvironmentBodyRunes])
 		}
-		return ' '
-	}, strings.ToLower(t.Name+" "+t.Goal))
-	for _, term := range strings.Fields(flat) {
-		if len(term) < 3 || term == "or" || seen[term] {
+		seen[e.ID] = true
+		hits = append(hits, db.KnowledgeHit{KnowledgeEntry: e})
+	}
+	// The search sees environment entries too (they are visible to every task);
+	// asking for a few extra slots keeps the target matches at memoryTargetHits
+	// after the duplicates are dropped.
+	target, err := pg.SearchKnowledge(ctx, taskID, memoryQuery(t), nil, memoryTargetHits+len(env))
+	if err != nil {
+		log.Printf("[memory] knowledge search failed for task %s: %v", t.ID, err)
+		return hits
+	}
+	added := 0
+	for _, h := range target {
+		if seen[h.ID] {
 			continue
 		}
-		seen[term] = true
-		terms = append(terms, term)
-		if len(terms) == 12 {
+		hits = append(hits, h)
+		added++
+		if added == memoryTargetHits {
 			break
 		}
 	}
-	return strings.Join(terms, " OR ")
+	return hits
+}
+
+// memoryQuery is the retrieval query: the task's name and goal, tokenised and
+// ORed by db.MemorySearchTerms so one entry need not mention the whole task.
+func memoryQuery(t *Task) string {
+	return db.MemorySearchTerms(t.Name + " " + t.Goal)
 }
 
 // seedMemoryToolBindings gives the memory tools their default agent bindings on

@@ -52,6 +52,9 @@ const task: Record<string, StatusMeta> = {
   queued: { tone: "amber" },
   running: { tone: "blue" },
   paused: { tone: "amber" },
+  // needs_operator = the planner stopped because only a human can unblock it
+  // (an absent target, a missing credential). Recoverable, so not red.
+  needs_operator: { tone: "violet" },
   done: { tone: "green" },
   failed: { tone: "red" },
   timeout: { tone: "amber" },

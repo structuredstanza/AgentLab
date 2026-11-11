@@ -354,12 +354,13 @@ func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 // runs from repeating this one. Not stored, not editable.
 const workerMemoryGuidance = "\n\n**Working quiet (opsec and noise)**:\n" +
 	"- Prefer passive, low-volume steps first: read facts, traffic and memory before touching the target.\n" +
-	"- Never repeat an identical request; a copy will not answer what the first did not.\n" +
+	"- Never repeat an identical request; the copy answers nothing new.\n" +
 	"- On 429 / 403 / captcha / WAF back off or change approach; never push harder.\n" +
-	"- When defences react, finish the documented bypass checks, then stop escalating; record it and move on.\n" +
+	"- When defences react, finish the documented bypass checks, then stop escalating.\n" +
 	"- Keep proofs small and reversible; state-changing requests only as the testing-bounds gate allows. No restarts or denial of service.\n" +
 	"- Before finishing, call reflect once per applicable kind: opsec (what triggered defences), noise (wasted effort), lookfor (next steps).\n" +
 	"- Call recall before re-deriving a known technique.\n" +
+	"- Write for the NEXT target: the condition and the mechanism, not the box (\"php-fpm socket was 0666\", not \"10.10.17.49\").\n" +
 	"- Never put credentials or target data in knowledge_add; store the reusable technique."
 
 func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {

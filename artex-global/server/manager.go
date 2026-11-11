@@ -921,6 +921,13 @@ func (m *Manager) observeEnrichment(o enrich.Observation) {
 	if m.traffic == nil || !m.TrafficEnabled() {
 		return
 	}
+	if o.ProxyFailure {
+		// The proxy could not reach the target, so there was no exchange to
+		// record: its status is the proxy's, and storing it would put a
+		// fabricated response in the traffic store.
+		log.Printf("[enrich] a probe response was not stored in the traffic store: the egress proxy reported the failure, not the target")
+		return
+	}
 	if !o.Failed && !o.Complete {
 		log.Printf("[enrich] a probe response was not stored in the traffic store: its body was incomplete or over the capture cap")
 		return
@@ -1325,6 +1332,9 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	        ELSE NULL
 	    END,
 	    paused=false,
+	    -- Admission into any other status answers the block, so the reason must
+	    -- not survive it and label a task that is running again.
+	    blocked_reason=CASE WHEN $2='needs_operator' THEN blocked_reason ELSE '' END,
 	    queued=$3,
 	    queued_at=CASE
 	        WHEN NOT $3 THEN NULL

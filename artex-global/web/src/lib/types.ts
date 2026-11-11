@@ -1,7 +1,7 @@
 // ARTEX domain model — types used across the UI.
 // Derived from the functional spec (section 7: key data shapes).
 
-export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout";
+export type TaskStatus = "created" | "queued" | "running" | "paused" | "needs_operator" | "done" | "failed" | "timeout";
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 
 export interface Task {
@@ -20,6 +20,7 @@ export interface Task {
   completed_unix?: number; // completed_at as unix seconds (0/undef if unfinished)
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)
   paused?: boolean;
+  blocked_reason?: string; // Why the planner handed the task back (status needs_operator); "" otherwise
   queued?: boolean;
   active?: boolean;
   in_flight?: number;

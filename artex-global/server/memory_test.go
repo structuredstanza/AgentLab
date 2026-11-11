@@ -149,3 +149,97 @@ func TestSeedMemoryToolBindings(t *testing.T) {
 		t.Error("backfill re-ran after its flag was set")
 	}
 }
+
+// TestEnvironmentKnowledgeAlwaysInBlock: an adopted environment entry describes
+// the platform, not the target, so it reaches a task whose name and goal share
+// no term with it.
+func TestEnvironmentKnowledgeAlwaysInBlock(t *testing.T) {
+	m, s, _ := memoryTestServer(t)
+	task, err := m.CreateTaskWithOptions("mtestenv task", "audit the billing portal",
+		db.TaskCreateOptions{Name: "mtestenv zeta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := strconv.ParseInt(task.ID, 10, 64)
+	defer func() { _ = m.pg.DeleteTask(id) }()
+
+	ctx := context.Background()
+	entry, _, err := m.pg.AddKnowledge(ctx, db.KnowledgeInput{
+		Scope: "environment", Kind: "opsec", Source: "operator", Status: "adopted",
+		Title: "proxy answers CONNECT before dialling",
+		Body:  "a port-open reading through a proxy is an artefact of a 200 reply",
+		Tags:  []string{"env:test-deployment"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.pg.Exec(`DELETE FROM knowledge_entries WHERE id=$1`, entry.ID) }()
+
+	// The fixture must be term-disjoint from the task, or the test would pass
+	// for the wrong reason.
+	taskTerms := map[string]bool{}
+	for _, term := range db.MemoryTokens(task.Name + " " + task.Goal) {
+		taskTerms[term] = true
+	}
+	for _, term := range db.MemoryTokens(entry.Title + " " + entry.Body) {
+		if taskTerms[term] {
+			t.Fatalf("environment fixture shares the term %q with the task query %q", term, memoryQuery(task))
+		}
+	}
+
+	block := s.taskMemoryBlock(task, id, "inject")
+	if !strings.Contains(block, entry.Title) {
+		t.Fatalf("adopted environment entry missing from the start-of-task block:\n%s", block)
+	}
+	if !strings.Contains(block, "env:test-deployment") {
+		t.Errorf("environment tag missing from the block:\n%s", block)
+	}
+	if len(block) > memoryStartMaxChars {
+		t.Errorf("block length %d exceeds the %d cap", len(block), memoryStartMaxChars)
+	}
+}
+
+// TestRoundMemoryProviderRefreshesKnowledge: the per-round provider re-selects
+// the task's knowledge, so a lesson written mid-task reaches the next round
+// instead of waiting for the next task.
+func TestRoundMemoryProviderRefreshesKnowledge(t *testing.T) {
+	m, s, _ := memoryTestServer(t)
+	task, err := m.CreateTaskWithOptions("mtestround task", "audit the billing portal",
+		db.TaskCreateOptions{Name: "mtestround zeta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := strconv.ParseInt(task.ID, 10, 64)
+	defer func() { _ = m.pg.DeleteTask(id) }()
+
+	ctx := context.Background()
+	provider := s.memoryProvider(task, id)
+	if block := provider(ctx); strings.Contains(block, "session key rotation") {
+		t.Fatalf("knowledge appeared before it was written:\n%s", block)
+	}
+
+	if _, _, err := m.pg.AddKnowledge(ctx, db.KnowledgeInput{
+		TaskID: id, Kind: "technique", Source: "agent",
+		Title: "session key rotation on logout",
+		Body:  "the logout handler rotates the session key without invalidating the old one",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.pg.AddReflection(ctx, db.ReflectionInput{
+		TaskID: id, Kind: "lookfor", Source: "worker",
+		Summary: "try the password reset token twice",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	block := provider(ctx)
+	if !strings.Contains(block, "session key rotation") {
+		t.Fatalf("knowledge written mid-task did not reach the round block:\n%s", block)
+	}
+	if !strings.Contains(block, "try the password reset token twice") {
+		t.Fatalf("reflection missing from the round block:\n%s", block)
+	}
+	if max := memoryRoundKnowledgeChars + memoryRoundReflectionChars + 2; len(block) > max {
+		t.Errorf("round block length %d exceeds the %d budget", len(block), max)
+	}
+}

@@ -200,9 +200,9 @@ func encodeSignal(sig map[string]any) ([]byte, error) {
 	return b, nil
 }
 
-// AddReflection writes one reflection, scrubbing secrets and enforcing the
-// per-task cap. It is idempotent on (task, dedupe_key): created reports
-// whether this call inserted the row.
+// AddReflection writes one reflection, scrubbing secrets, generalising the
+// task's own identifiers, and enforcing the per-task cap. It is idempotent on
+// (task, dedupe_key): created reports whether this call inserted the row.
 func (d *DB) AddReflection(ctx context.Context, in ReflectionInput) (Reflection, bool, error) {
 	if in.TaskID <= 0 {
 		return Reflection{}, false, fmt.Errorf("reflection needs a task id: %w", ErrMemoryInvalid)
@@ -219,6 +219,17 @@ func (d *DB) AddReflection(ctx context.Context, in ReflectionInput) (Reflection,
 	}
 	detail := memoryBody(in.Detail, reflectionDetMax)
 	memoryScrub(&summary, &detail)
+	// A reflection is read on later targets, so the origin task's identifiers
+	// are generalised at write time too: the reflection keeps the condition and
+	// the mechanism, the exploration graph keeps the concrete fact. Running it
+	// before the dedupe key is derived also collapses two observations that
+	// differ only in the host they name.
+	ids, err := d.TaskScopeIdentifiers(ctx, in.TaskID)
+	if err != nil {
+		return Reflection{}, false, err
+	}
+	summary, _ = ScrubTargetIdentifiers(summary, ids)
+	detail, _ = ScrubTargetIdentifiers(detail, ids)
 	// The key is derived AFTER scrubbing so two observations that differ only
 	// in the secret they quote ("token=abc" vs "token=xyz") collapse into one.
 	key := strings.TrimSpace(in.DedupeKey)

@@ -272,10 +272,19 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					})
 
 				case "ip":
+					// open_ports entries are the model's assertions: nothing here
+					// connected to a port, so provenance is always "model". A
+					// port observed by a real connection is written by the probe
+					// that made the connection.
+					ports := make([]db.PortService, len(item.OpenPorts))
+					for i, p := range item.OpenPorts {
+						p.Provenance = db.PortProvenanceModel
+						ports[i] = p
+					}
 					id, err = t.as.UpsertIP(db.UpsertIPReq{
 						IP:           item.IP,
 						BoundDomains: item.BoundDomains,
-						OpenPorts:    item.OpenPorts,
+						OpenPorts:    ports,
 						TaskID:       taskID,
 					})
 
@@ -694,6 +703,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// asset management (handlers guard nil store internally).
 		// add_company_scope is not given to workers: defining the enterprise asset scope is the responsibility of planning/orchestration/Auto, while workers only perform exploration.
 		t.insertAssets(), t.listAssets(),
+		// tcp_probe: a direct dial, so a reachability check cannot be answered by
+		// a proxy that replies before it dials. Its failures feed target_liveness.
+		t.tcpProbe(),
 		t.saveTaskCredential(), t.listTaskCredentials(),
 		// Look back across work: a worker can also reuse observations from other work, to avoid duplicated effort.
 		// search_all_worker_traces: no need to know the intent_id in advance; search globally by keyword for matching steps;

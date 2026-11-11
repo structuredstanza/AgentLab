@@ -21,6 +21,9 @@ type Task struct {
 	Goal          string     `json:"goal"`
 	ExplorationID int64      `json:"exploration_id"`
 	Status        string     `json:"status"`
+	// BlockedReason explains why a needs_operator task stopped, in the words the
+	// planner reported. Empty for every other status.
+	BlockedReason string     `json:"blocked_reason"`
 	Paused        bool       `json:"paused"`
 	PausedAt      *time.Time `json:"paused_at,omitempty"`
 	Queued        bool       `json:"queued"`
@@ -78,8 +81,15 @@ type TaskDeletePreparation struct {
 	TrafficHosts  []string
 }
 
+// StatusNeedsOperator marks a task whose engagement cannot continue without a
+// human (an absent target, a missing credential, a blocked path). It is
+// deliberately NOT terminal: resuming clears blocked_reason and returns the
+// task to running, so the planner may plan again.
+const StatusNeedsOperator = "needs_operator"
+
 // IsTerminal reports whether a task status is a terminal (finished) state.
 // Single source of truth, replacing the scattered hard-coded done/failed checks.
+// needs_operator is recoverable and therefore not terminal.
 func IsTerminal(status string) bool {
 	return status == "done" || status == "failed" || status == "timeout"
 }
@@ -384,11 +394,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, paused_at, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(plan_quiet_mode,true), COALESCE(coverage_enabled,true), COALESCE(llm_rotate,false), first_run_at, deadline_at`
+description, goal, exploration_id, status, COALESCE(blocked_reason,''), paused, paused_at, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(plan_quiet_mode,true), COALESCE(coverage_enabled,true), COALESCE(llm_rotate,false), first_run_at, deadline_at`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PausedAt, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.PlanQuietMode, &t.CoverageEnabled, &t.LLMRotate, &t.FirstRunAt, &t.DeadlineAt); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.BlockedReason, &t.Paused, &t.PausedAt, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.PlanQuietMode, &t.CoverageEnabled, &t.LLMRotate, &t.FirstRunAt, &t.DeadlineAt); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
@@ -519,14 +529,51 @@ func (d *DB) SetQueued(id int64, queued bool) error {
 // SetStatus updates a task's lifecycle status. Entering a terminal state
 // (done/failed/timeout) stamps completed_at once (COALESCE keeps the first stamp
 // stable); moving back to a non-terminal state clears it, so a re-run has no stale
-// finish time.
+// finish time. Any status other than needs_operator clears blocked_reason: the
+// reason only describes the block that is currently in force.
 func (d *DB) SetStatus(id int64, status string) error {
 	_, err := d.Exec(`
 UPDATE tasks
    SET status = $1,
-       completed_at = CASE WHEN $1 IN ('done','failed','timeout') THEN COALESCE(completed_at, now()) ELSE NULL END
+       completed_at = CASE WHEN $1 IN ('done','failed','timeout') THEN COALESCE(completed_at, now()) ELSE NULL END,
+       blocked_reason = CASE WHEN $1 = 'needs_operator' THEN blocked_reason ELSE '' END
  WHERE id = $2`, status, id)
 	return err
+}
+
+// SetNeedsOperator parks a task as waiting on a human and records why. Not
+// terminal: the caller stops the loops and the task stays recoverable through
+// the normal resume path, which clears blocked_reason via SetStatus.
+func (d *DB) SetNeedsOperator(id int64, reason string) error {
+	_, err := d.Exec(`
+UPDATE tasks
+   SET status = $1,
+       blocked_reason = $2,
+       completed_at = NULL
+ WHERE id = $3`, StatusNeedsOperator, reason, id)
+	return err
+}
+
+// TaskBlockedReasons returns the persisted blocked_reason of every task that is
+// currently waiting on a human, keyed by task id. The reason is not part of the
+// in-memory task handle, so the task API reads it from here instead.
+func (d *DB) TaskBlockedReasons() (map[int64]string, error) {
+	rows, err := d.Query(`SELECT id, blocked_reason FROM tasks
+WHERE deleted_at IS NULL AND blocked_reason <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var reason string
+		if err := rows.Scan(&id, &reason); err != nil {
+			return nil, err
+		}
+		out[id] = reason
+	}
+	return out, rows.Err()
 }
 
 // SetTerminalStatusGuarded sets a terminal status only when the task is NOT already

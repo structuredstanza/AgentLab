@@ -258,6 +258,7 @@
       "created": "Created",
       "done": "Done",
       "failed": "Failed",
+      "needs_operator": "Needs you",
       "paused": "Paused",
       "queued": "Queued",
       "running": "Running",
@@ -269,6 +270,9 @@
     "logout": "Log out"
   },
   "taskDetail": {
+    "blocked": {
+      "reason": "Waiting on you: {reason}"
+    },
     "report": {
       "title": "Penetration Test Report (Markdown)",
       "copy": "Copy",

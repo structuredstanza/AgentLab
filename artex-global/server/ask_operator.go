@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/structuredstanza/AgentLab/artex-global/agent"
+	"github.com/structuredstanza/AgentLab/artex-global/db"
 	actool "github.com/structuredstanza/norma/tool"
 )
 
@@ -62,6 +64,64 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 				return actool.Errorf("Error: question delivered but pausing the intent failed: " + err.Error()), nil
 			}
 			return actool.Text("Question delivered to the operator. This intent is pausing now: finish your current step, record everything you already know as facts, and stop. The operator's reply will resume this run and arrive as your next input."), nil
+		})
+}
+
+// toolReportBlocked lets the planner stop an engagement that cannot continue
+// without a human and name the exact action that would unblock it. It exists so
+// the planner has a correct move other than dispatching yet another intent
+// against a target that is absent, filtered, or missing a credential.
+func (s *Server) toolReportBlocked() actool.CoreTool {
+	return wrTool("report_blocked",
+		"Stop this task because the engagement cannot continue without a human: the target is unreachable (host down, port filtered at the network layer, the address moved and the new one is unknown), a credential or tool is missing, or the network path is blocked in a way this runtime cannot fix. Do not dispatch another intent that would only re-check availability. The task moves to needs_operator with your reason, its planner and workers stop, and the operator sees the exact action they must take; resuming the task lets planning continue.",
+		objSchema(map[string]any{
+			"reason":          strParam("Why the engagement cannot continue, concretely: what was tried, what came back, and why no intent can advance it."),
+			"operator_action": strParam("The exact single command or decision the human should take (one line, copy-pastable), and what to report back."),
+		}, "reason", "operator_action"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Reason         string `json:"reason"`
+				OperatorAction string `json:"operator_action"`
+			}
+			_ = json.Unmarshal(in, &a)
+			reason := s.redactProviderCredentials(strings.TrimSpace(a.Reason))
+			action := s.redactProviderCredentials(strings.TrimSpace(a.OperatorAction))
+			if reason == "" || action == "" {
+				return actool.Errorf("Error: reason and operator_action are both required"), nil
+			}
+			ri := agent.RunInfoFrom(ctx)
+			if ri.TaskID == 0 {
+				return actool.Errorf("Error: report_blocked can only be used inside a task run"), nil
+			}
+			taskID := fmt.Sprintf("%d", ri.TaskID)
+			t := s.m.ResolveTask(taskID)
+			if t == nil {
+				return actool.Errorf("Error: task not found"), nil
+			}
+			n, err := strconv.ParseInt(taskID, 10, 64)
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
+			// Stop the loops exactly like a task pause, BEFORE the block is
+			// persisted: needs_operator is not terminal, so a crash between the
+			// two writes must leave an ordinary paused task (resumable) rather
+			// than a blocked status the resume path would refuse.
+			if _, err := s.applyTaskControlWithCause(t, "pause", agent.AbortBlockedOnOperator); err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
+			if err := s.m.PG().SetNeedsOperator(n, reason); err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
+			// The reason lives in PostgreSQL; the live handle carries status only,
+			// so mirror the status here for the loops' needs_operator gate.
+			if err := s.m.SetTaskStatus(taskID, db.StatusNeedsOperator); err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
+			// Same activity shape ask_operator uses for its question: a user-kind
+			// row so the operator sees the handoff in the task feed.
+			s.engine.emitActivity(t, userActivityWithAttachments("planner",
+				"OPERATOR ACTION REQUIRED: "+reason+" (do this: "+action+")", nil))
+			return actool.Text("Block reported: this task is now needs_operator and this run is stopping. Do not dispatch further intents; the operator must act before planning resumes."), nil
 		})
 }
 
