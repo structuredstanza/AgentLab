@@ -25,7 +25,6 @@ import type {
   ScopeRow,
   Task,
   TaskArchive,
-  TaskAssetMutation,
   TaskAssetScopeMutation,
   TaskCategory,
   TaskCredential,
@@ -1599,14 +1598,6 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "status") return { running: false };
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "stop") return { status: "stopped" };
-  if (path === "/active") {
-    const id = String(b.id ?? mockActiveTask);
-    if (mockTasks.some((item) => item.id === id)) {
-      mockActiveTask = id;
-      for (const item of mockTasks) item.active = item.id === id;
-    }
-    return { active: mockActiveTask };
-  }
 
   // ── Coverage / coverage graph / asset association (task dimension) ──
   if (seg[0] === "tasks" && seg[2] === "coverage" && seg.length === 3) return D.coverage;
@@ -1865,27 +1856,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       mockTaskScopes.set(seg[1], currentScopes);
       return mutation;
     }
-    const ids = [...new Set(Array.isArray(b.asset_ids) ? b.asset_ids.map(Number) : [])];
-    const sourceSummary = String(b.source_summary ?? "").trim();
-    if (ids.length === 0 || ids.length > 100 || !sourceSummary)
-      throw new Error("Please select an asset and enter a source description");
-    const requestedAssets = ids.map((id) => mockAssets.find((asset) => asset.id === id));
-    if (requestedAssets.some((asset) => !asset)) throw new Error("Asset not found");
-    const mutation: TaskAssetMutation = { requested: ids.length, attached: 0, existing: 0 };
-    for (const asset of requestedAssets) {
-      if (!asset) continue;
-      if (asset.task_ids.includes(numericTaskID)) mutation.existing++;
-      else {
-        asset.task_ids.push(numericTaskID);
-        mutation.attached++;
-      }
-      setMockTaskAssetSource(seg[1], asset.id, {
-        task_source: "manual",
-        task_source_summary: sourceSummary,
-        task_source_node_id: undefined,
-      });
-    }
-    return mutation;
+    return { requested: 0, attached: 0, existing: 0 };
   }
   if (seg[0] === "tasks" && seg[2] === "assets" && seg.length === 4 && m === "DELETE") {
     const numericTaskID = mockTaskAssetID(seg[1]);
@@ -1984,7 +1955,6 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
 
   // ── exploration ──
-  if (path === "/exploration/frontier") return D.frontier;
   if (path === "/exploration/findings/stats") {
     const vulnclasses = Array.from(new Set(mockFindings.map((f) => f.vulnclass))).sort();
     // "By task" dropdown: tasks with vulnerabilities + description + item count (mock task ids are strings, use them directly as ids).
@@ -2348,11 +2318,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const a = mockActivity.find((x) => x.seq === Number(seg[2]));
     return { detail: a?.detail ?? a?.summary ?? "" };
   }
-  if (path === "/tokens/daily") return D.dailyTokens;
   if (path === "/tokens/conversations") return D.convTokens;
 
   // ── traffic / audit / settings ──
-  if (path === "/audit") return D.audit;
   if (path === "/traffic" && m === "DELETE") return { deleted: 0 };
   if (path === "/traffic/hosts" && m === "DELETE") return { deleted: (b.hosts as unknown[])?.length ?? 0 };
   if (path === "/traffic/hosts") return { hosts: D.trafficHosts };
@@ -2367,8 +2335,6 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       reply: "(demo) Injected that suggestion as a high-priority intent. The work agent will run it shortly.",
       mode: "hint",
     };
-  if (path === "/gc") return { removed: 0 };
-
   // ── Tool execution history ──
   if (path === "/commands" && m === "GET") return { commands: D.commandRecords, total: D.commandRecords.length };
   if (path === "/commands/stats" && m === "GET") {
@@ -2396,8 +2362,6 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "llm" && seg[1] === "records" && seg.length === 3 && m === "GET") {
     return D.llmRecordDetail(Number(seg[2]), mockLLMRecords);
   }
-  if (path === "/llm" && m === "GET") return D.llmConfig;
-  if (path === "/llm" && m === "POST") return { ok: true };
   if (path === "/llm/test")
     return { ok: true, latency_ms: 128, model: String(b.model ?? "claude-opus-4-8"), reply: "OK" };
   if (path === "/llm/profiles" && m === "GET") return { profiles: mockLLMProfiles };
@@ -2578,11 +2542,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     };
   if (seg[0] === "agents" && seg.length === 2 && m === "GET") return D.agentDetail(seg[1]);
   if (seg[0] === "agents" && seg[2] === "triggers" && m === "GET") return { triggers: [] };
-  if (seg[0] === "agents" && seg[2] === "prompts") return { versions: D.agentDetail(seg[1]).versions };
-  if (seg[0] === "agents" && seg[2] === "variables") return { variables: D.agentDetail(seg[1]).variables };
   if (seg[0] === "agents" && seg[2] === "prompt" && seg[3] === "preview")
     return { rendered: String(b.template ?? "").replace(/\{\{\.(\w+)\}\}/g, "«$1»") };
-  if (seg[0] === "agents" && seg[2] === "visibility" && m === "GET") return D.agentDetail(seg[1]).visibility;
 
   // ── conversations ──
   if (path === "/conversations" && m === "GET") {
@@ -2690,7 +2651,6 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/skills/missing") return { missing: D.missingSkills };
   if (seg[0] === "skills" && seg[2] === "usage") return { calls: D.skillCalls };
   if (path === "/skills" && m === "POST") return { name: String(b.name ?? "new-skill") };
-  if (seg[0] === "skills" && seg[2] === "files" && seg.length === 3) return { files: ["SKILL.md"] };
   if (seg[0] === "skills" && seg[2] === "files" && seg.length >= 4)
     return {
       content: "# SKILL.md\n\n(demo) This is an example description file for this skill.",

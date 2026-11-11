@@ -10,14 +10,14 @@
 
 # Contributor GitHub profile credited in the upstream (Autumn-27/ARTEX) changelog:539.
 # The account was renamed or deleted, so it returns 404. Under the upstream source-preservation policy
-# (BRIEF boundary #1 and MAINTAINING section 2), the upstream changelog stays as it is, so we do not fix it. Confirmed 2026-10-07.
+# (BRIEF boundary #1), the upstream changelog stays as it is, so we do not fix it. Confirmed 2026-10-07.
 https://github.com/begininvoke
 
 # Upstream (Autumn-27/ARTEX) repository, online demo, and release/compare assets are not publicly
 # accessible (404), confirmed 2026-10. The URLs below are upstream assets that this fork is based
 # on and credits. As of 2026-10, all of them return 404 and cannot be reached. Because AGPL-3.0
 # attribution must be kept (BRIEF boundary #1), the links themselves are not deleted. Instead, the
-# curated documents (README, CONTRIBUTING, MAINTAINING, SECURITY, docs/defense) add the note
+# curated documents (README, CONTRIBUTING, SECURITY, docs/defense) add the note
 # "(currently unreachable, confirmed 2026-10)" next to each link (decision G138a-A). They are
 # upstream-owned assets that we cannot revive, so they go in the allowlist. The compare and releases
 # links are inherited from upstream source-preservation files (upstream changelog and README), so they

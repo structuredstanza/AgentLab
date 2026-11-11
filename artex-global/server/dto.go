@@ -664,14 +664,6 @@ func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 	}
 }
 
-func llmProfileDTOs(in []*db.LLMProfile) []LLMProfileDTO {
-	out := make([]LLMProfileDTO, 0, len(in))
-	for _, p := range in {
-		out = append(out, llmProfileDTO(p))
-	}
-	return out
-}
-
 // idStrings formats a slice of int64 ids as strings (for visibility agent ids).
 func idStrings(in []int64) []string {
 	out := make([]string, 0, len(in))

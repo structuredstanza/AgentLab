@@ -8,11 +8,11 @@ on:
   push:
     branches: ["**"]
     paths:
-      - "web/**"
+      - "artex-global/web/**"
       - ".github/workflows/web.yml"
   pull_request:
     paths:
-      - "web/**"
+      - "artex-global/web/**"
       - ".github/workflows/web.yml"
 
 permissions:
@@ -32,14 +32,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: web
+        working-directory: artex-global/web
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: artex-global/web/package-lock.json
       - name: npm ci
         run: npm ci
       - name: unit tests (merge gate · vitest)

@@ -17,34 +17,37 @@ name: detections
 # scapy, suricata, and python images and runs them isolated in containers, so nothing is installed on the
 # runner itself, and the rule tree and the source files the indicators point to are mounted read-only; nothing
 # is written to the repository. Besides changes under detections/, it also runs when the source files pinned by
-# indicator tests change: the User-Agent, markers, and destructive-command tokens in enrich, selfupdate, guard,
-# and db; the default listen and proxy ports in cmd/artex/main.go; the MITM CA certificate filename in
-# traffic/traffic.go; and the exploration-graph schema fingerprint in db/schema.sql. This catches a source change
-# that silently makes the indicators and rules stale. Public Docker images are pulled without authentication, so
-# Docker Hub pull rate limits can occasionally apply; rerunning the job resolves that.
+# indicator tests change: the User-Agent and markers in enrich and guard, the destructive-command tokens in db;
+# the default listen and proxy ports in cmd/artex/main.go; the MITM CA certificate filename in traffic/traffic.go;
+# and the exploration-graph schema fingerprint in db/schema.sql. This catches a source change that silently makes
+# the indicators and rules stale. Public Docker images are pulled without authentication, so Docker Hub pull rate
+# limits can occasionally apply; rerunning the job resolves that.
+#
+# The workflows live at the git root; the detection tree and the Go sources are in artex-global/, so every
+# step runs there and the paths filter names them with that prefix.
 on:
   push:
     paths:
-      - "detections/**"
-      - "enrich/enrich.go"
-      - "guard/guard.go"
-      - "db/db.go"
-      - "db/schema.sql"
-      - "cmd/artex/main.go"
-      - "traffic/traffic.go"
+      - "artex-global/detections/**"
+      - "artex-global/enrich/enrich.go"
+      - "artex-global/guard/guard.go"
+      - "artex-global/db/db.go"
+      - "artex-global/db/schema.sql"
+      - "artex-global/cmd/artex/main.go"
+      - "artex-global/traffic/traffic.go"
       # The two files read by the third gate (defense template consistency check). Changes here must be revalidated, so they trigger the workflow.
-      - "docs/defense-en.md"
+      - "artex-global/docs/defense-en.md"
       - ".github/workflows/detections.yml"
   pull_request:
     paths:
-      - "detections/**"
-      - "enrich/enrich.go"
-      - "guard/guard.go"
-      - "db/db.go"
-      - "db/schema.sql"
-      - "cmd/artex/main.go"
-      - "traffic/traffic.go"
-      - "docs/defense-en.md"
+      - "artex-global/detections/**"
+      - "artex-global/enrich/enrich.go"
+      - "artex-global/guard/guard.go"
+      - "artex-global/db/db.go"
+      - "artex-global/db/schema.sql"
+      - "artex-global/cmd/artex/main.go"
+      - "artex-global/traffic/traffic.go"
+      - "artex-global/docs/defense-en.md"
       - ".github/workflows/detections.yml"
 
 permissions:
@@ -60,6 +63,9 @@ jobs:
   detections:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artex-global
     steps:
       - uses: actions/checkout@v4
       - name: Test harness registry sync check (run-all.sh ↔ CI ↔ directories)

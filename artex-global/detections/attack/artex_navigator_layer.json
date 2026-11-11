@@ -30,14 +30,6 @@
     "hideDisabled": false,
     "techniques": [
         {
-            "techniqueID": "T1105",
-            "tactic": "command-and-control",
-            "score": 100,
-            "comment": "ARTEX self-update egress (User-Agent artex-selfupdate) fetching a newer binary from a code-hosting host. sigma/artex_selfupdate_egress.yml. Operator/forensic, not target-side. Defense guide section 2 (operator view), 4.4.",
-            "enabled": true,
-            "showSubtechniques": false
-        },
-        {
             "techniqueID": "T1059",
             "tactic": "execution",
             "score": 100,

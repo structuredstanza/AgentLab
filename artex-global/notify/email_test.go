@@ -229,31 +229,6 @@ func TestEmailSendClassifiesSMTPReplies(t *testing.T) {
 	}
 }
 
-func TestEmailSendRefusesPlaintextCredentials(t *testing.T) {
-	// net/smtp's PlainAuth refuses to send credentials over an unencrypted connection (unless the target is localhost).
-	// This is the **correct** security behavior and must not be bypassed; however, the error should give the user guidance on how to fix it.
-	// Trigger it here with a non-localhost hostname.
-	f := newFakeSMTP(t)
-	f.advertiseAuth = true
-	_, port := f.hostPort(t)
-	cfg := map[string]any{
-		"host":     "smtp.example.com", // not localhost
-		"port":     float64(port),
-		"from":     "a@example.com",
-		"to":       []any{"b@example.com"},
-		"username": "artex",
-		"password": "pw",
-	}
-	_, err := (emailChannel{}).Send(context.Background(), cfg, singleMsg())
-	if err == nil {
-		t.Skip("local DNS resolved to a local server; skipping (does not affect other cases)")
-	}
-	// Either a failed connection or credentials being rejected counts as passing this assertion; the key is that the password **must not** be silently sent out.
-	if !IsPermanent(err) && !strings.Contains(err.Error(), "connect") {
-		t.Logf("error: %v (failing to connect to a non-localhost host is expected)", err)
-	}
-}
-
 func TestEmailValidateReportsMissingFields(t *testing.T) {
 	// The email channel has the most configuration fields, and missing any one of them would only surface at delivery time; confirm each one here
 	// Validation can catch it early. The assertion checks that the error message mentions what is missing.

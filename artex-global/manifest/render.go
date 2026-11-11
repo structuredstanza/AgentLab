@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/Autumn-27/artex/useragent"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -180,25 +179,4 @@ func lookup(expr, targetValue string, values map[string]string) (string, error) 
 		return v, nil
 	}
 	return "", fmt.Errorf("unknown placeholder %q (expected target.value, useragent, proxy, or params.<name>)", expr)
-}
-
-// ParseParam converts a manifest parameter's string value to its declared type.
-// The result is what a caller stores; it is not used for argv rendering, where
-// everything is already a string.
-func ParseParam(p Param, raw string) (any, error) {
-	switch p.Type {
-	case ParamBool:
-		if raw == "" {
-			return false, nil
-		}
-		return strconv.ParseBool(raw)
-	case ParamNumber:
-		if raw == "" {
-			return 0, nil
-		}
-		return strconv.ParseFloat(raw, 64)
-	case ParamString, ParamEnum:
-		return raw, nil
-	}
-	return nil, fmt.Errorf("unknown parameter type %q", p.Type)
 }

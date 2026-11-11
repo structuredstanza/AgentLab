@@ -4,7 +4,7 @@
   "_comment_database": "PostgreSQL connection. Precedence: environment variable ARTEX_PG_DSN > the database entry in this file. Choose one of two forms: (A) fill in the individual fields below, or (B) fill in only database.dsn with a complete connection string.",
   "database": {
     "host": "127.0.0.1",
-    "port": 5433,
+    "port": 5432,
     "user": "artex",
     "password": "",
     "dbname": "artex",

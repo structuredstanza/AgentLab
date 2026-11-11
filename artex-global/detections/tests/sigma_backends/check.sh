@@ -16,7 +16,7 @@
 #   2. The atomic-only fallback works   backends that do not support Sigma
 #      where correlations are not        correlation conversion (Elasticsearch
 #      supported                         lucene, Microsoft kusto) still convert
-#                                        the four atomic rules (exit 0).
+#                                        the three atomic rules (exit 0).
 #
 # Every assertion is POSITIVE (a capability that must keep working), so the test
 # only fails on a genuine regression: a rule that stops converting, or a backend
@@ -35,7 +35,7 @@ for plugin in splunk elasticsearch loki kusto; do
   sigma plugin install "$plugin" >/dev/null 2>&1
 done
 
-ATOMICS='/sigma/artex_selfupdate_egress.yml /sigma/artex_guard_audit_framing.yml /sigma/artex_recording_proxy_ca.yml /sigma/destructive_command_hunting.yml'
+ATOMICS='/sigma/artex_guard_audit_framing.yml /sigma/artex_recording_proxy_ca.yml /sigma/destructive_command_hunting.yml'
 
 fail=0
 note() { printf '  %s\n' "$1"; }
@@ -43,7 +43,7 @@ pass() { note "PASS  $1"; }
 bad()  { note "FAIL  $1"; fail=1; }
 
 echo "== 1/2  correlations are portable: the whole tree converts beyond Splunk =="
-# Whole-tree conversion includes the four correlation rules, which reference
+# Whole-tree conversion includes the two correlation rules, which reference
 # their atomic base rules by id. If a backend compiles the whole tree at exit 0
 # it supports Sigma correlation conversion for our rules.
 for target in splunk eql loki; do
@@ -55,14 +55,14 @@ for target in splunk eql loki; do
   fi
 done
 
-echo "== 2/2  atomic-only fallback: the four atomic rules convert where correlations are not supported =="
+echo "== 2/2  atomic-only fallback: the three atomic rules convert where correlations are not supported =="
 # Lucene and kusto (the Microsoft Sentinel / Defender backend) do not convert
-# Sigma correlations at the pinned versions, so a defender deploys the four
+# Sigma correlations at the pinned versions, so a defender deploys the three
 # atomic rules and expresses the correlation logic natively. That fallback must
-# work: all four atomic rules convert.
+# work: all three atomic rules convert.
 for target in lucene kusto; do
   if out="$(sigma convert -t "$target" --without-pipeline $ATOMICS 2>&1)"; then
-    pass "four atomic rules convert on '$target'"
+    pass "three atomic rules convert on '$target'"
   else
     bad  "atomic-only conversion on '$target' failed"
     printf '%s' "$out" | grep -iE 'error|not supported' | head -2 | sed 's/^/        /'

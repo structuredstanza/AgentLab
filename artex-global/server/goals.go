@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -150,10 +151,10 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	lifecycle := t.lifecycleSnapshot()
 	if requirePaused {
 		if isTerminalStatus(lifecycle.Status) {
-			return false, fmt.Errorf(errGoalResumeTerminal)
+			return false, errors.New(errGoalResumeTerminal)
 		}
 		if !lifecycle.Paused {
-			return false, fmt.Errorf(errGoalResumeNotPaused)
+			return false, errors.New(errGoalResumeNotPaused)
 		}
 		mode = s.resumeAdmissionMode(t)
 	}
@@ -387,11 +388,8 @@ func (s *Server) reviveTask(t *Task) {
 // meaningless 2-way splits). If the LLM yields nothing (an error), the raw task goal
 // is used verbatim as a single goal so the task still has something to judge against.
 // Returns the seeded specs so callers can emit activity records for them.
-// emit, when non-nil, is forwarded to DecomposeGoals so LLM steps are visible in the UI.
+// emit, when non-nil, receives the decomposition's LLM steps so they are visible in the UI.
 func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity)) []goalSpec {
-	if t == nil {
-		return nil
-	}
 	// Use the SAME LLM the task runs on (its pinned profile, else the active profile),
 	// NOT agent.FromEnv() — the LLM is configured via the UI (DB profile), not env vars,
 	// so FromEnv returned empty and every task silently fell back to the crude rule

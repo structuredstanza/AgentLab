@@ -17,7 +17,7 @@ have to invoke the eight `run.sh` scripts by hand. Each suite runs to completion
 the script prints a one-line PASS/FAIL summary per suite at the end, and it exits non-zero if any suite failed.
 
 Before the suites, it runs a harness self-check ([`check-harness-sync.sh`](check-harness-sync.sh)) that fails
-the run if this suite list, the per-suite steps in [CI](../../.github/workflows/detections.yml), and the suite
+the run if this suite list, the per-suite steps in [CI](../../../.github/workflows/detections.yml), and the suite
 directories on disk ever name different suites or a different order. That is the one gap the eight suites
 cannot see on their own: a suite wired into only one of the three (a new CI step with no `run-all.sh` entry, or
 a directory never added to either) would otherwise pass every per-suite test while a green local `run-all.sh`
@@ -108,7 +108,7 @@ compilation with [sigma-cli](https://github.com/SigmaHQ/sigma-cli) (pySigma), an
 
 - **Valid** — `sigma check` reports 0 errors, 0 condition errors, and 0 issues over the whole tree.
 - **Compiles** — `sigma convert -t splunk` turns the whole tree into a backend query language without error.
-- **Indicators survive** — each atomic indicator string (`artex-selfupdate`, the guard marker, and the
+- **Indicators survive** — each atomic indicator string (the guard marker and the
   recording-proxy CA filename `mitmproxy-ca-cert.pem`) is still present in the compiled query, so a rule
   cannot silently lose the string it is built on.
 - **Correlations compile** — the behaviour rules in [`../sigma/correlation/`](../sigma/correlation/) emit their
@@ -138,7 +138,7 @@ Expected output (abridged):
 ```
   PASS  sigma check: 0 errors, 0 condition errors, 0 issues
   PASS  whole tree converts to splunk (exit 0)
-  PASS  indicator present: artex-selfupdate
+  PASS  indicator present: [ARTEX platform control - not target defense]
   PASS  correlation rule fails to convert alone — it requires its atomic base rule
 RESULT: PASS
 ```
@@ -217,7 +217,7 @@ properties, both positive so the test fails only on a real regression:
 
 - **Correlations are portable** — the whole tree (atomic + correlation) converts on Splunk, the Elasticsearch
   `eql` target, and Grafana `loki`. This shows the correlation rules are not Splunk-only.
-- **Atomic-only fallback works** — the four atomic rules still convert on `lucene` and the Microsoft `kusto`
+- **Atomic-only fallback works** — the three atomic rules still convert on `lucene` and the Microsoft `kusto`
   backend, which do not support Sigma correlation conversion at the pinned versions, so a defender on those
   backends can deploy the atomic rules and express the correlation window natively.
 
@@ -238,7 +238,7 @@ Expected output (abridged):
 
 ```
   PASS  whole tree (atomic + correlation) converts on 'eql'
-  PASS  four atomic rules convert on 'kusto'
+  PASS  three atomic rules convert on 'kusto'
 RESULT: PASS
 ```
 
@@ -337,7 +337,7 @@ or renames a deny-list token: every rule still compiles, the layer still matches
 bidirectionally:
 
 - **Source still emits it** — the value is present in the upstream source file(s) that produce it
-  (`artex-selfupdate` in `selfupdate/`, the guard marker in `guard/guard.go`). A missing value means an
+  (the guard marker in `guard/guard.go`). A missing value means an
   upstream change the rule has not caught up with.
 - **Rule still pins it** — the value is present in the rule built on it, so a rule edit cannot quietly move
   the indicator away from its source.
@@ -352,7 +352,7 @@ bidirectionally:
   published CSV cannot silently drift from the source it claims to come from, in either direction.
 - **Both gates fire on each pinned source** — every upstream source the test reads is covered by the two
   gates that run it: the CI workflow's `push` and `pull_request` paths filter
-  ([`.github/workflows/detections.yml`](../../.github/workflows/detections.yml)) and the local pre-commit
+  ([`../../../.github/workflows/detections.yml`](../../../.github/workflows/detections.yml)) and the local pre-commit
   hook's `files` regex ([`.pre-commit-config.yaml`](../../.pre-commit-config.yaml)). The required set is
   derived from the indicators themselves, so pinning a new source (as the `cmd/artex/main.go` ports once were)
   without wiring it into *both* gates fails here — otherwise a change touching only that source skips the test
@@ -382,7 +382,7 @@ Expected output (abridged):
   PASS  'FLUSHALL' present in both db/db.go and detections/sigma/destructive_command_hunting.yml
   PASS  guard-audit-marker: '[ARTEX platform control - not target defense]' grounded in guard/guard.go
   PASS  tested fingerprint '[ARTEX platform control - not target defense]' is published in the list
-  PASS  .github/workflows/detections.yml push paths covers cmd/artex/main.go
+  PASS  ../.github/workflows/detections.yml push paths covers cmd/artex/main.go
   PASS  .pre-commit-config.yaml files covers cmd/artex/main.go
 RESULT: PASS
 ```
@@ -433,9 +433,9 @@ deterministically, assert engine-version-independent properties exactly (and sof
 recorded reference), and avoid any content that reads as attack guidance. See
 [`../../CONTRIBUTING.en.md`](../../CONTRIBUTING.en.md) and the rule indexes in [`../README.md`](../README.md).
 
-All eight suites run in CI (see [`../../.github/workflows/detections.yml`](../../.github/workflows/detections.yml))
+All eight suites run in CI (see [`../../../.github/workflows/detections.yml`](../../../.github/workflows/detections.yml))
 on every push or pull request that touches `detections/` — and the indicator test also runs when the upstream
-source files it pins (`selfupdate/`, `guard/`, `db/`, `traffic/`, `cmd/artex/main.go`) change — so a rule
+source files it pins (`guard/`, `db/`, `traffic/`, `cmd/artex/main.go`) change — so a rule
 change that drops an indicator, drifts from the ATT&CK layer, stops converting on a documented backend,
 breaks a SigmaHQ convention, falls out of sync with the source, lets the MISP event drift from the CSV, or
 pins a new source the workflow does not yet watch turns the build red before it can merge.

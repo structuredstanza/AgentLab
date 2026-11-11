@@ -5,8 +5,14 @@ memory: 8G
 workdir: /state
 shell: /bin/bash
 security: default
+# /state is the persistent data volume: pcap ring, PostgreSQL, task files and
+# exports. `quota` is in MiB; 153600 = 150 GiB.
+# This is only the default: `lab` substitutes it at create time from
+# AGENTLAB_STATE_QUOTA_GB (0 = no quota). The mount quota is fixed when the
+# sandbox is created and `msb modify` cannot change it, so grow an existing
+# volume with `./lab resize-state <GB>`.
 mounts:
-  - /mnt/Research/AgentLab/state:/state:quota=51200
+  - /mnt/Research/AgentLab/state:/state:quota=153600
   - /mnt/Research/AgentLab/secrets/admin-password:/run/secrets/agentlab-admin:ro
   - /mnt/Research/AgentLab/secrets/native-proxy-token:/run/secrets/agentlab-native-proxy:ro
 network:

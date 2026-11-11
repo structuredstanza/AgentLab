@@ -22,7 +22,7 @@ Rules for choosing URLs to check
   `*.example.*`·`.test`·`.invalid`·`.local`·`.tld`); and names without a dot that are not FQDNs
   (e.g. `target`).
 
-How liveness is checked (turning the lesson in MAINTAINING.en.md 8.2 into code)
+How liveness is checked (the lesson learned from the first liveness runs)
 Public Korean government and security sites may reject HEAD requests or the default User-Agent,
 or redirect several times, so a simple check can misclassify a working link as broken. This
 script therefore checks **with a browser User-Agent, using GET, and following redirects**. It

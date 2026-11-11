@@ -272,12 +272,6 @@ export interface IntentAsset {
   inherited: boolean;
 }
 
-export interface TaskAssetMutation {
-  requested: number;
-  attached: number;
-  existing: number;
-}
-
 export interface TaskAssetScopeMutation {
   requested: number;
   assets_linked: number;
@@ -614,9 +608,6 @@ export interface FindingAssetTree {
   dropped_kinds?: string[];
 }
 
-// FINDING_UNASSIGNED_ASSET corresponds to the backend db.FindingUnassignedAsset.
-export const FINDING_UNASSIGNED_ASSET = "__none__";
-
 // ---- Activity / sessions ----
 export type ActivityKind =
   | "tool_use"
@@ -763,15 +754,6 @@ export interface LogLine {
 export type SessionRole = "mainagent" | "planner" | "worker" | "system";
 export type SessionStatus = "running" | "paused" | "done" | "blocked" | "exhausted" | "pending" | "stopped" | "deleted";
 
-// Daily token aggregate bucket (GET /api/tokens/daily).
-export interface DailyTokenBucket {
-  date: string; // "YYYY-MM-DD"
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_write_tokens: number;
-}
-
 // Per-worker token usage (GET /api/exploration/tokens).
 export interface TokenUsage {
   worker: string;
@@ -862,20 +844,6 @@ export interface Session {
   source_task_id?: string;
   inherited?: boolean;
   seg?: number; // main-agent session: which conversation segment (0 = original)
-}
-
-// ---- Security ----
-export interface AuditEntry {
-  ts: string;
-  tool: string;
-  action: "allow" | "block";
-  reason?: string;
-  command?: string;
-}
-
-export interface Audit {
-  entries?: AuditEntry[];
-  attributions?: Record<string, number>;
 }
 
 // ---- Traffic ----

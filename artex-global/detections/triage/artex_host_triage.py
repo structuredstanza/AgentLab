@@ -34,10 +34,11 @@
 #                               cmd/artex/main.go). The CA is the trust anchor of an
 #                               adversary-in-the-middle traffic recorder (ATT&CK
 #                               T1557).
-#   3. Log markers            the self-update egress UA `artex-selfupdate`
-#                               (selfupdate/github.go) and the platform-guard audit
-#                               marker (guard/guard.go) in the log file(s) you point
-#                               it at. Enrichment probes carry no marker of their own
+#   3. Log markers            the platform-guard audit marker
+#                               (guard/guard.go) in the log file(s) you point it
+#                               at. ARTEX has no self-update client, so there is no
+#                               self-update egress User-Agent to hunt. Enrichment
+#                               probes carry no marker of their own
 #                               — they present the engagement's masked browser
 #                               identity — so there is nothing to grep for them. Rotated logs that
 #                               logrotate compressed as .gz/.bz2/.xz are read
@@ -112,13 +113,6 @@ BLOBS_RELDIR = "_blobs"
 # it is kept verbatim here because that is the exact byte sequence a responder
 # greps for, and translating it would stop the match.
 LOG_MARKERS = [
-    {
-        "value": "artex-selfupdate",
-        "title": "self-update egress User-Agent",
-        "source": "selfupdate/github.go",
-        "severity": "medium",
-        "caveat": "Seen in outbound logs from a host running ARTEX; the string is configurable.",
-    },
     {
         "value": "[ARTEX platform control - not target defense]",
         "title": "platform-guard audit-log framing marker",
@@ -757,11 +751,10 @@ def self_test():
         # 3. log markers
         logpath = os.path.join(tmp, "app.log")
         with open(logpath, "w", encoding="utf-8") as f:
-            f.write("outbound artex-selfupdate to release host\n")
-            f.write("blocked: " + LOG_MARKERS[1]["value"] + " this operation is denied\n")
+            f.write("blocked: " + LOG_MARKERS[0]["value"] + " this operation is denied\n")
             f.write("a normal line with no markers\n")
         lf, _ = scan_logs([logpath], [])
-        check("logs: both markers fire", len(lf) == 2)
+        check("logs: the guard marker fires", len(lf) == 1)
 
         # 3b. rotated (compressed) logs under a --log-dir are scanned too, not
         # silently skipped. A responder pointing at /var/log/artex expects the
@@ -771,13 +764,13 @@ def self_test():
         rot = os.path.join(tmp, "rotated")
         os.makedirs(rot)
         with open(os.path.join(rot, "artex.log"), "w", encoding="utf-8") as f:
-            f.write("outbound artex-selfupdate to release host\n")
+            f.write("blocked: " + LOG_MARKERS[0]["value"] + " this operation is denied\n")
         with gzip.open(os.path.join(rot, "artex.log.1.gz"), "wt", encoding="utf-8") as f:
-            f.write("another outbound artex-selfupdate to release host\n")
+            f.write("another blocked: " + LOG_MARKERS[0]["value"] + "\n")
         with bz2.open(os.path.join(rot, "artex.log.2.bz2"), "wt", encoding="utf-8") as f:
-            f.write("blocked: " + LOG_MARKERS[1]["value"] + " this operation is denied\n")
+            f.write("blocked: " + LOG_MARKERS[0]["value"] + " this operation is denied\n")
         with lzma.open(os.path.join(rot, "artex.log.3.xz"), "wt", encoding="utf-8") as f:
-            f.write("another blocked: " + LOG_MARKERS[1]["value"] + "\n")
+            f.write("another blocked: " + LOG_MARKERS[0]["value"] + "\n")
         rf, rskip = scan_logs([], [rot])
         rot_hits = {os.path.basename(f.detail.split("'")[1]) for f in rf}
         check("rotated: plaintext + .gz + .bz2 + .xz markers all fire via --log-dir", len(rf) == 4)

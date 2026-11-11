@@ -35,8 +35,8 @@
 # defender imports cannot silently drift from the source it claims to come from.
 #
 # Finally it closes the loop on the two gates that fire this test: the CI workflow
-# (.github/workflows/detections.yml push/pull_request paths) and the local
-# pre-commit hook (.pre-commit-config.yaml files regex). Every upstream source file
+# at the git root (.github/workflows/detections.yml push/pull_request paths) and the
+# local pre-commit hook (.pre-commit-config.yaml files regex). Every upstream source file
 # this test reads must be covered by both, or a change touching only a newly pinned
 # source (as cmd/artex/main.go once was) would skip the test on one of them: on CI
 # the drift sails through the merge gate green, on the hook it is never caught
@@ -271,9 +271,21 @@ print("== 5/5  CI and the pre-commit hook both fire this test on any pinned sour
 # detections/** covers the rules, the CSV, and the tests, so only non-detections
 # sources are required explicitly (plus a spot check that each gate still covers the
 # detections/ tree at all).
-WORKFLOW_REL = ".github/workflows/detections.yml"
+# The workflows live at the git root, one level above this Go module: ARTEX_REPO_ROOT
+# (and the container mount) is the module root, so look in both places.
+WORKFLOW_RELS = (".github/workflows/detections.yml",
+                 "../.github/workflows/detections.yml")
+WORKFLOW_REL = next((rel for rel in WORKFLOW_RELS
+                     if os.path.exists(os.path.join(ROOT, rel))), WORKFLOW_RELS[0])
 PRECOMMIT_REL = ".pre-commit-config.yaml"
 DETECTIONS_SAMPLE = "detections/sigma/artex_guard_audit_framing.yml"
+
+
+def module_rel(path):
+    """Workflow paths are git-root-relative; the pinned sources are module-relative."""
+    return path[len("artex-global/"):] if path.startswith("artex-global/") else path
+
+
 needed_sources = set()
 for ind in INDICATORS:
     needed_sources.update(ind["sources"])
@@ -293,6 +305,7 @@ else:
         if listed is None:
             bad("%s has no %s: trigger" % (WORKFLOW_REL, trigger))
             continue
+        listed = {module_rel(p) for p in listed}
         if "detections/**" not in listed:
             bad("%s %s paths is missing 'detections/**' "
                 "(rule/CSV/test changes would not trigger the detection tests)"

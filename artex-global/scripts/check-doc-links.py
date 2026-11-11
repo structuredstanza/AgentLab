@@ -12,7 +12,7 @@ Scans every tracked `.md` document and checks two things.
    appearance).
 
 If any broken reference exists, the script exits with code 1. It can therefore be used as-is
-in the CI merge gate (`.github/workflows/docs.yml`) and for contributors' local verification.
+in the CI merge gate (`.github/workflows/docs.yml` at the git root) and for contributors' local verification.
 
 Not checked:
 - External URLs (`http://`, `https://`, `mailto:`, `tel:`, `data:`): they depend on the network

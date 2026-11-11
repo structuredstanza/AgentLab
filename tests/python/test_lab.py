@@ -194,5 +194,107 @@ class NativeProxyBootstrapTests(unittest.TestCase):
 
 
 
+class SharedStateGuardTests(unittest.TestCase):
+    def test_another_running_agentlab_vm_blocks_start(self):
+        listing = mock.Mock(returncode=0,
+                            stdout=f'{lab.NAME}\nartex-agentlab-old\nartex-htb-1\n',
+                            stderr='')
+        with mock.patch.object(lab, 'start_provider_proxy'), \
+                mock.patch.object(lab.subprocess, 'run', return_value=listing):
+            with self.assertRaisesRegex(RuntimeError, 'artex-agentlab-old'):
+                lab.start()
+
+    def test_own_and_unrelated_sandboxes_do_not_block(self):
+        listing = mock.Mock(returncode=0,
+                            stdout=f'{lab.NAME}\nartex-htb-20261104t2200z\n',
+                            stderr='')
+        with mock.patch.object(lab.subprocess, 'run', return_value=listing):
+            self.assertEqual(lab.other_running_agentlab(), [])
+
+    def test_unlistable_sandboxes_fail_closed(self):
+        listing = mock.Mock(returncode=1, stdout='', stderr='engine down')
+        with mock.patch.object(lab.subprocess, 'run', return_value=listing):
+            with self.assertRaisesRegex(RuntimeError, 'Could not list'):
+                lab.other_running_agentlab()
+
+
+class StateStorageTests(unittest.TestCase):
+    def conf_text(self, quota_mb):
+        path, temporary = lab.sandbox_conf(quota_mb)
+        try:
+            return path.read_text(), temporary
+        finally:
+            if temporary:
+                path.unlink()
+
+    def test_default_keeps_the_checked_in_spec(self):
+        path, temporary = lab.sandbox_conf(None)
+        self.assertEqual((path, temporary), (lab.SANDBOX_CONF, False))
+
+    def test_quota_is_rewritten_only_on_the_state_mount(self):
+        text, temporary = self.conf_text(409600)
+        self.assertTrue(temporary)
+        self.assertIn(':/state:quota=409600', text)
+        self.assertEqual(text.count('quota='), 1)
+        # Everything else in the spec is untouched.
+        base = lab.SANDBOX_CONF.read_text().replace(
+            ':/state:quota=' + lab.SANDBOX_CONF.read_text().split(':/state:quota=')[1].split()[0],
+            ':/state:quota=409600')
+        self.assertEqual(text, base)
+
+    def test_zero_removes_the_quota(self):
+        text, _ = self.conf_text(0)
+        self.assertNotIn('quota=', text)
+        self.assertIn(':/state', text)
+
+    def test_quota_parsing_is_strict(self):
+        self.assertEqual(lab.state_quota_mb(150), 150 * 1024)
+        self.assertEqual(lab.state_quota_mb(0), 0)
+        for bad in ('abc', '-1', '1.5'):
+            with self.subTest(bad=bad), self.assertRaises(RuntimeError):
+                lab.state_quota_mb(bad)
+
+    def test_env_default_applies_when_no_flag(self):
+        with mock.patch.dict(lab.os.environ, {'AGENTLAB_STATE_QUOTA_GB': '300'}):
+            self.assertEqual(lab.state_quota_mb(), 300 * 1024)
+        with mock.patch.dict(lab.os.environ, {}, clear=False):
+            lab.os.environ.pop('AGENTLAB_STATE_QUOTA_GB', None)
+            self.assertIsNone(lab.state_quota_mb())
+
+    def test_low_host_space_refuses_to_create(self):
+        usage = mock.Mock(free=5 * 2**30)
+        with mock.patch.object(lab.shutil, 'disk_usage', return_value=usage), \
+                mock.patch.object(lab, 'msb') as msb:
+            with self.assertRaisesRegex(RuntimeError, 'GiB free'):
+                lab.create_sandbox(None)
+            msb.assert_not_called()
+
+    def test_resize_refuses_a_running_vm(self):
+        inspected = mock.Mock(returncode=0, stdout=json.dumps({'status': 'Running'}), stderr='')
+        with mock.patch.object(lab.subprocess, 'run', return_value=inspected), \
+                mock.patch.object(lab, 'msb') as msb:
+            with self.assertRaisesRegex(RuntimeError, 'Stop the VM'):
+                lab.resize_state(200, True)
+            msb.assert_not_called()
+
+    def test_resize_requires_confirmation_before_removing_anything(self):
+        inspected = mock.Mock(returncode=0, stdout=json.dumps({'status': 'stopped'}), stderr='')
+        with mock.patch.object(lab.subprocess, 'run', return_value=inspected), \
+                mock.patch.object(lab, 'msb') as msb:
+            with self.assertRaisesRegex(RuntimeError, '--yes'):
+                lab.resize_state(200, False)
+            msb.assert_not_called()
+
+    def test_confirmed_resize_removes_then_recreates_with_the_new_quota(self):
+        inspected = mock.Mock(returncode=0, stdout=json.dumps({'status': 'stopped'}), stderr='')
+        created = []
+        with mock.patch.object(lab.subprocess, 'run', return_value=inspected), \
+                mock.patch.object(lab, 'create_sandbox', side_effect=lambda q=None: created.append(q)), \
+                mock.patch.object(lab, 'msb') as msb:
+            lab.resize_state(200, True)
+        self.assertEqual(created, [200 * 1024])
+        self.assertEqual([call.args[0] for call in msb.call_args_list], ['remove', 'stop'])
+
+
 if __name__ == '__main__':
     unittest.main()

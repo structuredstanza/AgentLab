@@ -102,7 +102,7 @@ docker rm -f artexko-pg && docker network rm artexko-db
 ```
 
 CI's `go-db` job **isolates each of these six packages with its own postgres** and forces them
-to run before merge (`.github/workflows/ci.yml`). If you changed a DB integration package, we
+to run before merge ([`../.github/workflows/ci.yml`](../.github/workflows/ci.yml)). If you changed a DB integration package, we
 recommend verifying that package directly with the method above before you open the PR.
 
 ### Frontend (web)
@@ -158,10 +158,10 @@ docker compose up -d     # start artex + postgres → http://localhost:8787
    from headings into slugs with the same rule as GitHub and matched, so if you change a heading's
    text without also fixing the anchor links that pointed to it, it is caught here (CI's `docs`
    workflow enforces the same check as a merge gate). This check is also wired as the `docs` hook in
-   the repository root's [`.pre-commit-config.yaml`](.pre-commit-config.yaml), so if you run
+   the module root's [`.pre-commit-config.yaml`](.pre-commit-config.yaml), so if you run
    `pre-commit install` it runs automatically on every commit (it uses only the Python standard
    library and no network, so it finishes without Docker).
-4. **Open a PR.** Follow the [PR template](.github/PULL_REQUEST_TEMPLATE.md) for the title and
+4. **Open a PR.** Follow the [PR template](../.github/PULL_REQUEST_TEMPLATE.md) for the title and
    description, and write what you changed, why, and how you verified it. If you changed the UI,
    attach screenshots.
 5. For a user-facing change (feature, localization, documentation, detection rule, and so on),
@@ -199,10 +199,11 @@ this contract, so if you change only a rule and do not update the tests/layer, t
 
 - **Ground every indicator in an observable fact.** The strings, User-Agents, and behavioral
   thresholds a rule uses must be ones actually found in this repository's source, and must not be
-  inferred. State the source file that is the basis for the rule (for example, the `artex-selfupdate`
-  indicator is confirmed in `selfupdate/github.go`). An indicator the source no longer emits — the
-  enrichment prober's retired User-Agent, for instance, which the masked browser identity replaced — must
-  be removed rather than kept as a rule that can never fire. The indicator-match tests
+  inferred. State the source file that is the basis for the rule (for example, the platform-guard
+  audit marker is confirmed in `guard/guard.go`). An indicator the source no longer emits must be
+  removed rather than kept as a rule that can never fire: ARTEX has no self-update client, so it has
+  no static self-update fingerprint, and the enrichment prober's retired User-Agent was replaced by
+  the engagement's masked browser identity. The indicator-match tests
   ([`detections/tests/indicators/`](detections/tests/indicators/)) check that each indicator is
   still present in both the upstream source and the rule, so if an upstream resync changes a source
   string, the test fails unless you fix the rule along with it. If you change the machine-readable
@@ -257,7 +258,7 @@ detections/tests/misp/run.sh            # MISP: indicator CSV ↔ MISP event syn
 To run all eight at once, use [`detections/tests/run-all.sh`](detections/tests/run-all.sh). It runs the
 eight sequentially in the same order as CI, runs the rest to the end even if an earlier suite fails, then
 prints a per-suite PASS/FAIL summary, and exits with a non-zero code if any one fails. An example of
-wiring this runner directly as a pre-commit hook is in the repository root's
+wiring this runner directly as a pre-commit hook is in this directory's
 [`.pre-commit-config.yaml`](.pre-commit-config.yaml). If you install it with `pip install pre-commit &&
 pre-commit install`, the runner runs only on commits that change detection rules or the upstream source
 those rules pin (the same scope as CI), catching rule/test mismatches before push. The same config file
@@ -265,9 +266,9 @@ also includes the `docs` hook that checks in-repo link/image/anchor references (
 from step 3 of the contribution flow above).
 
 These eight tests are run by the repository CI
-([`.github/workflows/detections.yml`](.github/workflows/detections.yml)) on every push/PR that changes
+([`../.github/workflows/detections.yml`](../.github/workflows/detections.yml)) on every push/PR that changes
 anything under `detections/`. The indicator-match test also runs when the upstream source files those
-indicators point to (`enrich/`, `selfupdate/`, `guard/`, `db/`, `cmd/artex/main.go`) change, catching the
+indicators point to (`enrich/`, `guard/`, `db/`, `cmd/artex/main.go`) change, catching the
 case where an upstream resync changes a User-Agent, marker, or default port and silently makes a rule
 stale. So a change that updates only a rule without updating the tests/layer, a rule that breaks a SigmaHQ
 convention, or a rule that is inconsistent with the source shows up red in CI before merge.

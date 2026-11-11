@@ -88,11 +88,7 @@ func TestAugmentToolsRegistersAliases(t *testing.T) {
 	for _, tl := range out {
 		byName[tl.Name()] = tl
 	}
-	for _, want := range []string{"Bash", "bash", "LS", "ls", "WebFetch"} {
-		switch want {
-		case "WebFetch":
-			continue // not in DefaultTools
-		}
+	for _, want := range []string{"Bash", "bash", "LS", "ls"} {
 		if _, ok := byName[want]; !ok {
 			t.Errorf("assembled worker missing %q", want)
 		}
@@ -107,12 +103,4 @@ func TestAugmentToolsRegistersAliases(t *testing.T) {
 	if deferredSet["Bash"] {
 		t.Error("official Bash name must NOT be deferred")
 	}
-}
-
-func keys(m map[string]actool.CoreTool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
 }

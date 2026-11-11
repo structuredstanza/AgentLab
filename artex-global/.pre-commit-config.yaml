@@ -7,13 +7,13 @@
 # 1) detections: runs the runner (detections/tests/run-all.sh) that executes the eight detection tests
 #    and three gates, only in commits that change detection rules (detections/), the upstream sources
 #    they pin, or the inline Sigma template in the defense guide (docs/defense-en.md). It applies the same
-#    rule and source scope as CI (.github/workflows/detections.yml), so it catches a change that edits a
+#    rule and source scope as CI (the git root's .github/workflows/detections.yml), so it catches a change that edits a
 #    rule without updating its tests or layers, or that edits the defense template without updating the
 #    guide's claims about it. It requires Docker (each test runs isolated in a container; nothing is
 #    installed on the runner).
 # 2) docs: checks that repository-internal links, images, and anchors (#headings) in tracked Markdown
 #    files point to existing targets (scripts/check-doc-links.py). This is the same check as CI
-#    (.github/workflows/docs.yml), which runs on every change without a paths filter, so the target set
+#    (.github/workflows/docs.yml at the git root), which runs on every change without a paths filter, so the target set
 #    is not narrowed here either (always_run). Links break not only when a .md file changes but also when
 #    a file they point to (an image, LICENSE, etc.) is deleted or moved. It uses only the Python standard
 #    library and makes no network connections, so it finishes in tens of milliseconds without Docker.

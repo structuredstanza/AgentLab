@@ -14,9 +14,6 @@ script — is indexed in [`../README.md`](../README.md).
 
 One rule, one observable fact. Convert them individually or as part of the whole tree.
 
-- **[`artex_selfupdate_egress.yml`](artex_selfupdate_egress.yml)** — *ARTEX Self-Update Egress
-  User-Agent*. Outbound `artex-selfupdate` User-Agent from the self-update routine
-  (`selfupdate/github.go`). Host/forensic egress indicator. `level: medium`.
 - **[`artex_guard_audit_framing.yml`](artex_guard_audit_framing.yml)** — *ARTEX Platform Guard
   Audit-Log Framing*. The platform-guard control marker written to the audit log on a blocked tool
   call (`guard/guard.go`). Host/forensic indicator. `level: high`.
@@ -52,8 +49,9 @@ in ARTEX source.
 
 ## Scope and honesty — read before deploying
 
-- **Static indicators can be changed, and one is already gone.** An operator can set a different
-  User-Agent or clean up the CA file, so the absence of an atomic indicator does **not** mean safety; the
+- **Static indicators can be changed, and some are already gone.** An operator can set a different
+  User-Agent or clean up the CA file, so the absence of an atomic indicator does **not** mean safety;
+  ARTEX has no self-update client, so there is no self-update User-Agent to match, and the
   enrichment prober now presents the engagement's masked browser identity, so it has no static
   target-side fingerprint at all. The durable signal is the behaviour the `correlation/` rules key on —
   one source chaining recon → enumeration → probing → auth/injection attempts, adapting to responses,
@@ -91,7 +89,7 @@ sigma convert -t splunk --without-pipeline detections/sigma/
 
 Backends vary in correlation support, so the `-t` choice matters: Splunk, Elasticsearch EQL, and Grafana
 Loki convert the whole tree, while Elasticsearch Lucene, OpenSearch, and the Microsoft `kusto` backend
-convert the four atomic rules only (express the window natively in the product). The measured per-backend
+convert the three atomic rules only (express the window natively in the product). The measured per-backend
 matrix and the `--without-pipeline` / `-p` field-mapping notes are in [`../README.md`](../README.md), and
 they are reproduced by [`../tests/sigma_backends/`](../tests/sigma_backends/).
 

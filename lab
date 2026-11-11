@@ -14,6 +14,7 @@ import secrets
 import tarfile
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 import uuid
@@ -141,21 +142,117 @@ def stage_vpn(profile):
         raise RuntimeError(f'OpenVPN profile checksum mismatch: guest {remote[:16]}… host {local[:16]}…')
     print(f'OpenVPN profile staged ({len(payload)} bytes, sha256 {local[:16]}…)')
 
-def start(vpn=None):
+def other_running_agentlab():
+    """Running artex-agentlab-* sandboxes other than NAME, which share state/."""
+    listing = subprocess.run([str(MSB), 'list', '--running', '-q'],
+                             capture_output=True, text=True)
+    if listing.returncode:
+        raise RuntimeError('Could not list running sandboxes: '
+                           + listing.stderr.strip()[:300])
+    return [name for name in listing.stdout.split()
+            if name.startswith('artex-agentlab-') and name != NAME]
+
+
+STATE_DIR = ROOT / 'state'
+SANDBOX_CONF = ROOT / 'deployment/sandbox.yaml'
+# Refuse to boot (or recreate) when the host filesystem holding state/ is nearly full:
+# the /state quota is only a ceiling, so a quota larger than the free space would let
+# the capture ring and PostgreSQL fill the host disk instead of failing early.
+MIN_HOST_FREE_GB = int(os.environ.get('AGENTLAB_MIN_HOST_FREE_GB', '20'))
+
+
+def state_quota_mb(gb=None):
+    """The /state mount quota in MiB, or None to keep deployment/sandbox.yaml's default.
+
+    0 means no quota (bounded only by the host disk). The quota is a mount option fixed
+    when the sandbox is created and `msb modify` cannot change it, so a change needs
+    `./lab resize-state`.
+    """
+    raw = os.environ.get('AGENTLAB_STATE_QUOTA_GB') if gb is None else gb
+    if raw in (None, ''):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise RuntimeError(f'state quota must be a whole number of GiB, got {raw!r}') from None
+    if value < 0:
+        raise RuntimeError('state quota cannot be negative; use 0 for no quota')
+    return value * 1024
+
+
+def sandbox_conf(quota_mb):
+    """Return (path, temporary): the spec to create the sandbox from.
+
+    With quota_mb None the checked-in spec is used as is. Otherwise a private copy
+    with only the /state quota rewritten is written, so the base file stays the single
+    source of truth for everything else.
+    """
+    if quota_mb is None:
+        return SANDBOX_CONF, False
+    text = SANDBOX_CONF.read_text()
+    pattern = re.compile(r'(:/state)(?::quota=\d+)?(?=\s*$)', re.M)
+    replacement = r'\1' if quota_mb == 0 else rf'\1:quota={quota_mb}'
+    text, count = pattern.subn(replacement, text)
+    if count != 1:
+        raise RuntimeError(f'expected exactly one /state mount in {SANDBOX_CONF}, found {count}')
+    handle = tempfile.NamedTemporaryFile('w', suffix='.yaml', prefix='lab-sandbox-', dir=ROOT,
+                                         delete=False)
+    with handle:
+        handle.write(text)
+    return Path(handle.name), True
+
+
+def check_host_space():
+    free_gb = shutil.disk_usage(STATE_DIR).free / 2**30
+    if free_gb < MIN_HOST_FREE_GB:
+        raise RuntimeError(f'only {free_gb:.1f} GiB free on the filesystem holding state/; need at least '
+                           f'{MIN_HOST_FREE_GB} GiB (AGENTLAB_MIN_HOST_FREE_GB)')
+    return free_gb
+
+
+def create_sandbox(quota_mb=None):
+    check_host_space()
+    conf, temporary = sandbox_conf(quota_mb)
+    try:
+        msb('create', '--name', NAME, '--conf', str(conf),
+            '--hostname', 'agentlab-worker',
+            '--net-rule', 'allow@host:tcp:8080', '--net-rule', 'allow@host:tcp:8788')
+    finally:
+        if temporary:
+            conf.unlink(missing_ok=True)
+
+
+def resize_state(gb, confirmed):
+    """Recreate the sandbox with a different /state quota. The state/ data is untouched.
+
+    The quota cannot be edited in place, so the sandbox is removed and created again.
+    Anything written to the sandbox's own root disk outside /state is lost, which is
+    why this needs --yes and a stopped VM.
+    """
+    quota_mb = state_quota_mb(gb)
+    inspected = subprocess.run([str(MSB), 'inspect', NAME, '--format', 'json'],
+                               capture_output=True, text=True)
+    if inspected.returncode == 0:
+        if json.loads(inspected.stdout)['status'].lower() == 'running':
+            raise RuntimeError('Stop the VM first (./lab stop); the quota cannot change while it runs')
+        if not confirmed:
+            raise RuntimeError(f'resize-state recreates {NAME}: state/ is kept, but files written to the VM root '
+                               'disk outside /state are lost. Re-run with --yes to proceed')
+        msb('remove', NAME)
+    create_sandbox(quota_mb)
+    msb('stop', NAME)
+    label = 'no quota' if quota_mb == 0 else f'{quota_mb // 1024} GiB'
+    print(f'{NAME} recreated with a {label} /state quota; run ./lab start')
+
+
+def start(vpn=None, quota_gb=None):
     start_provider_proxy()
-    for name in ('artex-agentlab', 'artex-agentlab-reasoning', 'artex-agentlab-capture', 'artex-agentlab-english', 'artex-agentlab-sdk', 'artex-agentlab-allocation', 'artex-agentlab-quota', 'artex-agentlab-integrated', 'artex-agentlab-native', 'artex-agentlab-native-allocation', 'artex-agentlab-native-codex-capture', 'artex-agentlab-astra-reviewed-20261031t010522z', 'artex-agentlab-toolchain-20261103t2115z'):
-        if name == NAME:
-            continue
-        previous = subprocess.run([str(MSB), 'inspect', name, '--format', 'json'],
-                                  capture_output=True, text=True)
-        if previous.returncode == 0 and json.loads(previous.stdout)['status'].lower() != 'stopped':
-            raise RuntimeError(f'Stop the previous {name} VM gracefully before sharing its persistent state')
+    for name in other_running_agentlab():
+        raise RuntimeError(f'Stop the previous {name} VM gracefully before sharing its persistent state')
     result = subprocess.run([str(MSB), 'inspect', NAME, '--format', 'json'],
                             capture_output=True, text=True)
     if result.returncode:
-        msb('create', '--name', NAME, '--conf', str(ROOT / 'deployment/sandbox.yaml'),
-            '--hostname', 'agentlab-worker',
-            '--net-rule', 'allow@host:tcp:8080', '--net-rule', 'allow@host:tcp:8788')
+        create_sandbox(state_quota_mb(quota_gb))
     elif json.loads(result.stdout)['status'].lower() != 'running':
         msb('start', NAME)
     healthy = True
@@ -505,15 +602,25 @@ def main():
     boot = sub.add_parser('start', help='Start the VM, optionally through an OpenVPN profile')
     boot.add_argument('--vpn', metavar='PROFILE',
                       help='OpenVPN .ovpn/.conf to bring up before capture; egress is refused if the tunnel drops')
+    boot.add_argument('--state-quota-gb', metavar='GB', type=int,
+                      help='/state quota in GiB (0 = none); only applies when the VM is created, see resize-state')
+    grow = sub.add_parser('resize-state', help='Recreate the VM with a different /state quota (state/ is kept)')
+    grow.add_argument('gb', type=int, help='new quota in GiB (0 = no quota)')
+    grow.add_argument('--yes', action='store_true', help='confirm that the VM root disk is recreated')
     run = sub.add_parser('exec', help='Execute an adaptable guest command and record its output')
     run.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.action == 'start':
-        start(args.vpn)
+        start(args.vpn, args.state_quota_gb)
+    elif args.action == 'resize-state':
+        resize_state(args.gb, args.yes)
     elif args.action == 'stop':
         stop()
     elif args.action == 'status':
         msb('inspect', NAME, '--format', 'json')
+        usage = shutil.disk_usage(STATE_DIR)
+        print(json.dumps({'host_state_filesystem_free_gib': round(usage.free / 2**30, 1),
+                          'host_state_filesystem_total_gib': round(usage.total / 2**30, 1)}))
         print(json.dumps(api('/api/settings', token=login()), indent=2))
     elif args.action == 'exec':
         return execute(args.command)

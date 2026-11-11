@@ -54,30 +54,64 @@ BROWSERS_DIR = "/opt/ms-playwright"
 # Guest-local capture proxy; not the host native provider proxy, which also listens on 8788.
 ARTEX_ARGS = ["-addr", ":8787", "-proxy", "127.0.0.1:8788", "-data", ARTEX_DATA]
 STRACE_ARGS = ["-ff", "-ttt", "-T", "-yy", "-s256", "-e", "trace=process,file,network"]
+
+
+def now_iso():
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+
+
+def log(msg):
+    print(f"[guest-start {now_iso()}] {msg}", flush=True)
+
+
 SEGMENT_MB = 128   # tcpdump -C counts millions of bytes
-MAX_SEGMENTS = 32  # tcpdump -W ring size, before the free-space cap below
-# Headroom left on /state for Postgres, the binary, the DB WAL and the next
-# session's early writes. Without it the ring can fill the volume: 32 x 128 MB is
-# 4 GB on a 5.8 GB filesystem that already holds ~700 MB, and a live engagement
-# reached 100% and took the whole stack down with it.
-RING_RESERVE_MB = 1536
 MIN_SEGMENTS = 4
+# Ring ceiling in GB, before the free-space cap below; tcpdump -W takes the
+# segment count derived from it. Raise it for long engagements.
+RING_GB_DEFAULT = 64
+# Headroom left on /state for Postgres, the binary, the DB WAL, exports and the
+# next session's early writes: 20% of the volume, never less than this floor.
+# Without it the ring can fill the volume - a live engagement reached 100% on a
+# 5.8 GB filesystem and took the whole stack down with it.
+RING_RESERVE_MB = 1536
+
+
+def ring_reserve_mb(st):
+    """Free space to keep on the capture filesystem: 20% of it, floor 1536 MB."""
+    total_mb = st.f_blocks * st.f_frsize // (1024 * 1024)
+    return max(RING_RESERVE_MB, total_mb // 5)
+
+
+def ring_ceiling_segments():
+    """AGENTLAB_CAPTURE_RING_GB (default 64) worth of SEGMENT_MB segments, 1..4096."""
+    raw = os.environ.get("AGENTLAB_CAPTURE_RING_GB", "").strip()
+    try:
+        gb = int(raw) if raw else RING_GB_DEFAULT
+        if gb <= 0:
+            raise ValueError(raw)
+    except ValueError:
+        log(f"AGENTLAB_CAPTURE_RING_GB={raw!r} is not a positive integer; using {RING_GB_DEFAULT}")
+        gb = RING_GB_DEFAULT
+    return max(1, min(4096, gb * 1000 // SEGMENT_MB))
+
+
+MAX_SEGMENTS = ring_ceiling_segments()
 
 
 def ring_segments():
-    """Segments that fit on /state with RING_RESERVE_MB still free.
+    """Segments that fit on /state with ring_reserve_mb() still free.
 
-    The fixed 32-segment ring is only an upper bound. Sizing it from the actual
-    filesystem means a small volume degrades to a shorter capture instead of
-    filling the disk and killing the engagement.
+    MAX_SEGMENTS is only an upper bound. Sizing it from the actual filesystem
+    means a small volume degrades to a shorter capture instead of filling the
+    disk and killing the engagement.
     """
     try:
         st = os.statvfs(ARTEX_DATA)
         free_mb = st.f_bavail * st.f_frsize // (1024 * 1024)
+        reserve_mb = ring_reserve_mb(st)
     except OSError:
         return MAX_SEGMENTS
-    budget_mb = free_mb - RING_RESERVE_MB
-    fits = budget_mb // SEGMENT_MB
+    fits = (free_mb - reserve_mb) // SEGMENT_MB
     return max(MIN_SEGMENTS, min(MAX_SEGMENTS, int(fits)))
 
 # Optional OpenVPN profile, streamed in by `lab start --vpn <file>` before the
@@ -125,14 +159,6 @@ STOP = {"signal": None}
 
 class Fatal(Exception):
     pass
-
-
-def now_iso():
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
-
-
-def log(msg):
-    print(f"[guest-start {now_iso()}] {msg}", flush=True)
 
 
 def write_file(path, data, mode=0o644):

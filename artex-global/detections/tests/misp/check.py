@@ -36,7 +36,18 @@ import sys
 ROOT = os.environ.get("ARTEX_REPO_ROOT", "/repo")
 CSV_REL = "detections/indicators/artex_indicators.csv"
 MISP_REL = "detections/indicators/artex_indicators.misp.json"
-WORKFLOW_REL = ".github/workflows/detections.yml"
+# The workflows live at the git root, one level above this Go module: ARTEX_REPO_ROOT
+# (and the container mount) is the module root, so look in both places.
+WORKFLOW_RELS = (".github/workflows/detections.yml",
+                 "../.github/workflows/detections.yml")
+WORKFLOW_REL = next((rel for rel in WORKFLOW_RELS
+                     if os.path.exists(os.path.join(ROOT, rel))), WORKFLOW_RELS[0])
+
+
+def module_rel(path):
+    """Workflow paths are git-root-relative; detections/ is module-relative."""
+    return path[len("artex-global/"):] if path.startswith("artex-global/") else path
+
 
 # The indicators README states the CSV `type` values "map onto the equivalent
 # MISP/STIX attribute types". This is that mapping, made explicit and enforced:
@@ -275,7 +286,7 @@ else:
         listed = paths_for_trigger(wf_text, trigger)
         if listed is None:
             bad("%s has no %s: trigger" % (WORKFLOW_REL, trigger))
-        elif "detections/**" in listed:
+        elif "detections/**" in {module_rel(p) for p in listed}:
             ok("%s %s paths covers detections/** (CSV + MISP event)" % (WORKFLOW_REL, trigger))
         else:
             bad("%s %s paths is missing 'detections/**' — a change to the CSV or "

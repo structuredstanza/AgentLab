@@ -18,7 +18,7 @@
 #
 #   A = the SUITES="..." list in run-all.sh                       (ordered)
 #   B = the per-suite `run: detections/tests/<x>/run.sh` steps     (ordered)
-#       in .github/workflows/detections.yml
+#       in .github/workflows/detections.yml at the git root
 #   C = the subdirectories of detections/tests/ that carry a       (a set)
 #       run.sh
 #
@@ -35,11 +35,12 @@
 # Pure standard library (the slim image already ships python3); nothing is
 # installed and nothing is written to the repo. Exits non-zero on any mismatch.
 #
-# Usage. check-harness-sync.sh runs this inside Docker with the repo mounted at
+# Usage. check-harness-sync.sh runs this inside Docker with the module mounted at
 # /repo, which is why ROOT defaults to /repo below. To run it directly on the
-# host instead, point ARTEX_REPO_ROOT at the repo root:
+# host instead, point ARTEX_REPO_ROOT at the module root (the git root's
+# artex-global/):
 #
-#     ARTEX_REPO_ROOT="$(git rev-parse --show-toplevel)" \
+#     ARTEX_REPO_ROOT="$(git rev-parse --show-toplevel)/artex-global" \
 #         python3 detections/tests/check-harness-sync.py
 
 import os
@@ -53,7 +54,13 @@ ROOT = os.environ.get("ARTEX_REPO_ROOT", "/repo")
 ROOT_FROM_ENV = "ARTEX_REPO_ROOT" in os.environ
 TESTS_DIR = os.path.join(ROOT, "detections", "tests")
 RUN_ALL = os.path.join(TESTS_DIR, "run-all.sh")
-CI_WORKFLOW = os.path.join(ROOT, ".github", "workflows", "detections.yml")
+# The workflows live at the git root, one level above this Go module: ARTEX_REPO_ROOT
+# (and the container mount) is the module root, so look in both places.
+CI_WORKFLOW = next(
+    (os.path.join(ROOT, rel) for rel in (".github/workflows/detections.yml",
+                                        "../.github/workflows/detections.yml")
+     if os.path.exists(os.path.join(ROOT, rel))),
+    os.path.join(ROOT, ".github", "workflows", "detections.yml"))
 
 
 def fail(msg):
@@ -108,8 +115,8 @@ def main():
                     "\n       ARTEX_REPO_ROOT is unset, so ROOT defaulted to /repo "
                     "(the path check-harness-sync.sh mounts the repo at inside Docker).\n"
                     "       To run this script directly on the host, point it at the "
-                    "repo root:\n"
-                    '         ARTEX_REPO_ROOT="$(git rev-parse --show-toplevel)" '
+                    "module root (the git root's artex-global/):\n"
+                    '         ARTEX_REPO_ROOT="$(git rev-parse --show-toplevel)/artex-global" '
                     "python3 detections/tests/check-harness-sync.py\n"
                     "       or use the Docker wrapper: "
                     "detections/tests/check-harness-sync.sh"
@@ -160,7 +167,7 @@ def main():
             print(e + "\n", file=sys.stderr)
         print(
             "Wire the new suite into all three (SUITES in run-all.sh, a step in "
-            ".github/workflows/detections.yml, and a run.sh directory) so a local "
+            "the git root's .github/workflows/detections.yml, and a run.sh directory) so a local "
             "run-all.sh runs exactly what CI runs.",
             file=sys.stderr,
         )

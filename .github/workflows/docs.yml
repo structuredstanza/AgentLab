@@ -25,6 +25,9 @@ concurrency:
 jobs:
   links:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artex-global
     steps:
       - uses: actions/checkout@v4
       # python3 is preinstalled on the ubuntu-latest runner, and the script uses only the

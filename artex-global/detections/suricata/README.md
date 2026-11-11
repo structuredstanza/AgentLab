@@ -34,8 +34,8 @@ longer sends a distinctive User-Agent, so those signatures could never match aga
 - **A static User-Agent can be changed** by the operator, so its absence does **not** mean safety. The durable
   signal is behaviour — rate, breadth, and sequence — which is why the Sigma correlation layer keys on it,
   and why pure web multi-stage detection needs base rules specific to your environment.
-- **Deliberately omitted.** The self-update User-Agent `artex-selfupdate` travels over HTTPS to GitHub and is
-  not network-observable (TLS SNI alone is too common to alert on). The audit-control marker is an
+- **Deliberately omitted.** ARTEX has no self-update client, so there is no self-update User-Agent to
+  match. The audit-control marker is an
   operator-side log artifact, not target-facing traffic — detect it with
   [`../sigma/artex_guard_audit_framing.yml`](../sigma/artex_guard_audit_framing.yml). The server port `:8787`
   and recording proxy `127.0.0.1:8788` (`cmd/artex/main.go`) are host-forensic (`ss`/`netstat`), not a

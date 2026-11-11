@@ -27,6 +27,6 @@ docker run --rm \
   -e ARTEX_REPO_ROOT=/repo \
   -e PYMISP_VERSION="$PYMISP_VERSION" \
   -v "$REPO/detections:/repo/detections:ro" \
-  -v "$REPO/.github:/repo/.github:ro" \
+  -v "$REPO/../.github:/repo/.github:ro" \
   -v "$HERE:/src:ro" \
   "$PYTHON_IMAGE" sh -c 'pip install --quiet "pymisp==${PYMISP_VERSION}" && python3 /src/check.py'

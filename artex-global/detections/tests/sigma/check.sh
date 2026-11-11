@@ -7,7 +7,7 @@
 #
 #   1. structural + best-practice validation passes          (sigma check == 0 errors)
 #   2. the whole tree compiles to a backend query language   (sigma convert -> splunk)
-#   3. each atomic indicator string survives into the query  (enrich UA, self-update UA, guard marker, CA file)
+#   3. each atomic indicator string survives into the query  (guard marker, CA file)
 #   4. the correlation rules compile as correlations         (event_count / event_type_count aggregations)
 #   5. a correlation rule converted ALONE fails              (it genuinely depends on its atomic base rule)
 #
@@ -49,7 +49,7 @@ echo "== 3/4  each atomic indicator survives into the compiled query =="
 # the recording-proxy CA filename, grounded in traffic/traffic.go. Enrichment has
 # no User-Agent of its own any more (it presents the masked browser identity), so
 # there is no enrich indicator in this list.
-for ind in 'artex-selfupdate' '[ARTEX platform control - not target defense]' 'mitmproxy-ca-cert.pem'; do
+for ind in '[ARTEX platform control - not target defense]' 'mitmproxy-ca-cert.pem'; do
   if printf '%s' "$tree_out" | grep -qF "$ind"; then
     pass "indicator present: $ind"
   else

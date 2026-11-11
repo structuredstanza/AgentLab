@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -122,18 +123,18 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 		defer s.concMu.Unlock()
 		current, exists := s.m.Task(t.ID)
 		if !exists || current != t || s.engine.IsDeleting(t.ID) {
-			return out, fmt.Errorf(errTaskCtrlDeleting)
+			return out, errors.New(errTaskCtrlDeleting)
 		}
 		if !s.engine.beginTaskOperation(t.ID) {
-			return out, fmt.Errorf(errTaskCtrlDeleting)
+			return out, errors.New(errTaskCtrlDeleting)
 		}
 		defer s.engine.decInflight(t.ID)
 		lifecycle := t.lifecycleSnapshot()
 		if isTerminalStatus(lifecycle.Status) {
-			return out, fmt.Errorf(errTaskCtrlTerminalPause)
+			return out, errors.New(errTaskCtrlTerminalPause)
 		}
 		if lifecycle.Paused {
-			return out, fmt.Errorf(errTaskCtrlAlreadyPaused)
+			return out, errors.New(errTaskCtrlAlreadyPaused)
 		}
 		wasQueued := lifecycle.Queued
 		wasEnginePaused := s.engine.IsPaused(t.ID)
@@ -190,7 +191,7 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 	}
 	if node == nil {
 		if inherited, sourceErr := t.Store.GetNodeWithSources(iid); sourceErr == nil && inherited != nil && inherited.Inherited {
-			return out, fmt.Errorf(errIntentCtrlInheritedReadonly)
+			return out, errors.New(errIntentCtrlInheritedReadonly)
 		}
 		return out, fmt.Errorf("intent not found")
 	}
@@ -200,7 +201,7 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 	switch action {
 	case "pause":
 		if node.State != "running" {
-			return out, fmt.Errorf(errIntentCtrlOnlyRunningPause)
+			return out, errors.New(errIntentCtrlOnlyRunningPause)
 		}
 		if err := s.engine.ControlWork(ctx, iid, "pause"); err != nil {
 			return out, err
@@ -208,7 +209,7 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 		out.State = "paused"
 	case "resume":
 		if node.State != "paused" {
-			return out, fmt.Errorf(errIntentCtrlOnlyPausedResume)
+			return out, errors.New(errIntentCtrlOnlyPausedResume)
 		}
 		changed, err := t.Store.CompareAndSetIntentState(iid, "paused", "open")
 		if err != nil {
@@ -227,11 +228,11 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 		//     so that no orphaned data remains. Shared nodes, the goal, and the work-root facts are preserved.
 		// Both modes notify the planner with cancelled (the intent content plus the deletion reason), so that it re-plans accordingly.
 		if node.State != "running" && node.State != "paused" && node.State != "open" {
-			return out, fmt.Errorf(errIntentCtrlOnlyDeletable)
+			return out, errors.New(errIntentCtrlOnlyDeletable)
 		}
 		reason = strings.TrimSpace(reason)
 		if reason == "" {
-			return out, fmt.Errorf(errIntentCtrlReasonRequired)
+			return out, errors.New(errIntentCtrlReasonRequired)
 		}
 		if node.State == "running" {
 			if err := s.engine.ControlWork(ctx, iid, "cancel"); err != nil {

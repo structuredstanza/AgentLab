@@ -15,9 +15,8 @@ keeps the layer and the rules from drifting apart.
 Coverage here means "this repository ships a detection that tags this technique", not "this technique is
 fully covered". The score is deliberately honest about detection strength:
 
-- **100 — ARTEX-specific signature or behaviour.** A static indicator unique to ARTEX (the
-  `artex-selfupdate` User-Agent, the guard audit marker) or a behaviour rule built on one (guard-block
-  burst).
+- **100 — ARTEX-specific signature or behaviour.** A static indicator unique to ARTEX (the guard audit
+  marker) or a behaviour rule built on one (guard-block burst).
 - **50–65 — generic hunting lead.** Destructive-command hunting mirrored from the ARTEX guard deny list.
   The same commands are run by legitimate administrators, so these fire on benign activity too; treat a
   hit as a lead, not an attribution. 65 marks the case where a correlation rule raises specificity by
@@ -25,10 +24,8 @@ fully covered". The score is deliberately honest about detection strength:
 
 ## Techniques covered
 
-Six techniques across five tactics. Each maps to the rule(s) that tag it:
+Five techniques across four tactics. Each maps to the rule(s) that tag it:
 
-- **Command and Control — T1105 (Ingress Tool Transfer).**
-  [`sigma/artex_selfupdate_egress.yml`](../sigma/artex_selfupdate_egress.yml).
 - **Execution — T1059 (Command and Scripting Interpreter).**
   [`sigma/artex_guard_audit_framing.yml`](../sigma/artex_guard_audit_framing.yml),
   [`sigma/correlation/artex_guard_block_burst.yml`](../sigma/correlation/artex_guard_block_burst.yml),
@@ -61,7 +58,9 @@ Six techniques across five tactics. Each maps to the rule(s) that tag it:
   (see the [English defense guide](../../docs/defense-en.md), sections 1–2 and 4.1–4.2). The pure web multi-stage
   case still needs base rules specific to your environment.
 - **Static indicators can be changed.** An operator can set a different User-Agent, so the absence of a
-  tagged indicator does not imply safety. This is the same caveat the rule files carry.
+  tagged indicator does not imply safety. ARTEX has no self-update client, so it has no self-update
+  egress signature and Command and Control is not covered here. This is the same caveat the rule files
+  carry.
 
 ## Validate and contribute
 

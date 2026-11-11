@@ -197,7 +197,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
-				r.record(req, session, taskID, worker, reqBody, capt, start, llm.Message{}, textBuf.String(), thinkingBuf.String(), usage, stopReason, err, status)
+				r.record(session, taskID, worker, reqBody, capt, start, llm.Message{}, textBuf.String(), thinkingBuf.String(), usage, stopReason, err, status)
 			}
 		}
 		defer func() { finish(ctx.Err()) }()
@@ -272,7 +272,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	status := callStatus(ctx, stopReason, err)
 	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
 	if recordBodies {
-		r.record(req, session, taskID, worker, reqBody, capt, start, msg, msg.Text(), thinkingText(msg), usage, stopReason, err, status)
+		r.record(session, taskID, worker, reqBody, capt, start, msg, msg.Text(), thinkingText(msg), usage, stopReason, err, status)
 	}
 	return msg, stopReason, usage, err
 }
@@ -318,7 +318,7 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 // record persists one LLM call to PostgreSQL before the provider stream returns.
 // Keeping the write inside the owning task operation means task deletion can
 // drain calls and then remove records without a late async insert recreating one.
-func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, response llm.Message, text, thinking string, usage llm.Usage, stopReason string, streamErr error, status string) {
+func (r *Recorder) record(session, taskID, worker, reqBody string, capt *Capture, start time.Time, response llm.Message, text, thinking string, usage llm.Usage, stopReason string, streamErr error, status string) {
 	latency := int(time.Since(start).Milliseconds())
 	errMsg := ""
 	if streamErr != nil {
@@ -327,17 +327,11 @@ func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, re
 
 	respBody := serializeResponse(response, text, thinking, usage, stopReason)
 
-	model := ""
-	if len(req.System) > 0 {
-		// model is not in CompletionRequest; use the configured model name
-	}
-	model = r.model
-
 	rec := &db.LLMRecord{
 		SessionID:    session,
 		TaskID:       taskID,
 		Worker:       worker,
-		Model:        model,
+		Model:        r.model,
 		ProfileName:  r.prof,
 		LatencyMs:    latency,
 		InputTokens:  usage.InputTokens,
@@ -387,11 +381,6 @@ func serializeResponse(response llm.Message, text, thinking string, usage llm.Us
 	}
 	body, _ := json.Marshal(resp)
 	return body
-}
-
-// serializeRequest builds a JSON representation of the completion request.
-func (r *Recorder) serializeRequest(req llm.CompletionRequest) string {
-	return r.serializeRequestWithContext(context.Background(), req)
 }
 
 func (r *Recorder) serializeRequestWithContext(ctx context.Context, req llm.CompletionRequest) string {

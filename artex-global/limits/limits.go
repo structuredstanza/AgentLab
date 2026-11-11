@@ -87,9 +87,6 @@ func New(p Policy) *Limiter {
 	return &Limiter{policy: p, targets: map[string]*targetState{}}
 }
 
-// Policy returns the ceiling this limiter enforces, for reporting.
-func (l *Limiter) Policy() Policy { return l.policy }
-
 // Guidance is the text a tool description carries, so the agent chooses a
 // sensible rate instead of being pinned to one.
 //

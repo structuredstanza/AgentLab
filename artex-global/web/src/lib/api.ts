@@ -16,7 +16,6 @@ import type {
   Asset,
   AssetInterceptRule,
   AssetInterceptRuleInput,
-  Audit,
   BatchCategoryItem,
   BatchControlItem,
   ChatAttachment,
@@ -28,7 +27,6 @@ import type {
   ConvTokenSummary,
   CoverageAssetRefs,
   CoverageGraphData,
-  DailyTokenBucket,
   DeleteTaskOptions,
   DeleteTaskResult,
   Edge,
@@ -72,8 +70,6 @@ import type {
   NotificationDelivery,
   NotificationFilter,
   NotificationMeta,
-  PromptVar,
-  PromptVersion,
   SessionTokenUsage,
   Settings,
   Severity,
@@ -85,7 +81,6 @@ import type {
   Task,
   TaskArchive,
   TaskArchivePage,
-  TaskAssetMutation,
   TaskAssetScopeMutation,
   TaskCategory,
   TaskConstraint,
@@ -336,7 +331,6 @@ export const api = {
     post<TaskCredential>(`/tasks/${id}/credentials`, input),
   deleteTaskCredential: (id: string, cid: number) => del(`/tasks/${id}/credentials/${cid}`),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
-  updateTask: (id: string, input: { name?: string; pinned?: boolean; plan_quiet_mode?: boolean }) => patch<Task>(`/tasks/${id}`, input),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
@@ -423,7 +417,6 @@ export const api = {
     post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/${intentId}/rerun`),
   // Batch re-run all blocked intents for this task (when a single network/LLM disconnect leaves multiple blocked entries, retry them all with one click).
   rerunBlocked: (taskId: string) => post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/rerun-blocked`),
-  setActive: (id: string) => post<{ active: string }>("/active", { id }),
   // ---- stats ----
   stats: (task?: string) => get<Stats>(`/stats${tq(task)}`),
   // Asset test coverage (rough estimate, for reference): proportion of in-scope assets touched by a fact, plus total/tested counts by type.
@@ -558,11 +551,6 @@ export const api = {
     get<{ count: number; total: number; assets: Asset[] }>(
       `/assets?task_id=${encodeURIComponent(taskId)}&dsl=${encodeURIComponent(dsl)}&type=${encodeURIComponent(type)}&limit=${limit}&offset=${offset}`,
     ).then((r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 })),
-  attachTaskAssets: (taskId: string, assetIds: number[], sourceSummary: string) =>
-    post<TaskAssetMutation>(`/tasks/${taskId}/assets`, {
-      asset_ids: assetIds,
-      source_summary: sourceSummary,
-    }),
   registerTaskAssetScopes: (taskId: string, scope: CompanyScopeRule[]) =>
     post<TaskAssetScopeMutation>(`/tasks/${taskId}/assets`, { scope }),
   detachTaskAsset: (taskId: string, assetId: number) => del<{ detached: number }>(`/tasks/${taskId}/assets/${assetId}`),
@@ -597,7 +585,6 @@ export const api = {
     }),
 
   // ---- exploration (per task) ----
-  frontier: (task?: string) => get<TaskNode[]>(`/exploration/frontier${tq(task)}`).then(arr),
   findings: (task?: string) => get<Finding[]>(`/exploration/findings${tq(task)}`).then(arr),
   findingsPage: (q: FindingQuery) => {
     const p = findingFilterParams(q);
@@ -752,7 +739,6 @@ export const api = {
       sessions: arr(r.sessions),
       total: r.total,
     })),
-  tokenDaily: (days = 30) => get<DailyTokenBucket[]>(`/tokens/daily?days=${days}`).then(arr),
   conversationTokens: () =>
     get<ConvTokenSummary[]>("/tokens/conversations")
       .then(arr)
@@ -832,7 +818,6 @@ export const api = {
     post<{ seq: number; created_at: string; current: number }>(`/exploration/main-session/new${tq(task)}`),
 
   // ---- traffic / audit / report / chat ----
-  audit: (task?: string) => get<Audit>(`/audit${tq(task)}`),
   traffic: (
     page = 0,
     size = 100,
@@ -962,33 +947,8 @@ export const api = {
     return r.json() as Promise<{ attachments: ChatAttachment[] }>;
   },
   stopChat: (taskId: string) => post<{ status: string }>(`/tasks/${taskId}/chat/stop`, {}),
-  gc: (ttl = 86400) => post<{ removed: number }>(`/gc?ttl=${ttl}`, {}),
 
   // ---- LLM ----
-  getLLM: () =>
-    get<{
-      configured: boolean;
-      provider: string;
-      model: string;
-      base_url: string;
-      proxy?: string;
-      key_set: boolean;
-      rate_per_second?: number;
-      rate_per_minute?: number;
-      context_window_k?: number;
-      thinking_type?: string;
-      reasoning_effort?: string;
-    }>("/llm"),
-  setLLM: (
-    provider: string,
-    model: string,
-    base_url: string,
-    api_key: string,
-    rate_per_second = 0,
-    rate_per_minute = 0,
-    proxy = "",
-    context_window_k = 0,
-  ) => post("/llm", { provider, model, base_url, proxy, api_key, rate_per_second, rate_per_minute, context_window_k }),
   testLLM: (
     provider: string,
     model: string,
@@ -1074,16 +1034,12 @@ export const api = {
   agents: () => get<{ agents: Agent[] }>("/agents").then((r) => arr(r.agents)),
   getAgent: (key: string) => get<AgentDetail>(`/agents/${key}`),
   createAgent: (key: string, name: string, description = "") => post<Agent>("/agents", { key, name, description }),
-  updateAgent: (key: string, name: string, description = "") =>
-    patch<{ ok: boolean }>(`/agents/${key}`, { name, description }),
   deleteAgent: (key: string) => del<{ deleted: string }>(`/agents/${key}`),
 
   // ---- conversations (chat page) ----
   conversations: () => get<{ conversations: Conversation[] }>("/conversations").then((r) => arr(r.conversations)),
   createConversation: (agent_key: string, title = "", llm_profile_id?: number | null) =>
     post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null }),
-  updateConversation: (id: number, input: { title?: string; pinned?: boolean }) =>
-    patch<Conversation>(`/conversations/${id}`, input),
   renameConversation: (id: number, title: string) => patch<Conversation>(`/conversations/${id}`, { title }),
   pinConversation: (id: number, pinned: boolean) => patch<Conversation>(`/conversations/${id}`, { pinned }),
   updateConversationProfile: (id: number, llm_profile_id: number | null) =>
@@ -1148,13 +1104,8 @@ export const api = {
       trigger_max_parallel?: number;
     },
   ) => put<{ ok: boolean }>(`/agents/${key}/config`, patch),
-  agentPromptVersions: (key: string) =>
-    get<{ versions: PromptVersion[] }>(`/agents/${key}/prompts`).then((r) => arr(r.versions)),
-  agentVariables: (key: string) =>
-    get<{ variables: PromptVar[] }>(`/agents/${key}/variables`).then((r) => arr(r.variables)),
   previewAgentPrompt: (key: string, template: string, sample?: Record<string, string>) =>
     post<{ rendered: string; error?: string }>(`/agents/${key}/prompt/preview`, { template, sample }),
-  getAgentVisibility: (key: string) => get<{ mcp: number[]; skill: string[] }>(`/agents/${key}/visibility`),
   setAgentVisibility: (key: string, mcp: number[], skill: string[]) =>
     put<{ ok: boolean }>(`/agents/${key}/visibility`, { mcp, skill }),
 
@@ -1244,7 +1195,6 @@ export const api = {
     meta: { mcps?: string[]; description?: string; license?: string; compatibility?: string },
   ) => put<{ ok: boolean }>(`/skills/${name}/meta`, meta),
   createSkillDir: (skill: string, path: string) => post<{ dir: string }>(`/skills/${skill}/dirs`, { path }),
-  skillFiles: (name: string) => get<{ files: string[] }>(`/skills/${name}/files`).then((r) => r.files),
   readSkillFile: (name: string, file: string) =>
     get<{ content: string; file: string }>(`/skills/${name}/files/${file}`).then((r) => r.content),
   writeSkillFile: (name: string, file: string, content: string) =>
@@ -1296,7 +1246,6 @@ export const api = {
       `/intercept/history/${id}/execution${conversationId ? `?conversation=${conversationId}` : ""}`,
     ),
   interceptDetail: (id: number) => get<InterceptDetail>(`/intercept/history/${id}`),
-  interceptHistory: () => get<{ items: InterceptApprovalRow[] }>("/intercept/history").then((r) => arr(r.items)),
   interceptHistoryPage: (page = 1, size = 20, filter: InterceptApprovalFilter = {}) =>
     get<{ items: InterceptApprovalRow[]; total?: number }>(
       `/intercept/history?${interceptPageQuery(page, size, filter)}`,

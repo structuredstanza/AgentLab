@@ -15,9 +15,6 @@ package manifest
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -180,52 +177,6 @@ func (s *Set) All() []*Manifest {
 		out = append(out, s.byID[id])
 	}
 	return out
-}
-
-// ByCategory groups manifests for a plan.
-func (s *Set) ByCategory() map[Category][]*Manifest {
-	out := map[Category][]*Manifest{}
-	for _, m := range s.All() {
-		out[m.Category] = append(out[m.Category], m)
-	}
-	return out
-}
-
-// Load parses every *.toml file in dir. An invalid manifest fails the load: a
-// manifest that does not parse is worse than a missing one, because it would be
-// offered to an operator and then fail at run time.
-func Load(dir string) (*Set, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("read manifest dir: %w", err)
-	}
-	set := &Set{byID: map[string]*Manifest{}}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		m, err := LoadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", e.Name(), err)
-		}
-		if _, dup := set.byID[m.ID]; dup {
-			return nil, fmt.Errorf("%s: duplicate manifest id %q", e.Name(), m.ID)
-		}
-		set.byID[m.ID] = m
-		set.ids = append(set.ids, m.ID)
-	}
-	sort.Strings(set.ids)
-	return set, nil
-}
-
-// LoadFile parses one manifest and validates it.
-func LoadFile(path string) (*Manifest, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return Parse(string(data))
 }
 
 // Parse decodes and validates one manifest.

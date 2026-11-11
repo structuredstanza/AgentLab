@@ -3,7 +3,7 @@
 All fixtures are synthetic bodies written inline in this file and copied into a
 temporary snapshot directory. No deployment data is read.
 
-Run: cd deployment && python -m unittest test_export_traces
+Run: python3 -m unittest discover -s tests/python -p 'test_*.py'  (from the repository root)
 """
 
 import hashlib

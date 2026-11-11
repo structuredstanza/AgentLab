@@ -34,8 +34,8 @@ dev_start_egress "$DEV_TMP/artex" 127.0.0.1:8888 "$PWD/data/egress" "$DEV_TMP/eg
 # Backend (frontend not embedded). The number of concurrent work agents is configured in "System Settings".
 dev_launch - "$DEV_TMP/artex" -addr 127.0.0.1:8787 -proxy 127.0.0.1:8788
 
-# Frontend hot reload (Vite/Next dev server; /api is reverse-proxied to :8787).
-dev_launch - bash -c 'cd web && exec npm run dev'
+# Frontend hot reload (Next dev server on the documented :5173; /api is reverse-proxied to :8787).
+dev_launch - bash -c 'cd web && exec npm run dev -- -p 5173'
 
 echo "[dev] backend :8787 / recording proxy :8788 / egress proxy :8888 / frontend http://localhost:5173  (Ctrl-C to stop)"
 # Stop everything as soon as any child exits, instead of leaving a half-running stack.

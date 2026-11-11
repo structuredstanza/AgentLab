@@ -28,6 +28,9 @@ jobs:
   links:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: artex-global
     steps:
       - uses: actions/checkout@v4
       # python3 is installed by default on the ubuntu-latest runner, and the script uses only the standard library,

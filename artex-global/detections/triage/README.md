@@ -25,9 +25,10 @@ carries the same honest caveat as the matching Sigma rule or indicator row.
   `<data-dir>/traffic/_ca/mitmproxy-ca-cert.pem`, and the sibling `_index/index.sqlite` and `_blobs/`
   ([`traffic/traffic.go`](../../traffic/traffic.go); the data directory default is `data/` next to the binary).
   The CA is the trust anchor of an adversary-in-the-middle traffic recorder (ATT&CK T1557).
-- **Log markers** — the self-update egress UA `artex-selfupdate` (historical upstream marker) and
-  the platform-guard audit marker ([`guard/guard.go`](../../guard/guard.go); kept verbatim, so the
-  grep matches) in the log file(s) you point it at. Enrichment probes have no marker to look for: they
+- **Log markers** — the platform-guard audit marker
+  ([`guard/guard.go`](../../guard/guard.go); kept verbatim, so the
+  grep matches) in the log file(s) you point it at. ARTEX has no self-update client, so there is no
+  self-update egress User-Agent to look for. Enrichment probes have no marker to look for either: they
   present the engagement's masked browser identity, so nothing in a log distinguishes them. Rotated logs compressed as
   `.gz`/`.bz2`/`.xz` are decompressed and scanned too, so the host's log history is covered; a format with
   no standard-library codec (`.zst`/`.lz4`) is reported as **skipped** rather than silently treated as
@@ -100,7 +101,7 @@ The `--self-test` builds a synthetic host — a data directory with a planted CA
 log containing each marker; a port listing; and a captured process-environment dump — and asserts every
 check fires on it, then asserts a clean host, a benign log, and a corporate-proxy process produce **zero**
 findings (no false positives). It is wired into the
-[`detections` CI workflow](../../.github/workflows/detections.yml) and re-run by
+[`detections` CI workflow](../../../.github/workflows/detections.yml) and re-run by
 [`detections/tests/run-all.sh`](../tests/run-all.sh), so a change that breaks a check, or that drifts an
 indicator away from the source string it greps for, fails the merge gate. A detection you cannot run is
 only a claim.

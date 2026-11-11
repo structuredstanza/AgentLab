@@ -17,8 +17,8 @@
 #  - The norma User-Agent is only visible where traffic is plaintext HTTP or inspected
 #    at a TLS-terminating proxy / WAF. End-to-end TLS encrypts it.
 #  - A static User-Agent can be changed by the operator; its absence does NOT imply safety.
-#  - The self-update User-Agent "artex-selfupdate" travels over HTTPS to GitHub and is not
-#    network-observable (TLS SNI alone is too common to alert on) - intentionally omitted.
+#  - ARTEX has no self-update client, so there is no self-update User-Agent to match
+#    (intentionally omitted).
 #  - The audit-control marker is an operator-side log artifact, not target-facing traffic -
 #    detect it with ../sigma/artex_guard_audit_framing.yml instead.
 
