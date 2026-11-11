@@ -31,9 +31,6 @@ func TestHasActiveIntentCountsPaused(t *testing.T) {
 	if moving, err := es.HasOpenOrRunningIntent(); err != nil || moving {
 		t.Fatalf("paused-only exploration: in-flight=%v err=%v, want false", moving, err)
 	}
-	if n, err := es.CountPausedIntents(); err != nil || n != 1 {
-		t.Fatalf("paused count=%d err=%v, want 1", n, err)
-	}
 	if err := es.SetIntentState(intentID, "stopped"); err != nil {
 		t.Fatal(err)
 	}

@@ -354,3 +354,39 @@ func TestTaskReflectionsRoute(t *testing.T) {
 		t.Fatalf("unauthenticated status=%d want 401", code)
 	}
 }
+
+// TestKnowledgeListReportsRelaxedQuery: the list response carries the relaxed
+// flag so a UI or script can tell a widened result from the filter's answer.
+func TestKnowledgeListReportsRelaxedQuery(t *testing.T) {
+	m, s, token := memoryTestServer(t)
+	defer func() { _, _ = m.pg.Exec(`DELETE FROM knowledge_entries WHERE title LIKE 'mtest%'`) }()
+
+	code, out := memoryAPI(t, s, token, http.MethodPost, "/api/knowledge",
+		`{"scope":"global","kind":"note","title":"mtestrelaxedprobe","body":"the egress probe retries"}`)
+	if code != http.StatusOK {
+		t.Fatalf("create status=%d body=%v", code, out)
+	}
+
+	// Both words are in the entry: the AND pass answers, nothing is relaxed.
+	code, out = memoryAPI(t, s, token, http.MethodGet,
+		"/api/knowledge?scope=global&q=mtestrelaxedprobe%20retries", "")
+	if code != http.StatusOK {
+		t.Fatalf("exact list status=%d body=%v", code, out)
+	}
+	if relaxed, ok := out["relaxed"].(bool); !ok || relaxed {
+		t.Fatalf("exact list relaxed=%v want false: %v", out["relaxed"], out)
+	}
+
+	// The second word matches nothing, so the list widens and says so.
+	code, out = memoryAPI(t, s, token, http.MethodGet,
+		"/api/knowledge?scope=global&q=mtestrelaxedprobe%20nosuchword", "")
+	if code != http.StatusOK {
+		t.Fatalf("relaxed list status=%d body=%v", code, out)
+	}
+	if relaxed, ok := out["relaxed"].(bool); !ok || !relaxed {
+		t.Fatalf("relaxed list relaxed=%v want true: %v", out["relaxed"], out)
+	}
+	if n, _ := out["count"].(float64); n < 1 {
+		t.Fatalf("relaxed list returned nothing: %v", out)
+	}
+}

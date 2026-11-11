@@ -495,11 +495,13 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	fr, _ := t.ts.Frontier(openIntentsCap) // priority DESC, id ASC — the top N highest-priority items; the true total is in frontier_open
 	out["open_intents"] = compactIntents(fr, parentsOf, yieldsOf)
 	all, _ := t.ts.ListByKind(db.KindIntent, 300)
-	var running, recentDone []*db.Node
+	var running, paused, recentDone []*db.Node
 	for _, n := range all {
 		switch n.State {
 		case "running":
 			running = append(running, n)
+		case "paused":
+			paused = append(paused, n) // waiting on the operator (ask_operator): in play, not a stalled frontier
 		case "done", "blocked", "exhausted":
 			if hidden(n.ID) {
 				continue // in a cold_digest and still cold — shown via cold_digests (§6.2)
@@ -508,6 +510,14 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf)
+	// paused_intents: an intent parked on a human (ask_operator). It is in play,
+	// not a stalled frontier, so it must be visible: the flat open/running lists
+	// would otherwise make a paused engagement read as "nothing is happening".
+	const pausedIntentsCap = 12
+	if len(paused) > pausedIntentsCap {
+		paused = paused[:pausedIntentsCap] // newest first, like recent_done_intents
+	}
+	out["paused_intents"] = compactIntents(paused, parentsOf, yieldsOf)
 	// done_intents_total: total count of finished intents (done/blocked/exhausted), parallel to recent_done_intents
 	// naming — the latter is merely its latest-window truncated view. Showing the two keys side by side makes them self-describing: "what is seen is N/total",
 	// so the planner, when deduplicating, does not mistake "not displayed" for "never dispatched", with no need for a separate explanation in the prompt.

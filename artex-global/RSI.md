@@ -87,9 +87,12 @@ or a skill; both stay inside Loop B (data an agent may read), never Loop C.
 
 - **Knowledge base** (`knowledge_entries`). Searchable technique, tool, opsec,
   indicator, playbook, lead and note entries. Retrieval is Postgres full-text
-  search over title, tags and body: the query is tokenised and the terms are
+  search over title, tags and body with the `english` configuration, so an
+  inflected word still matches: the query is tokenised and the terms are
   ORed, ranked by overlap, because ANDing a natural-language question against
-  one entry returns nothing. Scopes are `global`, `environment`, `company` and
+  one entry returns nothing. The operator's own list filter keeps AND and falls
+  back to the ORed form, flagged `relaxed`, only when AND finds nothing.
+  Scopes are `global`, `environment`, `company` and
   `task`; `environment` holds what is true of the platform the agents run on
   (proxy behaviour, network shape) rather than of a target, carries an
   `env:<name>` tag, and its adopted entries are injected at task start whatever

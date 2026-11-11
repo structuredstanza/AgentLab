@@ -462,15 +462,23 @@ WHERE ip = $1 OR domain = lower($1)`, host)
 	return err
 }
 
-// ClearUnreachable clears the liveness marker after a successful contact.
+// ClearUnreachable clears the liveness marker after a successful contact. On a
+// transaction-scoped store the update runs on that transaction: the clear must
+// commit with the write that proved the host answered, and a separate
+// connection would wait forever on that transaction's own uncommitted row.
 func (s *AssetStore) ClearUnreachable(host string) error {
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return nil
 	}
-	_, err := s.db.Exec(`
+	const q = `
 UPDATE assets SET last_unreachable_at = NULL
-WHERE last_unreachable_at IS NOT NULL AND (ip = $1 OR domain = lower($1))`, host)
+WHERE last_unreachable_at IS NOT NULL AND (ip = $1 OR domain = lower($1))`
+	if s.tx != nil {
+		_, err := s.tx.Exec(q, host)
+		return err
+	}
+	_, err := s.db.Exec(q, host)
 	return err
 }
 

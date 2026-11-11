@@ -524,6 +524,117 @@ func TestListKnowledgeOwnerFilters(t *testing.T) {
 	}
 }
 
+// TestListKnowledgeRelaxesInsteadOfReturningNothing: the operator's words are
+// ANDed so the list narrows as they type, but a phrase that matches nothing
+// must degrade to the shared OR tokenizer and say the result is relaxed rather
+// than answer an empty page.
+func TestListKnowledgeRelaxesInsteadOfReturningNothing(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	word := fmt.Sprintf("relax%d", tk.ID)
+	entry := mustAddKnowledge(t, d, KnowledgeInput{
+		TaskID: tk.ID, Kind: "technique", Source: "operator",
+		Title: "egress probe " + word,
+		Body:  "The egress probe retries three times before it gives up.",
+	})
+
+	// Every word is in the entry, so the exact AND pass answers.
+	exact, relaxed, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{Query: word + " retries"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relaxed {
+		t.Fatalf("an exact match was reported as relaxed: %+v", exact)
+	}
+	if len(exact) != 1 || exact[0].ID != entry.ID {
+		t.Fatalf("exact AND pass wrong: %+v", exact)
+	}
+
+	// The extra word exists nowhere, so AND matches nothing; the list must
+	// retry with the ORed terms and flag the widened answer.
+	wide, relaxed, err := d.ListKnowledgeMatch(ctx, KnowledgeFilter{Query: word + " nosuchword"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !relaxed {
+		t.Fatalf("no exact match but relaxed=false: %+v", wide)
+	}
+	if len(wide) != 1 || wide[0].ID != entry.ID {
+		t.Fatalf("relaxed pass wrong: %+v", wide)
+	}
+	// The plain call degrades the same way; only the flag needs the new one.
+	plain, err := d.ListKnowledge(ctx, KnowledgeFilter{Query: word + " nosuchword"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != 1 || plain[0].ID != entry.ID {
+		t.Fatalf("ListKnowledge did not degrade: %+v", plain)
+	}
+}
+
+// TestKnowledgeSearchStemsInflections: the tsvector uses the english
+// configuration, so a query word finds the entry that spells it differently.
+func TestKnowledgeSearchStemsInflections(t *testing.T) {
+	d := memoryTestDB(t)
+	ctx := context.Background()
+	tk := memoryTask(t, d)
+	entry := mustAddKnowledge(t, d, KnowledgeInput{
+		TaskID: tk.ID, Kind: "note", Source: "operator",
+		Title: fmt.Sprintf("stem%d egress probe", tk.ID),
+		Body:  "Measured the reachability of the proxy through the tunnel.",
+	})
+
+	hits, err := d.SearchKnowledge(ctx, tk.ID, "reachable", nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.ID == entry.ID {
+			return
+		}
+	}
+	t.Fatalf("stemmed query missed the entry: %+v", hits)
+}
+
+// knowledgeTSVDefinition reads the generated column's expression and attnum. A
+// rebuilt column gets a new attnum, so an unchanged one proves no rewrite.
+func knowledgeTSVDefinition(t *testing.T, d *DB) (string, int) {
+	t.Helper()
+	var expr string
+	var attnum int
+	err := d.QueryRow(`SELECT pg_get_expr(ad.adbin, ad.adrelid), a.attnum
+FROM pg_attribute a
+JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+WHERE a.attrelid = 'knowledge_entries'::regclass
+  AND a.attname = 'tsv' AND a.attgenerated = 's'`).Scan(&expr, &attnum)
+	if err != nil {
+		t.Fatalf("read tsv definition: %v", err)
+	}
+	return expr, attnum
+}
+
+// TestKnowledgeTSVMigrationIsIdempotent: schema.sql runs on every start, so the
+// english rebuild must happen once. The column is already english by the time
+// this runs; a second application must leave it, and its attnum, untouched.
+func TestKnowledgeTSVMigrationIsIdempotent(t *testing.T) {
+	d := memoryTestDB(t)
+	expr, attnum := knowledgeTSVDefinition(t, d)
+	if !strings.Contains(expr, "'english'") {
+		t.Fatalf("tsv is not on the english configuration: %s", expr)
+	}
+	if _, err := d.Exec(schemaSQL); err != nil {
+		t.Fatalf("second schema run: %v", err)
+	}
+	expr2, attnum2 := knowledgeTSVDefinition(t, d)
+	if attnum2 != attnum {
+		t.Fatalf("schema re-run rebuilt the tsv column (attnum %d -> %d)", attnum, attnum2)
+	}
+	if expr2 != expr {
+		t.Fatalf("tsv expression changed:\n%s\n%s", expr, expr2)
+	}
+}
+
 // TestSearchKnowledgeWithoutCompanies covers the empty-company edge: a task
 // with no company association still sees adopted global entries.
 func TestSearchKnowledgeWithoutCompanies(t *testing.T) {

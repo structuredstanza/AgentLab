@@ -622,7 +622,14 @@ func (e *Engine) doHTTP(taskID, id int64, rawURL string) {
 			PageTitle:     title,
 			TaskID:        taskID,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		// The target answered, so any "unreachable" marker on it is stale. The
+		// clear runs on this transaction on purpose: the upsert above locks the
+		// asset row, so the same UPDATE over the pool would wait on our own
+		// uncommitted write until the closure returns - never.
+		return sc.ClearUnreachable(host)
 	})
 }
 

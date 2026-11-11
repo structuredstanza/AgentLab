@@ -1568,9 +1568,9 @@ CREATE TABLE IF NOT EXISTS knowledge_entries (
     -- know the origin scope when the task row is gone.
     origin_task_id BIGINT,
     tsv            TSVECTOR GENERATED ALWAYS AS (
-        setweight(to_tsvector('simple', title), 'A')
-     || setweight(to_tsvector('simple', knowledge_tags_text(tags)), 'B')
-     || setweight(to_tsvector('simple', body), 'C')
+        setweight(to_tsvector('english', title), 'A')
+     || setweight(to_tsvector('english', knowledge_tags_text(tags)), 'B')
+     || setweight(to_tsvector('english', body), 'C')
     ) STORED,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1581,6 +1581,31 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_task  ON knowledge_entries(task_id);
 -- Deduplication inside one task: the same title written twice is one entry.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_task_title
     ON knowledge_entries(task_id, lower(title)) WHERE scope='task';
+-- The knowledge tsvector used the 'simple' configuration, which does not stem:
+-- 'reachability' never matched 'reachable' and 'proxies' never matched 'proxy',
+-- the vocabulary this memory is written in. Rebuild the generated column once,
+-- and only while its stored expression still names 'simple' - a rebuild rewrites
+-- the table and gives the column a new attnum, so schema.sql (Exec'd on every
+-- start) must not do it again. Dropping the column drops idx_knowledge_tsv.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute a
+        JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+        WHERE a.attrelid = 'knowledge_entries'::regclass
+          AND a.attname = 'tsv'
+          AND a.attgenerated = 's'
+          AND pg_get_expr(ad.adbin, ad.adrelid) LIKE '%''simple''%'
+    ) THEN
+        ALTER TABLE knowledge_entries DROP COLUMN tsv;
+        ALTER TABLE knowledge_entries ADD COLUMN tsv TSVECTOR GENERATED ALWAYS AS (
+            setweight(to_tsvector('english', title), 'A')
+         || setweight(to_tsvector('english', knowledge_tags_text(tags)), 'B')
+         || setweight(to_tsvector('english', body), 'C')
+        ) STORED;
+        CREATE INDEX idx_knowledge_tsv ON knowledge_entries USING GIN(tsv);
+    END IF;
+END $$;
 -- Existing databases: widen the scope and kind sets in place.
 ALTER TABLE knowledge_entries DROP CONSTRAINT IF EXISTS knowledge_entries_scope_check;
 ALTER TABLE knowledge_entries ADD CONSTRAINT knowledge_entries_scope_check

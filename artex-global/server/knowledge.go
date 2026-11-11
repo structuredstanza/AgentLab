@@ -64,6 +64,11 @@ func writeKnowledgeError(w http.ResponseWriter, err error, action string) {
 // listKnowledge serves GET /api/knowledge. Without task_id it is the owner
 // view over every scope; with task_id it is that task's visibility lens, and a
 // query switches to ranked full-text search inside the same lens.
+//
+// A filtered list answers {"entries": [...], "count": n, "relaxed": bool}.
+// relaxed is true when the query matched no entry exactly and the store ORed
+// its terms instead, so a UI can say "no exact match; showing related" and a
+// script knows the rows are a widened set rather than the filter's answer.
 func (s *Server) listKnowledge(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	scope := strings.TrimSpace(q.Get("scope"))
@@ -119,14 +124,14 @@ func (s *Server) listKnowledge(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	entries, err := s.m.PG().ListKnowledge(r.Context(), db.KnowledgeFilter{
+	entries, relaxed, err := s.m.PG().ListKnowledgeMatch(r.Context(), db.KnowledgeFilter{
 		Scope: scope, Kind: kind, Status: status, Query: query, TaskID: taskID, Limit: int(limit),
 	})
 	if err != nil {
 		writeKnowledgeError(w, err, "list")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"entries": entries, "count": len(entries)})
+	writeJSON(w, 200, map[string]any{"entries": entries, "count": len(entries), "relaxed": relaxed})
 }
 
 // createKnowledge serves POST /api/knowledge: the operator writes any scope

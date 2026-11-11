@@ -19,7 +19,7 @@ import (
 // visibility with an explicit promotion step, so a candidate written during
 // one engagement can never leak into another.
 //
-// Retrieval is Postgres full-text search (simple config, websearch_to_tsquery,
+// Retrieval is Postgres full-text search (english config, websearch_to_tsquery,
 // ts_rank_cd), not pgvector.
 // shortcut: keyword recall only, no semantic search; upgrade to pgvector when
 // an embedding provider is configured.
@@ -432,7 +432,7 @@ func MemoryTokens(q string) []string {
 }
 
 // MemorySearchTerms turns a natural-language query into the tsquery string to
-// pass to websearch_to_tsquery('simple', ...). websearch_to_tsquery ANDs every
+// pass to websearch_to_tsquery('english', ...). websearch_to_tsquery ANDs every
 // whitespace term, so a sentence-shaped query ("the mail host exposed a
 // writable socket") would demand a single entry containing all of it and match
 // nothing; the terms are ORed instead and ts_rank_cd still ranks an entry
@@ -482,7 +482,7 @@ LIMIT $4`, companies, taskID, kinds, limit)
 	} else {
 		rows, err = d.QueryContext(ctx, `
 SELECT `+knowledgeColumns+`, ts_rank_cd(tsv, q)
-FROM knowledge_entries, websearch_to_tsquery('simple', $3) AS q
+FROM knowledge_entries, websearch_to_tsquery('english', $3) AS q
 WHERE status <> 'retired'
   AND ((scope='global' AND status='adopted')
     OR (scope='environment' AND status='adopted')
@@ -513,8 +513,40 @@ LIMIT $5`, companies, taskID, q, kinds, limit)
 
 // ListKnowledge lists entries for the operator UI. When f.TaskID is set the
 // same visibility rule as SearchKnowledge applies; otherwise every scope is
-// listed (owner view).
+// listed (owner view). A query narrows the list by ANDing its words; see
+// ListKnowledgeMatch for what happens when that matches nothing.
 func (d *DB) ListKnowledge(ctx context.Context, f KnowledgeFilter) ([]KnowledgeEntry, error) {
+	entries, _, err := d.ListKnowledgeMatch(ctx, f)
+	return entries, err
+}
+
+// ListKnowledgeMatch is ListKnowledge plus whether the query was relaxed. The
+// operator's words are ANDed first, because a browse filter should narrow as
+// they type; when that matches nothing the shared OR tokenizer runs instead,
+// so the operator sees related entries rather than an empty page and relaxed
+// says the result is not an exact match. relaxed is false when there was no
+// query, when the exact pass found something, or when the query has no second
+// form to try.
+func (d *DB) ListKnowledgeMatch(ctx context.Context, f KnowledgeFilter) ([]KnowledgeEntry, bool, error) {
+	query := strings.TrimSpace(f.Query)
+	entries, err := d.listKnowledge(ctx, f, query)
+	if err != nil || len(entries) > 0 || query == "" {
+		return entries, false, err
+	}
+	relaxed := MemorySearchTerms(query)
+	if relaxed == query {
+		return entries, false, nil
+	}
+	entries, err = d.listKnowledge(ctx, f, relaxed)
+	if err != nil {
+		return nil, false, err
+	}
+	return entries, true, nil
+}
+
+// listKnowledge runs one list pass. tsquery goes to
+// websearch_to_tsquery('english', ...); "" means no text filter.
+func (d *DB) listKnowledge(ctx context.Context, f KnowledgeFilter, tsquery string) ([]KnowledgeEntry, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 50
@@ -548,9 +580,8 @@ func (d *DB) ListKnowledge(ctx context.Context, f KnowledgeFilter) ([]KnowledgeE
 	if f.Status != "" {
 		add(`status = $%d`, f.Status)
 	}
-	q := strings.TrimSpace(f.Query)
-	if q != "" {
-		add(`tsv @@ websearch_to_tsquery('simple', $%d)`, q)
+	if tsquery != "" {
+		add(`tsv @@ websearch_to_tsquery('english', $%d)`, tsquery)
 	}
 	args = append(args, limit)
 	sqlText := `SELECT ` + knowledgeColumns + ` FROM knowledge_entries`

@@ -1177,16 +1177,6 @@ WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running'))`, s.e
 	return exists, err
 }
 
-// CountPausedIntents counts intents waiting on the operator (ask_operator). The
-// planner prompt names them so a paused intent is not mistaken for a stalled
-// frontier with nothing in play.
-func (s *ExplorationStore) CountPausedIntents() (int, error) {
-	var n int
-	err := s.db.QueryRow(`SELECT count(*) FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state='paused'`, s.expID).Scan(&n)
-	return n, err
-}
-
 // HasOpenGoal reports whether this exploration still has any goal in state 'open'.
 // false ⇒ all targets are met/abandoned (or this task has no targets) ⇒ enter the goalless (manual direct-dispatch) branch:
 // The planner has stopped running; whether the task is finished is now determined by whether the frontier has drained. Both met and abandoned count as "settled".
