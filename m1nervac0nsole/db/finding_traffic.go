@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -335,6 +336,9 @@ type RecordedFinding struct {
 	FindingID int64           `json:"finding_id,string"`
 	NodeID    int64           `json:"finding_node_id,string"`
 	Traffic   *FindingTraffic `json:"traffic"`
+	// Created is false when the record folded into an existing finding of the
+	// same name, so the caller can say "updated" instead of "recorded".
+	Created bool `json:"created"`
 }
 
 // ctx is passed in by the caller as the context for this transaction (rather than being obtained internally via context.Background):
@@ -363,6 +367,72 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 	}
 	payload, _ := json.Marshal(map[string]any{"vulnclass": in.VulnClass, "name": in.Name, "severity": in.Severity, "summary": in.Summary, "evidence": map[string]any{"by": in.Worker, "poc": in.Evidence}})
 	out := &RecordedFinding{}
+
+	// The asset set is part of a finding's identity: the same vulnerability on
+	// two hosts is two findings. Sort it so a repeat in another order still
+	// matches the row it belongs to.
+	assets := append([]int64(nil), in.AssetIDs...)
+	sort.Slice(assets, func(i, j int) bool { return assets[i] < assets[j] })
+	if assets == nil {
+		assets = []int64{}
+	}
+	assetsJSON, _ := json.Marshal(assets)
+
+	// A repeat of the same finding folds into the row that already exists. The
+	// planner and the workers converge on one vulnerability from different
+	// intents, and a second row inflates the report and splits the evidence.
+	// Matching is by task and case-insensitive name; a finding without a name
+	// is never folded, because an empty name is not an identity.
+	//
+	// The status is deliberately untouched: a human's false-positive or resolved
+	// decision outlives a re-observation, and reopening it would make the
+	// disposition meaningless.
+	var existingID, existingNode int64
+	if in.TaskID > 0 && strings.TrimSpace(in.Name) != "" {
+		err := tx.QueryRow(`SELECT id, COALESCE(node_id,0) FROM findings
+WHERE task_id=$1 AND lower(name)=lower($2) AND asset_ids=$3::jsonb ORDER BY id LIMIT 1 FOR UPDATE`,
+			in.TaskID, in.Name, string(assetsJSON)).
+			Scan(&existingID, &existingNode)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	if existingID > 0 {
+		// evidence_version is the *traffic* evidence version: only a binding
+		// change moves it, and the archive gate reads 0 as "no proof bound".
+		// Refreshing the text must not touch it, or an unbound finding would
+		// pass a gate that exists to stop exactly that.
+		if _, err := tx.Exec(`UPDATE findings SET vulnclass=$2, severity=$3, summary=$4, evidence=$5, worker=$6,
+asset_ids=$7 WHERE id=$1`, existingID, in.VulnClass, in.Severity, in.Summary, in.Evidence, in.Worker, string(assetsJSON)); err != nil {
+			return nil, err
+		}
+		out.FindingID, out.NodeID = existingID, existingNode
+		if out.NodeID > 0 {
+			// The exploration node renders the same finding in the graph, so it
+			// must carry the newest observation too.
+			if _, err := tx.Exec(`UPDATE exploration_nodes SET payload=$2 WHERE id=$1`, out.NodeID, string(payload)); err != nil {
+				return nil, err
+			}
+			for _, asset := range in.AssetIDs {
+				if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id,asset_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, out.NodeID, asset); err != nil {
+					return nil, err
+				}
+			}
+			if in.IntentID > 0 {
+				if _, err := tx.Exec(`INSERT INTO exploration_edges(exploration_id,src_id,rel,dst_id)
+VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, in.ExplorationID, in.IntentID, RelYields, out.NodeID); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if err := AddFindingTrafficTx(tx, out.FindingID, prepared); err != nil {
+			return nil, err
+		}
+		var err error
+		out.Traffic, err = FindingTrafficTx(tx, out.FindingID)
+		return out, err
+	}
+
 	if err := tx.QueryRow(`INSERT INTO exploration_nodes(exploration_id,kind,payload,priority,state,origin)
 VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string(payload), in.Worker).Scan(&out.NodeID); err != nil {
 		return nil, err
@@ -377,13 +447,9 @@ VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string
 			return nil, err
 		}
 	}
-	assets := in.AssetIDs
-	if assets == nil {
-		assets = []int64{}
-	}
-	raw, _ := json.Marshal(assets)
+	out.Created = true
 	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids)
-VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw)).Scan(&out.FindingID); err != nil {
+VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(assetsJSON)).Scan(&out.FindingID); err != nil {
 		return nil, err
 	}
 	// Register a push event within the **same transaction**: once committed, it guarantees that the vulnerability record is persisted and the push task exists.

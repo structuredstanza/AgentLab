@@ -1490,7 +1490,14 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			}
 		}
 		raw, _ := json.Marshal(result)
-		return actool.Text(fmt.Sprintf("finding recorded: %d\n%s", recorded.NodeID, raw)), nil
+		// The first line stays "finding recorded: <node id>": the reporter trigger
+		// and update_finding_report both parse that prefix. A folded repeat says
+		// so on the next line instead, which the model reads and the parsers ignore.
+		head := fmt.Sprintf("finding recorded: %d", recorded.NodeID)
+		if !recorded.Created {
+			head += "\nnote: this matched an existing finding of the same name and assets; that row was refreshed, not duplicated"
+		}
+		return actool.Text(head + "\n" + string(raw)), nil
 	})
 }
 

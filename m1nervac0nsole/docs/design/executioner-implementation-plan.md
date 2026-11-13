@@ -109,7 +109,7 @@ Risk: the planner already invents intents - seeded intents must not be duplicate
 ## Plan E - Smaller pulls (each S, independent)
 
 E1 Server-computed command preview for tool manifests: `POST /api/tools/{id}/preview {target, params}` -> `{program, args}` from the same resolver that executes (`manifest/render.go`); a schema-driven parameter form in the UI. Test: preview equals the executed argv for every golden case.
-E2 Findings upsert rule: dedupe on (target, lower(title)), refresh evidence, never reopen a status a human set; return `created`.
+E2 Findings upsert rule: dedupe on (target, lower(title)), refresh evidence, never reopen a status a human set; return `created`. **Shipped**: `db.RecordFindingTx` folds on task + case-insensitive name + the sorted asset set, refreshes the row and its exploration node, adds the new intent's link, leaves `status` and `evidence_version` untouched (the latter counts bound traffic), and `RecordedFinding.Created` tells the tool to say "updated".
 E3 Scope rule model: `{effect, pattern, note}`; exclude wins, longest include wins, no match is `unknown`, not out. Port the ~120-line matcher from `/tmp/executioner/packages/protocol/src/scope.ts` with its tests. Decide first how it composes with the existing `scope/` boundary hook.
 E4 Engagement as an MCP server: `POST /mcp` (JSON-RPC, `initialize` / `tools/list` / `tools/call`), per-session scoped token, profile allow-list enforced in both list and call. Start read-only (`list_assets`, `get_asset`, `list_findings`, `list_scope`) then record tools. Needs a security review before any write tool.
 E5 Prompt text: adapt the impact gate ("as an attacker I could ...") and the reporter's structure into the worker and finding-report prompts.

@@ -94,7 +94,11 @@ func TestEvidenceBindingLifecycle(t *testing.T) {
 	if len(again.Bindings) != 3 || again.Version != 1 || again.Bindings[1].Note != "proof" {
 		t.Fatalf("duplicate changed bindings: %+v", again)
 	}
-	other, err := s.Record(ctx, in, []db.TrafficRef{refs[2]})
+	// A second finding with a different name: a repeat of the same name now
+	// folds into the first row, so sharing has to be shown across two findings.
+	second := in
+	second.Name = "second finding"
+	other, err := s.Record(ctx, second, []db.TrafficRef{refs[2]})
 	if err != nil {
 		t.Fatal(err)
 	}
