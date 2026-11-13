@@ -2,10 +2,29 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 )
+
+// tailBuffer keeps the last maxTail bytes written to it. A stdio server that
+// exits during the handshake otherwise reports only "connection closed"; its
+// stderr is the only place that says why.
+type tailBuffer struct{ buf []byte }
+
+const maxTail = 4096
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > maxTail {
+		t.buf = append(t.buf[:0], t.buf[len(t.buf)-maxTail:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return strings.TrimSpace(string(t.buf)) }
 
 // stdioCloser shuts down a spawned MCP server process and its pipes.
 type stdioCloser struct {
@@ -37,6 +56,8 @@ func NewStdioClient(ctx context.Context, server, command string, env map[string]
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}
+	var stderr tailBuffer
+	cmd.Stderr = &stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -55,6 +76,9 @@ func NewStdioClient(ctx context.Context, server, command string, env map[string]
 	}
 	if err := c.initialize(ctx); err != nil {
 		c.Close()
+		if s := stderr.String(); s != "" {
+			return nil, fmt.Errorf("%w: %s", err, s)
+		}
 		return nil, err
 	}
 	return c, nil
