@@ -1256,6 +1256,37 @@ export interface MissingSkill {
   last_used?: string;
 }
 
+// ---- Tool manifests (the shipped CLI toolbox) ----
+// One declared tool: its parameters drive both the form and the preview, and
+// the preview is the argv the executor would run (same resolver).
+export interface ToolManifestParam {
+  type: "string" | "bool" | "enum";
+  label?: string;
+  placeholder?: string;
+  description?: string;
+  default?: string;
+  options?: string[];
+}
+
+export interface ToolManifest {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  accepts: string[];
+  requires: string[];
+  available: boolean;
+  params: Record<string, ToolManifestParam>;
+  timeout_seconds: number;
+}
+
+export interface ToolPreview {
+  program: string;
+  args: string[];
+  effective: Record<string, string>;
+  available: boolean;
+}
+
 // ---- Tools (built-in tool catalog) ----
 // key + handler live in Go; only these fields are page-editable. system tools lock
 // the key and the parameter *structure* (name/type/required) — the per-param

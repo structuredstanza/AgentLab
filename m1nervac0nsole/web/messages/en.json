@@ -2048,6 +2048,21 @@
     "statusNotConnected": "not connected yet",
     "connectFailed": "connect failed"
   },
+  "toolboxPage": {
+    "title": "Toolbox",
+    "subtitle": "The command-line tools the agents can dispatch, with the exact argv each one runs. Preview only: agents run them, and the scope guard and rate gate apply then.",
+    "search": "Search tools",
+    "loading": "Loading...",
+    "empty": "No tool matches",
+    "selectTool": "Select a tool to preview its command.",
+    "notInstalled": "not installed",
+    "accepts": "accepts: {kinds}",
+    "target": "Target",
+    "targetPlaceholder": "host, IP, CIDR or URL",
+    "default": "default {value}",
+    "preview": "Command preview",
+    "previewHint": "Enter a target to see the command."
+  },
   "toolsPage": {
     "title": "Tools",
     "subtitle": "System tool descriptions and bindings, plus custom tools (command/script/http)",

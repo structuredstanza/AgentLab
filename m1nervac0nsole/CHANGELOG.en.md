@@ -51,6 +51,10 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - The browser is scope-judged on what it is told, not on what it does. `browser_navigate` passes the scope guard because it carries a URL; a click, a form submission or `browser_evaluate` can still reach a host the task excludes. The recorder captures that traffic and the browser skill forbids directing the browser outside the boundary, but the guard does not enforce it. Accepted because the browser is opt-in for an engagement; enforcing it belongs at the proxy, which sees every host before the page does.
 - Report why an MCP server failed to start. A stdio server that exits during the handshake reported only `connection closed`, with its stderr discarded; the child's last 4 KiB of stderr now rides in the error and on the MCP page.
 
+### Toolbox
+
+- Show the exact command before it runs. `POST /api/tools/{id}/preview` renders the argv the executor would build - same resolver, manifest defaults included - without running anything, and the new **Toolbox** page lists the shipped manifests with a schema-driven form and a live preview. A preview cannot drift from execution because both call `Effective` then `Resolve`; the executor only adds the scope check and the rate gate.
+
 ### Findings
 
 - Fold a repeated finding into its row. The planner and the workers converge on one vulnerability from different intents, and a second row split the evidence between them and inflated the report. A repeat now matches on task, case-insensitive name and asset set (so the same issue on two hosts stays two findings, and the asset order does not matter), refreshes severity, summary, evidence and assets, adds the new intent's link and anchors, and leaves `evidence_version` alone, because that counts bound traffic and the archive gate reads 0 as "no proof bound". The status is never touched: a human's false positive or resolved decision outlives a re-observation. A finding without a name is never folded, because an empty name is not an identity.

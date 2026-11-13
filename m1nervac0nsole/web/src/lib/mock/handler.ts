@@ -2781,6 +2781,41 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
 
   // ── tools ──
   if (path === "/tools" && m === "GET") return { tools: D.tools };
+  if (path === "/tool-manifests" && m === "GET")
+    return {
+      tools: [
+        {
+          id: "nmap",
+          name: "Nmap",
+          description: "Port and service discovery, parsed from XML output",
+          category: "scan",
+          accepts: ["ip", "cidr", "domain"],
+          requires: ["nmap"],
+          available: true,
+          params: {
+            ports: { type: "string", label: "Ports", default: "-", placeholder: "22,80,443 or -" },
+            service: { type: "bool", label: "Service detection", default: "true" },
+            timing: { type: "enum", label: "Timing template", default: "T4", options: ["T2", "T3", "T4"] },
+          },
+          timeout_seconds: 900,
+        },
+      ],
+    };
+  if (seg[0] === "tools" && seg[2] === "preview")
+    return {
+      program: "nmap",
+      args: [
+        "-oX",
+        "-",
+        "-p",
+        String((b.params as Record<string, string>)?.ports ?? "-"),
+        "-T4",
+        "-sV",
+        String(b.target ?? ""),
+      ],
+      effective: { ports: "-", service: "true", timing: "T4" },
+      available: true,
+    };
   if (path === "/tools/custom" && m === "POST") return { key: String(b.key ?? "custom-tool") };
   if (path === "/tools/custom/test")
     return { output: "(demo) This is an example of tool execution output.", is_error: false };

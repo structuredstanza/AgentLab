@@ -21,6 +21,13 @@ import { PlanProposalPreview } from "./plan-proposal-preview";
 // applying a plan is the operator's decision on this page.
 const DRAFTER_AGENT = "drafter";
 
+// pickDrafterConversation returns the drafter thread bound to this task, or
+// null. A thread bound to another task is never reused: two engagements would
+// share one history, and the tools take their task from the binding.
+export function pickDrafterConversation(list: Conversation[], taskId: number): Conversation | null {
+  return list.find((c) => c.agent_key === DRAFTER_AGENT && c.task_id === taskId) ?? null;
+}
+
 // The curator pane (system/memory/_components/curator-chat.tsx) is hardcoded to
 // the curator agent and its own i18n namespace, so it cannot be reused as-is.
 // This is the same conversation-tail loop with the drafter key and no memory
@@ -44,8 +51,7 @@ function DrafterChat({ taskId }: { taskId: string }) {
     api
       .conversations()
       .then((list) => {
-        const bound = list.find((c) => c.agent_key === DRAFTER_AGENT && c.task_id === Number(taskId));
-        if (live) setConversation(bound ?? null);
+        if (live) setConversation(pickDrafterConversation(list, Number(taskId)));
       })
       .catch(() => {
         /* a failure just leaves the draft state */

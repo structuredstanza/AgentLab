@@ -92,6 +92,52 @@ func binaryPresent(bins []string) bool {
 	return true
 }
 
+// previewToolManifest renders the argv the executor would run, without running
+// it. Both paths call the same resolver (Effective then Resolve), so a preview
+// cannot drift from execution; the only difference is that the executor also
+// checks scope and the rate gate first.
+func (s *Server) previewToolManifest(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("key")
+	m := manifestTools.Get(id)
+	if m == nil {
+		writeErr(w, 404, fmt.Sprintf("unknown tool %q", id))
+		return
+	}
+	var req struct {
+		Target string         `json:"target"`
+		Params map[string]any `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(req.Target) == "" {
+		writeErr(w, 400, "target is required")
+		return
+	}
+	params, err := paramStrings(req.Params)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	effective, err := m.Effective(params)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	args, err := m.Resolve(req.Target, effective)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"program":   m.Command.Program,
+		"args":      args,
+		"effective": effective,
+		"available": binaryPresent(m.Requires),
+	})
+}
+
 // toolRunManifest executes one manifest-backed tool and returns the parsed
 // records plus the assets and facts its emit rules produced.
 //
@@ -241,32 +287,53 @@ func paramStrings(in map[string]any) (map[string]string, error) {
 // parameters without the operator pasting a man page into the prompt.
 func (s *Server) toolListManifests() actool.CoreTool {
 	return wrTool("list_tools",
-		"List the reconnaissance and scanning tools available in this environment, with the parameters each accepts and whether its binary is installed. It also states the engagement's rate guidance, so read it before choosing a rate.",
-		map[string]any{"type": "object", "properties": map[string]any{}},
-		func(ctx context.Context, _ json.RawMessage) (actool.Result, error) {
-			var b strings.Builder
-			fmt.Fprintf(&b, "%d tools:\n", manifestTools.Len())
-			if g := engagementLimits.Guidance(); g != "" {
-				fmt.Fprintf(&b, "\n%s\n\n", g)
+		"List the reconnaissance and scanning tools available in this environment, with the parameters each accepts and whether its binary is installed. It also states the engagement's rate guidance, so read it before choosing a rate. Pass query to narrow the list by id, name or description when the catalog is long.",
+		map[string]any{"type": "object", "properties": map[string]any{
+			"query": strParam("optional: only tools whose id, name or description contains this text (case-insensitive)"),
+		}},
+		func(ctx context.Context, raw json.RawMessage) (actool.Result, error) {
+			var in struct {
+				Query string `json:"query"`
 			}
+			_ = json.Unmarshal(raw, &in)
+			query := strings.ToLower(strings.TrimSpace(in.Query))
+			var b strings.Builder
+			shown := 0
+			var body strings.Builder
 			for _, m := range manifestTools.All() {
+				if query != "" && !strings.Contains(strings.ToLower(m.ID+" "+m.Name+" "+m.Description), query) {
+					continue
+				}
+				shown++
 				status := "ready"
 				if !binaryPresent(m.Requires) {
 					status = "NOT INSTALLED"
 				}
-				fmt.Fprintf(&b, "- %s [%s, %s] %s\n", m.ID, m.Category, status, m.Description)
+				fmt.Fprintf(&body, "- %s [%s, %s] %s\n", m.ID, m.Category, status, m.Description)
 				if len(m.Params) > 0 {
-					b.WriteString("    params: ")
+					body.WriteString("    params: ")
 					first := true
 					for name, p := range m.Params {
 						if !first {
-							b.WriteString(", ")
+							body.WriteString(", ")
 						}
 						first = false
-						fmt.Fprintf(&b, "%s(%s)", name, p.Type)
+						fmt.Fprintf(&body, "%s(%s)", name, p.Type)
 					}
-					b.WriteByte('\n')
+					body.WriteByte('\n')
 				}
+			}
+			if query != "" {
+				fmt.Fprintf(&b, "%d of %d tools match %q:\n", shown, manifestTools.Len(), in.Query)
+			} else {
+				fmt.Fprintf(&b, "%d tools:\n", manifestTools.Len())
+			}
+			if g := engagementLimits.Guidance(); g != "" {
+				fmt.Fprintf(&b, "\n%s\n\n", g)
+			}
+			b.WriteString(body.String())
+			if shown == 0 {
+				b.WriteString("(no tool matches; call list_tools without a query to see the catalog)\n")
 			}
 			return actool.Text(b.String()), nil
 		})

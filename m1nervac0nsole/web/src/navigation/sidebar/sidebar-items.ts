@@ -84,6 +84,7 @@ export const sidebarItems: NavGroup[] = [
       { id: "agents", title: "Agents", url: "/system/agents", icon: Bot },
       { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug },
       { id: "tools", title: "Tools", url: "/system/tools", icon: Wrench },
+      { id: "toolbox", title: "Toolbox", url: "/system/toolbox", icon: Terminal },
       { id: "notify", title: "Notifications", url: "/system/notify", icon: BellRing },
       { id: "intercept", title: "Intercept Rules", url: "/system/intercept", icon: ShieldAlert },
       { id: "asset-intercept", title: "Asset Intercept", url: "/system/intercept/assets", icon: Ban },

@@ -86,7 +86,11 @@ Replay on task 1 (launch time = the intent's first activity row; reflections onl
 - `proof_basis` column. `kind` already encodes it (unproven playbook -> lead).
 - `similar_prior_attempts` on `add_intent`. Workers claim an intent within 800 ms, so the advice lands after the intent is committed; the planner already has recent_done_intents, cold digests, the stagnation warning and the churn trigger.
 - Embeddings/pgvector, LLM consolidation or auto-delete, agent-editable core memory, auto-adoption.
-- Mid-run push of a sibling's opsec reflection into a running worker: wanted, depends on whether `steer_work` reaches a worker mid tool call (unverified).
+- Mid-run push of a sibling's opsec reflection into a running worker: wanted, depends on whether `steer_work` reaches a worker mid tool call. **Answered (2026-11-13)**: it does not, by design. `Engine.SteerWork` queues the message and `steerHooks.drain` delivers it before the worker's next tool call (`server/engine.go:530`, `:1201-1219`), so a correction never interrupts a running tool. A push would land at the same boundary, which is enough for opsec guidance and not enough to abort a scan already in flight.
+
+## Measured (2026-11-13)
+
+`knowledge_usage` across the deployed tasks: 1026 `task_start` rows, 195 `round` rows, 42 `recall` rows. Of 20 `recall` tool calls, **one** used an id (`{"id": "K33"}`) and nineteen used a query. The title index did not move models from search to pull: keep the index because it is cheap and it makes an id usable when a model already has one, but do not invest further in the pull path.
 
 ## What review overturned in v1
 

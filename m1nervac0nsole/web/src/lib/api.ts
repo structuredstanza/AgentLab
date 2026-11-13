@@ -113,6 +113,8 @@ import type {
   TokenTotal,
   TokenUsage,
   Tool,
+  ToolManifest,
+  ToolPreview,
   ToolStat,
   TrafficDetail,
   TrafficEvidenceRef,
@@ -1167,6 +1169,11 @@ export const api = {
   testCustomTool: (body: { kind: string; exec: Record<string, unknown>; params: Record<string, unknown> }) =>
     post<{ output: string; is_error: boolean }>("/tools/custom/test", body),
   detectPython: () => post<{ python_interpreter: string }>("/settings/python/detect", {}),
+  // ---- tool manifests (the shipped CLI toolbox) ----
+  toolManifests: () => get<{ tools: ToolManifest[] }>("/tool-manifests").then((r) => arr(r.tools)),
+  // previewTool renders the argv the executor would run; it never runs anything.
+  previewTool: (key: string, target: string, params: Record<string, string>) =>
+    post<ToolPreview>(`/tools/${key}/preview`, { target, params }),
 
   // ---- mcp ----
   mcpServers: () => get<{ servers: MCPServer[] }>("/mcp").then((r) => arr(r.servers)),
