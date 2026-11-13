@@ -36,14 +36,16 @@ function DrafterChat({ taskId }: { taskId: string }) {
   const { messages, running, loaded, setRunning } = useConversationTail(conversation?.id ?? null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
 
-  // Reuse the newest drafter conversation so the pane survives a reload; a
-  // fresh one is created on the first send when there is none.
+  // Reuse the newest drafter conversation bound to THIS task, so the pane
+  // survives a reload without two engagements sharing one thread; a fresh one
+  // is created on the first send when there is none.
   React.useEffect(() => {
     let live = true;
     api
       .conversations()
       .then((list) => {
-        if (live) setConversation(list.find((c) => c.agent_key === DRAFTER_AGENT) ?? null);
+        const bound = list.find((c) => c.agent_key === DRAFTER_AGENT && c.task_id === Number(taskId));
+        if (live) setConversation(bound ?? null);
       })
       .catch(() => {
         /* a failure just leaves the draft state */
@@ -54,7 +56,7 @@ function DrafterChat({ taskId }: { taskId: string }) {
     return () => {
       live = false;
     };
-  }, []);
+  }, [taskId]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: new activity should re-pin the view to the bottom.
   React.useLayoutEffect(() => {
