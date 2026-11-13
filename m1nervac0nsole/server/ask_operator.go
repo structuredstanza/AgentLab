@@ -39,9 +39,6 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 			if q == "" {
 				return actool.Errorf("Error: question is required"), nil
 			}
-			if req.ImagePath != "" && s.hasProviderCredentials() {
-				return actool.Errorf("Error: screenshots are disabled when provider credentials are configured; remove sensitive content before attaching an image"), nil
-			}
 			ri := agent.RunInfoFrom(ctx)
 			if ri.TaskID == 0 || ri.IntentID == 0 {
 				return actool.Errorf("Error: ask_operator can only be used inside a worker intent run"), nil
@@ -55,7 +52,7 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			text := "OPERATOR INPUT REQUESTED: " + q + " (this intent is pausing; reply here to resume it with your answer)"
+			text, att := handoffText(q, att, s.hasProviderCredentials())
 			act := userActivityWithAttachments("worker", text, att)
 			node := ri.IntentID
 			act.NodeID = &node
@@ -157,6 +154,24 @@ func (s *Server) redactProviderCredentials(text string) string {
 		}
 	}
 	return text
+}
+
+// handoffText composes the operator-facing text for a hand-off and decides
+// whether the staged screenshot rides along as an attachment.
+//
+// An image cannot be redacted the way the question text is
+// (redactProviderCredentials replaces the configured API keys in text only), so
+// with provider credentials configured the screenshot is named by path and left
+// out of the conversation: the operator opens the staged file in the task
+// workspace. The picture still reaches the human, which is the point of a
+// handoff.
+func handoffText(question string, att []chatAttachment, imagesWithheld bool) (string, []chatAttachment) {
+	text := "OPERATOR INPUT REQUESTED: " + question
+	if len(att) > 0 && imagesWithheld {
+		text += " (screenshot saved at " + att[0].Path + " - open it in the task workspace)"
+		att = nil
+	}
+	return text + " (this intent is pausing; reply here to resume it with your answer)", att
 }
 
 func stageAskOperatorImage(dataDir, taskID, src string) ([]chatAttachment, error) {

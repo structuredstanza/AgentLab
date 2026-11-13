@@ -66,3 +66,29 @@ func TestAskOperatorEnvHandoffGuidance(t *testing.T) {
 		}
 	}
 }
+
+// A screenshot must reach the operator without entering the conversation when
+// provider credentials are configured: an image cannot be redacted the way the
+// question text is, but the human still needs to see the page.
+func TestHandoffTextWithholdsTheImageButNamesIt(t *testing.T) {
+	att := []chatAttachment{{Name: "ask-operator-1.png", Path: "uploads/ask-operator-1.png", Size: 7}}
+
+	text, kept := handoffText("solve the captcha", att, true)
+	if len(kept) != 0 {
+		t.Fatalf("the screenshot was attached despite provider credentials: %+v", kept)
+	}
+	if !strings.Contains(text, "uploads/ask-operator-1.png") {
+		t.Fatalf("the withheld screenshot is not named by path: %q", text)
+	}
+	if !strings.Contains(text, "this intent is pausing") {
+		t.Fatalf("the hand-off lost its pause instruction: %q", text)
+	}
+
+	text, kept = handoffText("solve the captcha", att, false)
+	if len(kept) != 1 {
+		t.Fatalf("the screenshot was dropped without provider credentials: %+v", kept)
+	}
+	if strings.Contains(text, "uploads/") {
+		t.Fatalf("an attached screenshot is also named by path: %q", text)
+	}
+}

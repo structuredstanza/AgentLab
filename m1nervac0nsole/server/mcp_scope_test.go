@@ -166,22 +166,86 @@ func TestMCPScopeGuardRefusesUnsafeURLs(t *testing.T) {
 	}
 }
 
-// Every other MCP tool is returned untouched, with no wrapping and no scope
-// check: only navigation carries a URL that crosses the boundary.
+// A tool from another MCP server is returned untouched: only the browser server
+// carries pages that cross the boundary.
 func TestMCPScopeGuardPassesThroughOtherTools(t *testing.T) {
 	called := false
-	inner := fakeNavTool("mcp__browser__browser_snapshot", &called)
+	inner := fakeNavTool("mcp__other__snapshot", &called)
 	got := scopeGuardTool(nil, inner)
 	if got != inner {
-		t.Fatal("a non-navigation tool was wrapped")
+		t.Fatal("a non-browser MCP tool was wrapped")
 	}
 	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: 7})
 	if res := navCall(t, got, ctx, "not a url at all"); res.IsError {
-		t.Fatalf("a non-navigation tool was refused: %s", resultText(res))
+		t.Fatalf("a non-browser tool was refused: %s", resultText(res))
 	}
 	if !called {
-		t.Fatal("the non-navigation tool did not run")
+		t.Fatal("the non-browser tool did not run")
 	}
+}
+
+// A browser tool that is not a navigation is still wrapped: the page it reports
+// is judged, because a click can navigate.
+func TestMCPScopeGuardJudgesTheLandingPage(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skipf("no database config (%v) - skipping", err)
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { pg.Close() })
+
+	task, err := pg.CreateTask("browser landing scope", "verify the landing page is judged", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pg.DeleteTask(task.ID) })
+
+	excluded := fmt.Sprintf("blocked-%d.invalid", task.ID)
+	if _, err := pg.Assets().AddAgentScope(task.ID, "root_domain", excluded, "excluded by test", "manual", "exclude"); err != nil {
+		t.Fatalf("record exclusion: %v", err)
+	}
+	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: task.ID})
+
+	// A click whose result reports an excluded page is refused even though the
+	// click itself carries no url to judge.
+	for _, name := range []string{"mcp__browser__browser_click", "mcp__browser__browser_navigate"} {
+		called := false
+		tool := scopeGuardTool(pg.Assets(), pageTool(name, fmt.Sprintf("https://%s/admin", excluded), &called))
+		res := navCall(t, tool, ctx, fmt.Sprintf("https://allowed-%d.invalid/", task.ID))
+		if !res.IsError {
+			t.Errorf("%s: an off-scope landing page was allowed", name)
+			continue
+		}
+		if got := resultText(res); !strings.Contains(got, "landed on an out-of-scope page") {
+			t.Errorf("%s: refused for the wrong reason: %q", name, got)
+		}
+		if !called {
+			t.Errorf("%s: the tool did not run before the landing check", name)
+		}
+	}
+
+	// The same tool landing in scope passes through.
+	called := false
+	tool := scopeGuardTool(pg.Assets(), pageTool("mcp__browser__browser_click", fmt.Sprintf("https://allowed-%d.invalid/home", task.ID), &called))
+	if res := navCall(t, tool, ctx, fmt.Sprintf("https://allowed-%d.invalid/", task.ID)); res.IsError {
+		t.Fatalf("an in-scope landing page was refused: %s", resultText(res))
+	}
+}
+
+// pageTool fakes a browser tool whose result reports the page it landed on, the
+// way Playwright prints it.
+func pageTool(name, pageURL string, called *bool) actool.CoreTool {
+	return actool.Build(actool.Spec{
+		Name:   name,
+		Schema: map[string]any{"type": "object"},
+		Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
+			*called = true
+			return actool.Text("### Page\n- Page URL: " + pageURL + "\n- Page Title: fixture"), nil
+		},
+	})
 }
 
 // The main agent and chat have no task, so there is no boundary to enforce.

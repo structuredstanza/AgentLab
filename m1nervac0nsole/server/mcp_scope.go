@@ -24,14 +24,15 @@ var browserNavTools = map[string]bool{
 	"mcp__browser__browser_open":     true,
 }
 
-// scopeGuardTool wraps a browser navigation tool with the task boundary.
-//
-// MCP calls never pass through guard/: the guard's text scan is wired to the
-// Bash-oriented tool pipeline, and a browser navigation is a different shape (a
-// URL argument, not a command line). Judging it here is the only place the
-// boundary sees it before the page loads. Other tools are returned unchanged.
+// browserToolPrefix marks every tool of the browser MCP server.
+const browserToolPrefix = "mcp__browser__"
+
+// scopeGuardTool wraps a browser tool with the task boundary: a navigation's url
+// argument is judged before the page loads, and the page every call reports is
+// judged after it, so a server-side redirect or a click that navigates cannot
+// land the run off-scope. Other MCP servers' tools are returned unchanged.
 func scopeGuardTool(assets *db.AssetStore, t actool.CoreTool) actool.CoreTool {
-	if !browserNavTools[t.Name()] {
+	if !strings.HasPrefix(t.Name(), browserToolPrefix) {
 		return t
 	}
 	return &scopeGuard{CoreTool: t, assets: assets}
@@ -42,8 +43,9 @@ type scopeGuard struct {
 	assets *db.AssetStore
 }
 
-// Call judges the navigation's url against the task's exclusions before the MCP
-// server is asked to open it.
+// Call judges the boundary twice: the navigation's url before the MCP server is
+// asked to open it, and the page the call reports afterwards, because a redirect
+// or a click can navigate after the argument was judged.
 //
 // A run with no task (the main agent, chat) has no boundary to enforce, so it
 // passes through. A task whose boundary cannot be read is refused rather than
@@ -53,31 +55,60 @@ type scopeGuard struct {
 // exclusion blocks: scope rows accumulate as the hunt finds assets, so treating
 // "no rule matches" as out would refuse the first page of every fresh task.
 //
-// shortcut: the URL is judged before the call, so a server-side redirect can
-// still land off-scope; the recording proxy sees it, but it is not refused here.
+// A page may still *contain* links to off-scope hosts; following one is a
+// navigation and is judged. The recording proxy sees every request either way.
 func (g *scopeGuard) Call(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
 	ri := agent.RunInfoFrom(ctx)
 	if ri.TaskID <= 0 {
 		return g.CoreTool.Call(ctx, in, tc)
 	}
-	var args struct {
-		URL string `json:"url"`
+	checker := db.NewTaskScopeChecker(g.assets, ri.TaskID)
+	if browserNavTools[g.CoreTool.Name()] {
+		var args struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(in, &args); err != nil {
+			return actool.Errorf("Error: browser navigation refused: the call arguments are not valid JSON: " + err.Error()), nil
+		}
+		host, refusal := browserURLHost(args.URL)
+		if refusal != "" {
+			return actool.Errorf("Error: browser navigation refused: " + refusal), nil
+		}
+		if refusal := scopeRefusal(checker, host); refusal != "" {
+			return actool.Errorf("Error: browser navigation refused: " + refusal), nil
+		}
 	}
-	if err := json.Unmarshal(in, &args); err != nil {
-		return actool.Errorf("Error: browser navigation refused: the call arguments are not valid JSON: " + err.Error()), nil
+	res, err := g.CoreTool.Call(ctx, in, tc)
+	if err != nil || res.IsError {
+		return res, err
 	}
-	raw := strings.TrimSpace(args.URL)
+	if landed := pageURLFromResult(res); landed != "" {
+		host, refusal := browserURLHost(landed)
+		if refusal == "" {
+			refusal = scopeRefusal(checker, host)
+		}
+		if refusal != "" {
+			return actool.Errorf(fmt.Sprintf("Error: the browser landed on an out-of-scope page: %s. Stop interacting with it, close the page, and note the boundary in your intent summary.", refusal)), nil
+		}
+	}
+	return res, err
+}
+
+// browserURLHost validates the shape of a URL a browser call is about to load or
+// has loaded, and returns its host. A refusal is a message for the model.
+func browserURLHost(rawURL string) (host, refusal string) {
+	raw := strings.TrimSpace(rawURL)
 	// Chromium treats a backslash as a path separator in special URLs, which is a
 	// host-parser differential. Go rejects a backslash in the authority today,
 	// but refuse the shape outright rather than depend on that.
 	if strings.Contains(raw, `\`) {
-		return actool.Errorf(fmt.Sprintf("Error: browser navigation refused: backslashes are not allowed in a URL, got %q", raw)), nil
+		return "", fmt.Sprintf("backslashes are not allowed in a URL, got %q", raw)
 	}
 	u, err := url.Parse(raw)
 	if err != nil || (strings.ToLower(u.Scheme) != "http" && strings.ToLower(u.Scheme) != "https") || u.Hostname() == "" {
-		return actool.Errorf(fmt.Sprintf("Error: browser navigation refused: only absolute http(s) URLs are allowed, got %q", raw)), nil
+		return "", fmt.Sprintf("only absolute http(s) URLs are allowed, got %q", raw)
 	}
-	host := u.Hostname()
+	host = u.Hostname()
 	// Chromium maps Unicode dots (U+3002, U+FF0E, U+FF61) and fullwidth letters
 	// in a host to ASCII (UTS46/IDNA), so a host spelled with U+3002 reaches
 	// evil.example while Go reports the literal Unicode host and an exclusion on
@@ -85,7 +116,7 @@ func (g *scopeGuard) Call(ctx context.Context, in json.RawMessage, tc *actool.To
 	// punycode, which both parsers canonicalise to the same host.
 	for i := range len(host) {
 		if host[i] >= 0x80 {
-			return actool.Errorf(fmt.Sprintf("Error: browser navigation refused: non-ASCII hostname %q; use its punycode form", host)), nil
+			return "", fmt.Sprintf("non-ASCII hostname %q; use its punycode form", host)
 		}
 	}
 	// WHATWG reads IPv4 in decimal, octal and hex forms, so `2130706433`,
@@ -98,20 +129,39 @@ func (g *scopeGuard) Call(ctx context.Context, in json.RawMessage, tc *actool.To
 		last = trimmed[i+1:]
 	}
 	if isIPv4Number(last) && net.ParseIP(trimmed) == nil {
-		return actool.Errorf(fmt.Sprintf("Error: browser navigation refused: %q is not a canonical IPv4 address; write it as four decimal octets", host)), nil
+		return "", fmt.Sprintf("%q is not a canonical IPv4 address; write it as four decimal octets", host)
 	}
-	checker := db.NewTaskScopeChecker(g.assets, ri.TaskID)
+	return host, ""
+}
+
+// scopeRefusal judges a host against the task boundary. A boundary that cannot
+// be read is a refusal, not a pass.
+func scopeRefusal(checker *db.TaskScopeChecker, host string) string {
 	if checker == nil {
-		return actool.Errorf("Error: browser navigation refused: no task scope checker is available, so the boundary cannot be checked"), nil
+		return "no task scope checker is available, so the boundary cannot be checked"
 	}
 	// Judge the parsed hostname, not the raw URL: scope.ParseAsset does not strip
 	// userinfo, so `http://user:pass@excluded.example/` would be read as host
 	// "user" and an excluded host would pass. The checker only matches hosts,
 	// domains and networks, so the hostname is all it needs.
 	if out, reason := checker.Judge(host); out {
-		return actool.Errorf(fmt.Sprintf("Error: browser navigation refused: %s is out of scope for this task (%s). Do not retry it; note the boundary in your intent summary.", host, reason)), nil
+		return fmt.Sprintf("%s is out of scope for this task (%s). Do not retry it", host, reason)
 	}
-	return g.CoreTool.Call(ctx, in, tc)
+	return ""
+}
+
+// pageURLFromResult reads the page a browser call reports. Playwright prints it
+// as a "- Page URL: <url>" line in the tool's text; a result without that line
+// makes no claim, so nothing is judged.
+func pageURLFromResult(res actool.Result) string {
+	for _, b := range res.Content {
+		for _, line := range strings.Split(b.Text, "\n") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "- Page URL:"); ok {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return ""
 }
 
 // isIPv4Number reports whether a host label is a number under the WHATWG IPv4

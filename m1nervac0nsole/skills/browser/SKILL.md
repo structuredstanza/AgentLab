@@ -73,11 +73,11 @@ call `ask_operator` instead of guessing, brute-forcing or abandoning the flow:
 - State precisely what is on screen and what you need: the page URL, the exact
   prompt text, and the value or action required (for example "the login page
   shows a 6-digit code field; give me the code sent to the account's email").
-- Attach a screenshot with `image_path` only if the tool accepts it. This
-  deployment normally has provider credentials configured, and `ask_operator`
-  then refuses any image with "screenshots are disabled when provider
-  credentials are configured". If you get that error, resend the same question
-  without `image_path`; the description carries the context.
+- Attach a screenshot with `image_path` when a picture helps. With provider
+  credentials configured (the normal case) the image cannot be redacted and is
+  therefore not attached to the conversation: the hand-off text names the staged
+  file (`uploads/...`) and the operator opens it in the task workspace. That is
+  the intended behaviour, not an error - do not resend without the image.
 - `ask_operator` pauses this intent. Finish the current step, record what you
   already know as facts, and stop; the operator's reply resumes the run and
   arrives as your next input.
