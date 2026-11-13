@@ -1292,6 +1292,21 @@
       "inheritedReadOnly": "#{id} (inherited, read-only)"
     },
     "emptyHint": "No exploration data yet",
+    "live": {
+      "title": "Live",
+      "empty": "No live output yet",
+      "pause": "Pause",
+      "resume": "Resume",
+      "cancel": "Cancel intent",
+      "cancelReason": "Cancelled from the graph by the operator",
+      "messagePlaceholder": "Message the worker (the intent must be paused)",
+      "send": "Send",
+      "paused": "Intent #{id} paused",
+      "resumed": "Intent #{id} resumed",
+      "cancelled": "Intent #{id} cancelled",
+      "messageSent": "Message sent to intent #{id}",
+      "actionFailed": "Action failed: {msg}"
+    },
     "lineage": {
       "empty": "No path to show (there are no exploration nodes linked to this finding, or the task was deleted).",
       "emptyHint": "No path",

@@ -76,6 +76,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			mcpIDs, _ := pg.AgentVisible(a.ID, "mcp")
 			want := idSet(mcpIDs)
 			all, _ := pg.ListMCP()
+			assets := pg.Assets()
 			for _, m := range all {
 				if !m.Enabled {
 					continue
@@ -100,6 +101,10 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				}
 				_ = pg.UpdateMCPHealth(m.ID, true, "")
 				for _, t := range ts {
+					// A browser navigation is the one MCP call that crosses the
+					// task boundary; judge it here, where every agent's MCP tools
+					// are assembled.
+					t = scopeGuardTool(assets, t)
 					extra = append(extra, t)
 					allNames = append(allNames, t.Name())
 					serverTools[m.Name] = append(serverTools[m.Name], t.Name())

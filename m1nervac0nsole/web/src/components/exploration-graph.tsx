@@ -25,11 +25,13 @@ import "@xyflow/react/dist/style.css";
 import { Bug, Compass, Flag, FlaskConical, Layers, Lightbulb, type LucideIcon, Target } from "lucide-react";
 import { useTranslations } from "next-intl";
 
+import { IntentLivePanel } from "@/components/intent-live-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { getDateLocale } from "@/i18n/datetime";
+import type { LiveState } from "@/lib/graph-live";
 import { type Tone, toneClasses } from "@/lib/status";
 import type { Edge, ExploreKind, TaskNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -216,7 +218,7 @@ function collapseDigestGraph(nodes: TaskNode[], edges: Edge[]): { viewNodes: Tas
 const COL_W = 360;
 const ROW_H = 140;
 
-type ExploreNodeData = { node: TaskNode };
+type ExploreNodeData = { node: TaskNode; active?: boolean };
 type ExploreRFNode = RFNode<ExploreNodeData, "explore">;
 
 function pushMap(m: Map<string, string[]>, k: string, v: string) {
@@ -342,12 +344,14 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
   const showState = n.type === "goal" || n.type === "intent";
   const showPriority = (n.type === "goal" || n.type === "intent") && n.priority > 0;
   const isLive = !n.inherited && n.type === "intent" && n.state === "running";
+  const active = !!data.active;
 
   return (
     <div
       className={cn(
         "w-[240px] cursor-pointer rounded-2xl border-2 transition-colors",
-        selected ? "border-blue-500" : isLive ? "border-blue-400/70" : "border-transparent",
+        selected ? "border-blue-500" : isLive || active ? "border-blue-400/70" : "border-transparent",
+        active && "ring-2 ring-blue-400/40",
       )}
     >
       <div className="group relative rounded-[14px] border border-black/[0.06] bg-white shadow-sm transition-shadow hover:shadow-lg dark:border-white/10 dark:bg-neutral-900">
@@ -363,7 +367,7 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
           <span className="grow truncate font-semibold text-[13px] text-neutral-700 dark:text-neutral-100">
             {label}
           </span>
-          {isLive && (
+          {(isLive || active) && (
             <span className="relative flex size-2 shrink-0">
               <span className="absolute inline-flex size-full animate-ping rounded-full bg-blue-400 opacity-70" />
               <span className="relative inline-flex size-2 rounded-full bg-blue-500" />
@@ -430,11 +434,15 @@ function NodeDetailSheet({
   nodesById,
   onSelect,
   onOpenChange,
+  taskId,
+  live,
 }: {
   node: TaskNode | null;
   nodesById: Map<string, TaskNode>;
   onSelect: (n: TaskNode) => void;
   onOpenChange: (open: boolean) => void;
+  taskId?: string;
+  live?: LiveState;
 }) {
   const t = useTranslations("explorationGraph");
   const [copied, setCopied] = React.useState(false);
@@ -564,6 +572,10 @@ function NodeDetailSheet({
                   </>
                 )}
 
+                {node.type === "intent" && !node.inherited && taskId && (
+                  <IntentLivePanel taskId={taskId} node={node} lines={live?.tail[node.id] ?? []} />
+                )}
+
                 <section className="border-t pt-3">
                   <div className="mb-1.5 flex items-center justify-between">
                     <h4 className="font-medium text-muted-foreground text-xs">{t("detail.raw")}</h4>
@@ -591,7 +603,21 @@ function NodeDetailSheet({
 // ExplorationGraphInner renders the given nodes/edges as a React Flow canvas.
 // Positions are auto-laid-out and preserved across prop updates (so a polling
 // caller's graph doesn't jump); click a node to open its detail drawer.
-function ExplorationGraphInner({ nodes, edges, emptyHint }: { nodes: TaskNode[]; edges: Edge[]; emptyHint?: string }) {
+function ExplorationGraphInner({
+  nodes,
+  edges,
+  emptyHint,
+  taskId,
+  live,
+  activeIds,
+}: {
+  nodes: TaskNode[];
+  edges: Edge[];
+  emptyHint?: string;
+  taskId?: string;
+  live?: LiveState;
+  activeIds: ReadonlySet<string>;
+}) {
   const t = useTranslations("explorationGraph");
   const hint = emptyHint ?? t("emptyHint");
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<ExploreRFNode>([]);
@@ -602,25 +628,36 @@ function ExplorationGraphInner({ nodes, edges, emptyHint }: { nodes: TaskNode[];
   const nodesById = React.useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   // Collapsed view: folded members removed, their edges rewired onto the digest.
   const { viewNodes, viewEdges } = React.useMemo(() => collapseDigestGraph(nodes, edges), [nodes, edges]);
+  const layout = React.useMemo(() => computeLayout(viewNodes, viewEdges), [viewNodes, viewEdges]);
   const isEmpty = viewNodes.length === 0;
 
+  // Rebuild only the nodes whose data or active flag changed, so a live event
+  // repaints one card instead of the whole canvas.
   React.useEffect(() => {
     setSelected((cur) => (cur ? (nodesById.get(cur.id) ?? cur) : cur));
+    setRfNodes((prev) => {
+      const prevById = new Map(prev.map((p) => [p.id, p]));
+      return viewNodes.map((n) => {
+        const p = prevById.get(n.id);
+        const active = activeIds.has(n.id);
+        if (p && p.data.node === n && !!p.data.active === active) return p;
+        return {
+          ...(p ?? {}),
+          id: n.id,
+          type: "explore" as const,
+          position: p?.position ?? layout.get(n.id) ?? { x: 0, y: 0 },
+          data: { node: n, active },
+          sourcePosition: Position.Right,
+          targetPosition: Position.Left,
+        };
+      });
+    });
+  }, [viewNodes, nodesById, layout, activeIds, setRfNodes]);
+
+  React.useEffect(() => {
     const liveTargets = new Set(
       viewNodes.filter((n) => !n.inherited && n.type === "intent" && n.state === "running").map((n) => n.id),
     );
-    const layout = computeLayout(viewNodes, viewEdges);
-    setRfNodes((prev) => {
-      const prevPos = new Map(prev.map((p) => [p.id, p.position]));
-      return viewNodes.map((n) => ({
-        id: n.id,
-        type: "explore" as const,
-        position: prevPos.get(n.id) ?? layout.get(n.id) ?? { x: 0, y: 0 },
-        data: { node: n },
-        sourcePosition: Position.Right,
-        targetPosition: Position.Left,
-      }));
-    });
     setRfEdges(
       viewEdges.map((e, i) => {
         const color = relColor[e.rel] ?? "#94a3b8";
@@ -639,7 +676,7 @@ function ExplorationGraphInner({ nodes, edges, emptyHint }: { nodes: TaskNode[];
         } satisfies RFEdge;
       }),
     );
-  }, [viewNodes, viewEdges, nodesById, setRfNodes, setRfEdges, t]);
+  }, [viewNodes, viewEdges, setRfEdges, t]);
 
   return (
     <>
@@ -713,28 +750,45 @@ function ExplorationGraphInner({ nodes, edges, emptyHint }: { nodes: TaskNode[];
         nodesById={nodesById}
         onSelect={setSelected}
         onOpenChange={(o) => !o && setSelected(null)}
+        taskId={taskId}
+        live={live}
       />
     </>
   );
 }
 
+const NO_ACTIVE: ReadonlySet<string> = new Set();
+
 // ExplorationGraph is the shared exploration graph / attack chain graph canvas — used by the task graph
-// tab (full graph, polled) and the finding lineage view (origin→finding subgraph).
+// tab (full graph, live) and the finding lineage view (origin→finding subgraph).
 export function ExplorationGraph({
   nodes,
   edges,
   className,
   emptyHint,
+  taskId,
+  live,
+  activeIds = NO_ACTIVE,
 }: {
   nodes: TaskNode[];
   edges: Edge[];
   className?: string;
   emptyHint?: string;
+  taskId?: string;
+  live?: LiveState;
+  activeIds?: ReadonlySet<string>;
 }) {
   return (
     <div className={cn("w-full overflow-hidden rounded-xl", className)}>
       <ReactFlowProvider>
-        <ExplorationGraphInner nodes={nodes} edges={edges} emptyHint={emptyHint} />
+        <ExplorationGraphInner
+          nodes={nodes}
+          edges={edges}
+          emptyHint={emptyHint}
+          taskId={taskId}
+          live={live}
+          activeIds={activeIds}
+        />
       </ReactFlowProvider>
     </div>
   );

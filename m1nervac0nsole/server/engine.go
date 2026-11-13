@@ -513,6 +513,20 @@ func transitionIntentState(store *db.ExplorationStore, intentID int64, expected,
 	return nil
 }
 
+// setIntentState persists one intent state change and announces it on the task's
+// activity stream. Without the announcement a viewer only learns that an intent
+// finished from the next unrelated event (usually the planner wake), so the graph
+// shows a finished intent as running until then.
+func (e *Engine) setIntentState(t *Task, intentID int64, expected, state string) error {
+	if err := transitionIntentState(t.Store, intentID, expected, state); err != nil {
+		return err
+	}
+	id := intentID
+	e.emitActivity(t, db.Activity{NodeID: &id, Worker: "system", Kind: "text",
+		Summary: fmt.Sprintf("intent #%d: %s -> %s", intentID, expected, state)})
+	return nil
+}
+
 // SteerWork queues a mid-run course-correction for the work running intentID (the
 // planner's steer_work tool). The worker delivers it before its next tool call and
 // re-plans — no kill. Errors if no work is currently running that intent.
@@ -1268,7 +1282,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		// Park the stopped run in paused before handing cleanup to the API. If the
 		// request disconnects after cancellation, the intent remains recoverable and
 		// a later cancel can finish cleanup instead of leaving a phantom running row.
-		controlErr = transitionIntentState(t.Store, intent.ID, "running", "paused")
+		controlErr = e.setIntentState(t, intent.ID, "running", "paused")
 		if controlErr != nil {
 			log.Printf("[worker %s] task %s intent #%d failed to persist cancel fence: %v", name, t.ID, intent.ID, controlErr)
 			return true
@@ -1289,7 +1303,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// The hard-fallback cancel of task-timeout wrap-up (neither pause nor kill) cancelled this run → classify as exhausted (already wrapped up),
 	// Do not mistakenly mark it as blocked. At this point the worker has usually already written the result back during the settlement phase.
 	if ectx.Err() != nil && e.isSettling(t.ID) {
-		if err := transitionIntentState(t.Store, intent.ID, "running", "exhausted"); err != nil {
+		if err := e.setIntentState(t, intent.ID, "running", "exhausted"); err != nil {
 			log.Printf("[worker %s] task %s intent #%d failed to persist timeout wrap-up state: %v", name, t.ID, intent.ID, err)
 		}
 		log.Printf("[worker %s] task %s intent #%d ended by timeout wrap-up (exhausted), wrote back %s", name, t.ID, intent.ID, wrote)
@@ -1299,7 +1313,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// Task was already judged complete (done via the normal path) → the cancelExec above canceled this run. The intent result is now meaningless,
 	// mark it stopped (not blocked), so the intent state of the completed task is not polluted.
 	if ectx.Err() != nil && isTerminalStatus(e.m.TaskStatus(t.ID)) {
-		if err := transitionIntentState(t.Store, intent.ID, "running", "stopped"); err != nil {
+		if err := e.setIntentState(t, intent.ID, "running", "stopped"); err != nil {
 			log.Printf("[worker %s] task %s intent #%d failed to persist terminal stop: %v", name, t.ID, intent.ID, err)
 		}
 		log.Printf("[worker %s] task %s intent #%d cancelled because the task completed (stopped)", name, t.ID, intent.ID)
@@ -1308,7 +1322,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	// killed by the planner: mark stopped (don't write back results, don't auto-reclaim).
 	if killed {
-		if err := transitionIntentState(t.Store, intent.ID, "running", "stopped"); err != nil {
+		if err := e.setIntentState(t, intent.ID, "running", "stopped"); err != nil {
 			log.Printf("[worker %s] task %s intent #%d failed to persist planner stop: %v", name, t.ID, intent.ID, err)
 		}
 		log.Printf("[worker %s] task %s intent #%d terminated (stopped)", name, t.ID, intent.ID)
@@ -1339,7 +1353,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 		_ = t.Store.SetIntentBlockedReason(intent.ID, reason)
 	} else {
-		if stateErr := transitionIntentState(t.Store, intent.ID, "running", state); stateErr != nil {
+		if stateErr := e.setIntentState(t, intent.ID, "running", state); stateErr != nil {
 			log.Printf("[worker %s] task %s intent #%d failed to persist terminal state %s: %v", name, t.ID, intent.ID, state, stateErr)
 		}
 	}
@@ -1362,7 +1376,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 // round reads a drained frontier and dispatches fresh work against the very
 // block it is waiting on.
 func (e *Engine) pauseIntent(t *Task, intentID int64) error {
-	if err := transitionIntentState(t.Store, intentID, "running", "paused"); err != nil {
+	if err := e.setIntentState(t, intentID, "running", "paused"); err != nil {
 		return err
 	}
 	e.deriveIntentReflections(t.ID, intentID)

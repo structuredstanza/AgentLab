@@ -255,19 +255,29 @@ ON CONFLICT (agent_id, var_name) DO UPDATE
 		}
 		_ = d.SetSetting("interactive_shell_default_v1", "true")
 	}
-	// Seed the built-in browser (Playwright) MCP once — DISABLED by default (user
-	// enables it themselves when needed), no proxy by default. The traffic-capture toggle injects/strips
-	// the recording proxy + CA at runtime (server.Manager.syncBrowserMCPProxy).
-	// Insert only if absent so we never clobber user edits (args/env/enabled/
-	// visibility) on restart.
+	// Seed the built-in browser (Playwright) MCP once — ENABLED, because workers
+	// need a real browser and the traffic-capture toggle routes it through the
+	// recording proxy (server.Manager.syncBrowserMCPProxy). Insert only if absent
+	// so we never clobber user edits (args/env/visibility) on restart.
 	if _, err := d.Exec(`
 INSERT INTO mcp_servers(name, transport, command, args, env, enabled)
-VALUES ('browser', 'stdio', 'npx', $1, '{}', false)
+VALUES ('browser', 'stdio', 'npx', $1, '{}', true)
 ON CONFLICT (name) DO NOTHING`,
 		`["@playwright/mcp","--headless"]`); err != nil {
 		return fmt.Errorf("seed browser mcp: %w", err)
 	}
-	// Seed the Obscura browser MCP (stdio, disabled). It is the lighter
+	// Older builds seeded that same row DISABLED. Enable it once for those
+	// installs, gated by a settings flag so a later user toggle-off survives every
+	// restart. The flag cannot tell a pre-upgrade deliberate disable from the
+	// untouched seed row (a toggle-off changes only `enabled`), so such a disable
+	// is flipped once by design; the user's next toggle-off is the one that sticks.
+	if v, _, _ := d.GetSetting("browser_mcp_enabled_v1"); v != "true" {
+		if _, err := d.Exec(`UPDATE mcp_servers SET enabled = true WHERE name = 'browser'`); err != nil {
+			return fmt.Errorf("enable browser mcp: %w", err)
+		}
+		_ = d.SetSetting("browser_mcp_enabled_v1", "true")
+	}
+	// Seed the Obscura browser MCP (stdio, enabled). It is the lighter
 	// JS-engine alternative to the Chromium MCP; it cannot trust the recording
 	// proxy's CA, so it is never proxy-routed. Insert only if absent.
 	if _, err := d.Exec(`
@@ -349,9 +359,13 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 // worker, planner). It is the skill that explains how to choose and drive a
 // manifest tool, so binding the tool without the skill left the agents to
 // rediscover the ranking by hand — or skip it and reach for Bash.
+//
+// browser goes to those same agents: it declares `mcps: browser`, so the skill
+// gate is what connects the Playwright MCP to a worker that needs a real browser.
 var builtinSkillVisibility = map[string][]string{
 	"api-recon":           {"auto", "pentest", "worker"},
 	"recon-orchestration": {"auto", "pentest", "worker", "planner"},
+	"browser":             {"auto", "pentest", "worker", "planner"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default
