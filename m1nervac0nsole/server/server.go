@@ -765,6 +765,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/assets", s.attachTaskAssets)
 	mux.HandleFunc("DELETE /api/tasks/{id}/assets/{assetID}", s.detachTaskAsset)
 	mux.HandleFunc("GET /api/tasks/{id}/intent-assets", s.taskIntentAssets)
+	// Operator-drafted engagement plans: list, apply in one transaction, discard.
+	mux.HandleFunc("GET /api/tasks/{id}/plans", s.taskPlans)
+	mux.HandleFunc("POST /api/tasks/{id}/plans/{draft}/apply", s.applyTaskPlan)
+	mux.HandleFunc("DELETE /api/tasks/{id}/plans/{draft}", s.deleteTaskPlan)
 
 	// Workspace file manager (for workDir)
 	mux.HandleFunc("GET /api/workspace/list", s.wsList)

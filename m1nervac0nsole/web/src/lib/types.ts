@@ -1776,3 +1776,58 @@ export interface KnowledgeReview {
 // Per-task candidate counts for the in-app review notice; tasks with none are
 // absent from the map.
 export type KnowledgeReviewCounts = Record<string, number>;
+
+// A drafted engagement plan. The drafting assistant proposes it; the operator
+// reviews, then applies or discards it. Nothing here is in the graph yet, which
+// is why the preview must show every part before Apply is reachable.
+export type PlanDraftStatus = "draft" | "applied" | "discarded";
+
+export interface PlanGoal {
+  ref: string;
+  text: string;
+  vulnclass?: string;
+}
+
+export interface PlanIntent {
+  ref: string;
+  summary: string;
+  goal: string; // ref of the goal this intent serves; "" = none
+  asset_ids?: number[];
+  depends_on?: string[]; // intent refs that must run first
+}
+
+export interface PlanHint {
+  text: string;
+  asset_ids?: number[];
+  rule?: boolean; // true = a constraint the planner must not contradict
+}
+
+export interface PlanScope {
+  effect: "include" | "exclude"; // include widens the task scope and needs allow_include
+  kind: string; // company / root_domain / subdomain / ip / cidr / icp / keyword
+  value: string;
+  note?: string;
+}
+
+export interface PlanProposal {
+  summary: string;
+  goals: PlanGoal[];
+  intents: PlanIntent[];
+  hints: PlanHint[];
+  scope: PlanScope[];
+}
+
+export interface PlanDraft {
+  id: number;
+  task_id: number;
+  status: PlanDraftStatus;
+  summary: string;
+  proposal: PlanProposal;
+  created_node_ids?: number[]; // graph nodes the apply step wrote
+  created_at: string;
+  applied_at?: string;
+}
+
+export interface PlanDraftList {
+  items: PlanDraft[];
+}

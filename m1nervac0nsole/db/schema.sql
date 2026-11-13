@@ -1655,3 +1655,26 @@ CREATE TABLE IF NOT EXISTS knowledge_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_usage_entry ON knowledge_usage(knowledge_id, shown_at DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_usage_task  ON knowledge_usage(task_id, shown_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Drafted engagement plans. A drafting assistant proposes goals, seed intents,
+-- hints and scope rules; the operator reviews the proposal and applies it in
+-- one transaction. Nothing reaches the graph until then, so a draft is inert:
+-- status draft -> applied | discarded, and an applied draft records what it
+-- created so it can be reverted while nothing has started.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS plan_drafts (
+    id          BIGSERIAL PRIMARY KEY,
+    task_id     BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','applied','discarded')),
+    summary     TEXT NOT NULL DEFAULT '',
+    proposal    JSONB NOT NULL DEFAULT '{}',
+    created_node_ids JSONB NOT NULL DEFAULT '[]',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    applied_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_plan_drafts_task ON plan_drafts(task_id, created_at DESC);
+-- One draft per task may be pending at a time: the operator reviews what the
+-- assistant just proposed, not a pile of stale proposals.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_drafts_one_open
+    ON plan_drafts(task_id) WHERE status = 'draft';

@@ -50,6 +50,13 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - Make the shipped browser MCP actually start. It was spawned as `npx @playwright/mcp`, and npx resolves the package over the network while every child inherits the egress proxy, so the handshake hung until the caller's deadline; the image's global `playwright-mcp` binary is used instead. The row also names the image's Chromium (`--executable-path /opt/ms-playwright/current/chrome`, a stable link the image now builds), disables the sandbox because the guest runs as root, and accepts the recorder's certificate (`--ignore-https-errors`, added and removed with the proxy) - without which every `https://` navigation failed with `ERR_CERT_AUTHORITY_INVALID`. One-shot migrations rewrite an untouched seeded row; a row the user edited is left alone.
 - Report why an MCP server failed to start. A stdio server that exits during the handshake reported only `connection closed`, with its stderr discarded; the child's last 4 KiB of stderr now rides in the error and on the MCP page.
 
+### Drafted plans
+
+- Let an operator draft a plan in plain language. A new `drafter` assistant turns an approach into a proposal - goals, seed intents, hints and scope rules - with two tools of its own (`plan_context`, `propose_plan`), each seeded bound to that agent alone so no worker or planner can call them; it reads the tool catalogue through the shared `list_tools`. Nothing reaches the graph: `propose_plan` validates the proposal and stores it as a draft.
+- Validate before storing: refs unique across goals and intents, every intent on a goal, `depends_on` acyclic, asset ids that belong to the task, counts bounded, and scope kinds and effects the schema accepts. The model is handed every error at once and retries in one turn.
+- Apply in one transaction: goals, open seed intents anchored to their assets, active hints and scope rows are created together, the draft is marked applied with the ids it created, and a second apply is refused. Exclusions apply directly because they only narrow the engagement; inclusions need an explicit `allow_include`, because they widen what the guard allows.
+- One pending draft per task: a new proposal supersedes the previous one instead of piling up, and discarding is a status change, never a delete of what an applied draft created.
+
 ### Console fixes
 
 - Show knowledge-entry and reflection IDs in the Memory browser and their detail sheets, so a curator reference ("candidate #32", "reflection #119") resolves to a visible row.

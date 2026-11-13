@@ -42,6 +42,19 @@ func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 	tools = append(tools, s.findingRetestTools()...)
 	tools = append(tools, s.platformTools()...) // Platform operation tools (create/edit skills/tools/MCP, for Auto use)
 	tools = append(tools, s.curatorTools()...)  // Memory-curation tools, bound to the curator chat agent only
+	// The drafter's list_tools is the platform tool appended above; a second
+	// copy would reach the model as two functions with one name.
+	seen := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		seen[t.Name()] = true
+	}
+	for _, t := range s.drafterTools() {
+		if seen[t.Name()] {
+			continue
+		}
+		tools = append(tools, t)
+		seen[t.Name()] = true
+	}
 	custom, err := s.customTools()
 	if err != nil {
 		log.Printf("[custom-tool] failed to load: %v", err)
@@ -517,6 +530,7 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 	s.seedWorkerReadbackRebind()  // Fix for an old migration that deleted bindings by mistake: re-bind search_all_worker_traces/get_worker_trace/node_detail back to worker (one-time)
 	s.seedMemoryToolBindings()    // Knowledge/reflection tools: give them their default agent bindings on databases seeded before them (one-time)
 	s.seedCuratorTools()          // Memory-curation tools: seeded bound to "curator" only, so no other agent can reach them
+	s.seedDrafterTools()          // Plan-drafting tools: bound to "drafter" (list_tools is shared with worker/planner), so no other agent can draft a plan
 	s.seedAutoReportFindingBinding()
 	s.unbindGoalMetDefault()
 	s.reseedGoalsPrompt()     // Added a "extract operation constraints" step to the goals prompt → existing databases get a new default version appended (one-time)

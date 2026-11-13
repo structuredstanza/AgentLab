@@ -1,0 +1,241 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/plan"
+	actool "github.com/structuredstanza/norma/tool"
+)
+
+// Drafter tools: the tool set of the "drafter" chat agent, which turns an
+// operator's plain-language approach into a plan proposal the operator reviews
+// and applies.
+//
+// The slice is propose-only. plan_context and list_tools read; propose_plan
+// validates and stores a draft row, and nothing here writes to the graph. The
+// apply endpoint owns that, so a proposal the validator refuses never becomes
+// work, and a stored draft is still only a suggestion.
+//
+// Binding is the security boundary: plan_context and propose_plan are seeded
+// into the tools table bound to "drafter" alone (seedDrafterTools). A host tool
+// with no row is unfiltered by ToolResolve and would reach every agent, so the
+// row must exist. list_tools is the shared manifest catalog the worker and the
+// planner already hold, so the drafter is added to that binding instead of
+// replacing it - a drafter-only row would take the manifest ids away from the
+// agents that run them.
+
+// drafterToolKeys are the tools the drafter chat agent is bound to by default.
+var drafterToolKeys = []string{"plan_context", "list_tools", "propose_plan"}
+
+// drafterTools is the drafter's tool set.
+func (s *Server) drafterTools() []actool.CoreTool {
+	return []actool.CoreTool{
+		s.toolPlanContext(),
+		s.toolListManifests(),
+		s.toolProposePlan(),
+	}
+}
+
+// seedDrafterTools seeds the drafter's tools bound to "drafter" only, and adds
+// the drafter to list_tools' binding. Seed is first-insert-only, so an
+// operator's later binding edit survives restarts.
+func (s *Server) seedDrafterTools() {
+	bindings, _ := json.Marshal([]string{"drafter"})
+	for _, t := range s.drafterTools() {
+		schema, _ := json.Marshal(t.InputSchema())
+		if err := s.m.PG().SeedTool(t.Name(), t.Description(), schema, bindings); err != nil {
+			log.Printf("[drafter] failed to seed %s: %v", t.Name(), err)
+		}
+	}
+	// list_tools is seeded by the platform tools before this one, so SeedTool
+	// cannot add the drafter to its row; without this the prompt names a tool
+	// ToolResolve drops for the drafter.
+	if err := s.m.PG().AddAgentToToolBinding("drafter", []string{"list_tools"}); err != nil {
+		log.Printf("[drafter] failed to bind list_tools: %v", err)
+	}
+}
+
+// planContextAssetLimit bounds the asset list one context read returns, so a
+// large engagement still fits the model's budget.
+const planContextAssetLimit = 200
+
+// planContextNodeLimit bounds each existing-node list for the same reason.
+const planContextNodeLimit = 200
+
+func (s *Server) toolPlanContext() actool.CoreTool {
+	return roTool("plan_context",
+		"Read the engagement a plan is drafted for: its goal and description, its scope rows, up to 200 assets, and the goals, intents and hints it already has (id, text or summary, state). Read it before propose_plan so the draft builds on what exists instead of repeating it. Read-only.",
+		objSchema(map[string]any{
+			"task_id": map[string]any{"type": "integer", "description": "Task id the plan is for."},
+		}, "task_id"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				TaskID int64 `json:"task_id"`
+			}
+			_ = json.Unmarshal(in, &a)
+			if a.TaskID <= 0 {
+				return actool.Errorf("task_id is required"), nil
+			}
+			t, err := s.m.PG().GetTask(a.TaskID)
+			if err != nil {
+				return actool.Errorf("read task: " + err.Error()), nil
+			}
+			if t == nil {
+				return actool.Errorf(fmt.Sprintf("task %d not found", a.TaskID)), nil
+			}
+			out := map[string]any{
+				"task_id": t.ID, "goal": t.Goal, "description": t.Description,
+				"scope": []map[string]any{}, "assets": []map[string]any{},
+			}
+			if as := s.m.Assets(); as != nil {
+				scopes, err := as.ListTaskScope(t.ID)
+				if err != nil {
+					return actool.Errorf("read scope: " + err.Error()), nil
+				}
+				scope := make([]map[string]any, 0, len(scopes))
+				for _, ts := range scopes {
+					scope = append(scope, map[string]any{
+						"kind": ts.Kind, "value": scopeRowValue(ts), "effect": ts.Effect, "reason": ts.Reason,
+					})
+				}
+				out["scope"] = scope
+				assets, err := as.QueryByTask(t.ID, "", planContextAssetLimit, 0)
+				if err != nil {
+					return actool.Errorf("read assets: " + err.Error()), nil
+				}
+				list := make([]map[string]any, 0, len(assets))
+				for _, asset := range assets {
+					list = append(list, map[string]any{"id": asset.ID, "type": asset.Type, "value": assetLabel(asset)})
+				}
+				out["assets"] = list
+			}
+			store := s.m.PG().Exploration(t.ExplorationID)
+			goals, err := store.ListByKind(db.KindGoal, planContextNodeLimit)
+			if err != nil {
+				return actool.Errorf("read goals: " + err.Error()), nil
+			}
+			out["goals"] = planNodeDigest(goals, "text")
+			intents, err := store.ListByKind(db.KindIntent, planContextNodeLimit)
+			if err != nil {
+				return actool.Errorf("read intents: " + err.Error()), nil
+			}
+			out["intents"] = planNodeDigest(intents, "summary")
+			hints, err := store.ListByKind(db.KindHint, planContextNodeLimit)
+			if err != nil {
+				return actool.Errorf("read hints: " + err.Error()), nil
+			}
+			out["hints"] = planNodeDigest(hints, "text")
+			return jsonResult(out)
+		})
+}
+
+// scopeRowValue renders the one field a scope row carries, so a draft reads
+// "exclude root_domain vendor.example" instead of three empty columns.
+func scopeRowValue(ts db.TaskScope) string {
+	switch ts.Kind {
+	case "root_domain", "subdomain":
+		return ts.Domain
+	case "ip", "cidr":
+		return ts.Net
+	case "company":
+		if ts.CompanyName != "" {
+			return ts.CompanyName
+		}
+	}
+	return ts.Value
+}
+
+// planNodeDigest projects existing graph nodes down to what a draft needs to
+// avoid repeating them: id, the one text field the node carries, and its state.
+func planNodeDigest(nodes []*db.Node, field string) []map[string]any {
+	out := make([]map[string]any, 0, len(nodes))
+	for _, n := range nodes {
+		var payload map[string]any
+		_ = json.Unmarshal(n.Payload, &payload)
+		out = append(out, map[string]any{"id": n.ID, field: payload[field], "state": n.State})
+	}
+	return out
+}
+
+func (s *Server) toolProposePlan() actool.CoreTool {
+	return wrTool("propose_plan",
+		"Validate a plan proposal and store it as the task's one pending draft for the operator to review and apply. Nothing is written to the graph: this stores a draft and nothing else. "+
+			"A validation failure returns every problem at once; fix them all and call propose_plan once more. "+
+			"A scope inclusion widens the engagement and needs the operator's explicit approval (needs_include_approval=true in the reply); an exclusion only narrows it and does not.",
+		objSchema(map[string]any{
+			"task_id": map[string]any{"type": "integer", "description": "Task id the plan is for."},
+			"proposal": map[string]any{
+				"type": "object",
+				"description": "summary (one sentence), goals[{ref,text,vulnclass}], intents[{ref,summary,goal,asset_ids,depends_on}], " +
+					"hints[{text,asset_ids,rule}], scope[{effect,kind,value,note}]. Refs are unique across goals and intents.",
+			},
+		}, "task_id", "proposal"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				TaskID   int64           `json:"task_id"`
+				Proposal json.RawMessage `json:"proposal"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("bad input: " + err.Error()), nil
+			}
+			if a.TaskID <= 0 {
+				return actool.Errorf("task_id is required"), nil
+			}
+			t, err := s.m.PG().GetTask(a.TaskID)
+			if err != nil {
+				return actool.Errorf("read task: " + err.Error()), nil
+			}
+			if t == nil {
+				return actool.Errorf(fmt.Sprintf("task %d not found", a.TaskID)), nil
+			}
+			var p plan.Proposal
+			if err := json.Unmarshal(a.Proposal, &p); err != nil {
+				return actool.Errorf("proposal is not a plan object: " + err.Error()), nil
+			}
+			ids, err := s.taskAssetIDs(t.ID)
+			if err != nil {
+				return actool.Errorf("read assets: " + err.Error()), nil
+			}
+			if errs := plan.Validate(p, plan.Context{AssetIDs: ids}); len(errs) > 0 {
+				var b strings.Builder
+				fmt.Fprintf(&b, "the proposal has %d problem(s); fix them all and call propose_plan once more:\n", len(errs))
+				for _, e := range errs {
+					fmt.Fprintf(&b, "- %v\n", e)
+				}
+				return actool.Errorf(strings.TrimRight(b.String(), "\n")), nil
+			}
+			draft, err := s.m.PG().CreatePlanDraft(ctx, t.ID, p.Summary, a.Proposal)
+			if err != nil {
+				return actool.Errorf("store draft: " + err.Error()), nil
+			}
+			return jsonResult(map[string]any{
+				"draft_id": draft.ID, "summary": p.Summary,
+				"goals": len(p.Goals), "intents": len(p.Intents), "hints": len(p.Hints), "scope": len(p.Scope),
+				"needs_include_approval": plan.HasInclude(p),
+			})
+		})
+}
+
+// taskAssetIDs is the set plan.Validate checks asset_ids against, so a draft
+// cannot anchor an intent to another task's asset.
+func (s *Server) taskAssetIDs(taskID int64) (map[int64]bool, error) {
+	rows, err := s.m.PG().Query(`SELECT id FROM assets WHERE $1 = ANY(task_ids)`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}

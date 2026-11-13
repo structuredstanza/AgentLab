@@ -85,6 +85,8 @@ import type {
   NotificationDelivery,
   NotificationFilter,
   NotificationMeta,
+  PlanDraft,
+  PlanDraftList,
   Reflection,
   ReflectionPage,
   ReflectionQuery,
@@ -503,6 +505,17 @@ export const api = {
   deleteTaskScope: (id: string, scopeId: number) => del<{ ok: boolean }>(`/tasks/${id}/scope/${scopeId}`),
   // Intents / facts / findings associated with an asset in this task (used by the graph node drawer).
   taskAssetRefs: (id: string, assetId: number) => get<CoverageAssetRefs>(`/tasks/${id}/asset-refs?asset_id=${assetId}`),
+
+  // ---- drafted engagement plans ----
+  // The task's drafts, newest first. At most one is pending (status "draft").
+  planDrafts: (taskId: string) => get<PlanDraftList>(`/tasks/${taskId}/plans`).then((r) => arr(r.items)),
+  // Applying writes the proposal into the graph. allowInclude acknowledges that
+  // the proposal widens the task scope; the backend rejects it otherwise.
+  applyPlanDraft: (taskId: string, draftId: number, allowInclude: boolean) =>
+    post<{ draft: PlanDraft }>(`/tasks/${taskId}/plans/${draftId}/apply`, { allow_include: allowInclude }).then(
+      (r) => r.draft,
+    ),
+  discardPlanDraft: (taskId: string, draftId: number) => del<{ ok: boolean }>(`/tasks/${taskId}/plans/${draftId}`),
 
   // ---- workspace file manager (workDir) ----
   workspaceList: (path = "") => get<WorkspaceListing>(`/workspace/list?path=${encodeURIComponent(path)}`),

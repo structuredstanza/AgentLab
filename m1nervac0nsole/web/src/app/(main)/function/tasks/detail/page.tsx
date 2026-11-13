@@ -39,6 +39,7 @@ import { FindingsTab } from "./_tabs/findings-tab";
 import { GraphTab } from "./_tabs/graph-tab";
 import { InterceptTab } from "./_tabs/intercept-tab";
 import { OverviewTab } from "./_tabs/overview-tab";
+import { PlanTab } from "./_tabs/plan-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
@@ -46,6 +47,7 @@ import { SessionsTab } from "./_tabs/sessions-tab";
 const TAB_VALUES = [
   "sessions",
   "overview",
+  "plan",
   "graph",
   "broadcast",
   "findings",
@@ -431,6 +433,9 @@ function TaskDetailInner() {
         </TabsContent>
         <TabsContent value="overview" className="mt-0">
           <OverviewTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="plan" className="mt-0">
+          <PlanTab taskId={id} />
         </TabsContent>
         <TabsContent value="graph" className="mt-0">
           <GraphTab taskId={id} />

@@ -214,6 +214,8 @@ var builtinAgents = []builtinAgent{
 	{"pentest", "Penetration testing", "assistant", "Standalone pentest agent: one agent walks the full chain from recon → attack-surface discovery → deep exploitation → verification → wrap-up, planning, executing, and adversarially verifying on its own.", nil, true, intp(0)},
 	// Curator: built-in "memory curation" assistant. Driven from the chat page; reads the knowledge base and the reflection pool, proposes task-scoped candidates, and never promotes, retires or deletes - that stays an operator action.
 	{"curator", "Curator", "assistant", "Memory curation assistant: reads the knowledge base and the reflection pool, proposes task-scoped candidates for the operator to promote, and never promotes, retires or deletes anything itself.", nil, false, nil},
+	// Drafter: built-in "plan drafting" assistant. Driven from the chat page; turns an operator's plain-language approach into a draft plan the operator reviews and applies, and never writes to the graph itself.
+	{"drafter", "Plan drafter", "assistant", "Turns a plain-language engagement approach into a draft plan (goals, seed intents, hints, scope rules) that the operator reviews and applies; it never writes to the graph itself.", nil, false, nil},
 }
 
 // seedBuiltins inserts the fixed built-in agents and their variable catalog (idempotent).

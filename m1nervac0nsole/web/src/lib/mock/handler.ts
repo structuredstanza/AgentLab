@@ -26,6 +26,7 @@ import type {
   LLMProfile,
   LLMProfileUsage,
   LLMUsageWindow,
+  PlanDraft,
   ScopeRow,
   Task,
   TaskArchive,
@@ -56,6 +57,56 @@ const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
 const mockTaskCredentials = new Map<string, TaskCredential[]>(Object.entries(structuredClone(D.taskCredentials)));
 let nextMockCredentialID = 100;
+// Drafted engagement plans, keyed by the demo task id. The seed draft carries an
+// inclusion, so the demo exercises the "this widens the task scope" gate.
+const mockPlanDrafts = new Map<string, PlanDraft[]>([
+  [
+    "t-acme-web",
+    [
+      {
+        id: 1,
+        task_id: 1,
+        status: "draft",
+        summary: "Cover the shop and admin surfaces before the API deep-dive.",
+        proposal: {
+          summary: "Cover the shop and admin surfaces before the API deep-dive.",
+          goals: [
+            {
+              ref: "g1",
+              text: "Prove whether the search parameter reaches the database unescaped.",
+              vulnclass: "sqli",
+            },
+            { ref: "g2", text: "Show an order belonging to another customer.", vulnclass: "idor" },
+          ],
+          intents: [
+            {
+              ref: "i1",
+              summary: "Replay the search request with time-based payloads.",
+              goal: "g1",
+              asset_ids: [1, 2],
+            },
+            {
+              ref: "i2",
+              summary: "Walk the order id space from the shop session.",
+              goal: "g2",
+              asset_ids: [2],
+              depends_on: ["i1"],
+            },
+          ],
+          hints: [
+            { text: "Stay under 5 requests per second on the shop host.", rule: true },
+            { text: "The admin back office is behind a VPN; check the login page first." },
+          ],
+          scope: [
+            { effect: "include", kind: "subdomain", value: "shop.acme.com", note: "New surface found in JS" },
+            { effect: "exclude", kind: "subdomain", value: "status.acme.com", note: "Out of scope per the client" },
+          ],
+        },
+        created_at: "2026-11-12T09:00:00Z",
+      },
+    ],
+  ],
+]);
 const mockRetests: FindingRetest[] = [];
 const mockRetestMessages: Record<number, Activity[]> = {};
 // Mock native proxy login: exercises UI transitions only. It never contacts a provider and never issues a real grant.
@@ -1663,6 +1714,29 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "status") return { running: false };
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "stop") return { status: "stopped" };
+
+  // ── Drafted engagement plans (created by the drafter's tool, applied here) ──
+  if (seg[0] === "tasks" && seg[2] === "plans" && seg.length === 3 && m === "GET") {
+    return { items: structuredClone(mockPlanDrafts.get(seg[1]) ?? []) };
+  }
+  if (seg[0] === "tasks" && seg[2] === "plans" && seg.length === 4 && m === "DELETE") {
+    const draft = (mockPlanDrafts.get(seg[1]) ?? []).find((item) => item.id === Number(seg[3]));
+    if (!draft) throw new Error("Plan draft not found");
+    if (draft.status !== "draft") throw new Error("Plan draft is not pending");
+    draft.status = "discarded";
+    return { ok: true };
+  }
+  if (seg[0] === "tasks" && seg[2] === "plans" && seg[4] === "apply" && seg.length === 5 && m === "POST") {
+    const draft = (mockPlanDrafts.get(seg[1]) ?? []).find((item) => item.id === Number(seg[3]));
+    if (!draft) throw new Error("Plan draft not found");
+    if (draft.status !== "draft") throw new Error("Plan draft is not pending");
+    if (draft.proposal.scope.some((rule) => rule.effect === "include") && b.allow_include !== true)
+      throw new Error("The draft adds scope inclusions: apply it with allow_include");
+    draft.status = "applied";
+    draft.applied_at = new Date().toISOString();
+    draft.created_node_ids = [9001, 9002, 9003];
+    return { draft: structuredClone(draft) };
+  }
 
   // ── Coverage / coverage graph / asset association (task dimension) ──
   if (seg[0] === "tasks" && seg[2] === "coverage" && seg.length === 3) return D.coverage;
