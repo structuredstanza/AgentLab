@@ -291,6 +291,20 @@ func (p *Proxy) mitm(ctx context.Context, conn net.Conn, br *bufio.Reader, autho
 	}
 	io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 
+	// A CONNECT tunnel carries opaque bytes (RFC 9110 9.3.6). The recording
+	// proxy always CONNECTs to its upstream - even for an http:// target - so a
+	// plaintext request arrives here; terminating TLS on it consumes the request
+	// and answers nothing, which is how every plain-HTTP target became a 502.
+	// Peek one byte: 0x16 opens a TLS handshake, anything else is relayed.
+	first, err := br.Peek(1)
+	if err != nil {
+		return
+	}
+	if first[0] != 0x16 {
+		p.relayTunnel(ctx, conn, br, authority, host)
+		return
+	}
+
 	tlsConn := tls.Server(&bufferedConn{Conn: conn, r: br}, &tls.Config{
 		Certificates: []tls.Certificate{*leaf},
 		NextProtos:   []string{"http/1.1"},
@@ -311,6 +325,50 @@ func (p *Proxy) mitm(ctx context.Context, conn net.Conn, br *bufio.Reader, autho
 			return
 		}
 	}
+}
+
+// relayTunnel forwards a CONNECT tunnel verbatim, without terminating TLS.
+//
+// It exists for the proxy-to-proxy hop: the recording proxy CONNECTs to this
+// proxy for plaintext targets too, and a TLS handshake there would swallow the
+// request. The engagement gate and the reachability probe still apply, so a
+// relay is not an unthrottled path to a target, and the connection is logged
+// like any other.
+func (p *Proxy) relayTunnel(ctx context.Context, conn net.Conn, br *bufio.Reader, authority, host string) {
+	started := time.Now()
+	if p.Gate != nil {
+		if ok, reason := p.Gate.Allow(ctx, host, ""); !ok {
+			logEvent(ctx, Event{Time: started, Method: "CONNECT", Host: host,
+				Refused: true, Reason: reason, Duration: time.Since(started)})
+			body := "blocked by engagement policy: " + reason
+			fmt.Fprintf(conn, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+				len(body), body)
+			return
+		}
+	}
+	upstream, err := (&net.Dialer{Timeout: connectProbeTimeout}).DialContext(ctx, "tcp", authority)
+	if err != nil {
+		logEvent(ctx, Event{Time: started, Method: "CONNECT", Host: host,
+			Refused: true, Reason: "dial: " + err.Error(), Duration: time.Since(started)})
+		writeEgressFailure(conn, egressDialFailed)
+		return
+	}
+	defer upstream.Close()
+	logEvent(ctx, Event{Time: started, Method: "CONNECT", Host: host, Duration: time.Since(started)})
+
+	// A tunnel outlives one request, so the per-request deadline must go; the
+	// idle timeout is enforced per copy below instead.
+	conn.SetDeadline(time.Time{})
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(upstream, br)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(conn, upstream)
+		done <- struct{}{}
+	}()
+	<-done
 }
 
 // reachable reports whether authority accepted a TCP connection, dialling once

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -170,6 +171,88 @@ func TestGateRefusalNeverReachesOrigin(t *testing.T) {
 	}
 	if hits != 0 {
 		t.Fatalf("origin was reached %d times despite the refusal", hits)
+	}
+}
+
+// A CONNECT tunnel carrying plaintext must be relayed, not terminated: the
+// recording proxy CONNECTs to this proxy even for an http:// target, and a TLS
+// handshake here consumed the request and answered nothing (the 502 that made
+// every plain-HTTP target uncaptured).
+func TestProxyRelaysPlaintextThroughConnect(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "plain")
+	}))
+	defer origin.Close()
+	authority := strings.TrimPrefix(origin.URL, "http://")
+
+	p := newTestProxy(t, nil)
+	conn, err := net.Dial("tcp", p.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, "CONNECT "+authority+" HTTP/1.1\r\nHost: "+authority+"\r\n\r\n")
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil || !strings.Contains(line, "200") {
+		t.Fatalf("CONNECT reply = %q (%v)", line, err)
+	}
+	for {
+		l, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read the CONNECT headers: %v", err)
+		}
+		if l == "\r\n" {
+			break
+		}
+	}
+	io.WriteString(conn, "GET /plain HTTP/1.1\r\nHost: "+authority+"\r\nConnection: close\r\n\r\n")
+	out, err := io.ReadAll(br)
+	if err != nil {
+		t.Fatalf("read the relayed response: %v", err)
+	}
+	if !strings.Contains(string(out), "plain") {
+		t.Fatalf("relayed response = %q, want the origin's body", out)
+	}
+}
+
+// The gate still applies to a relayed tunnel: a relay must not become an
+// unthrottled path to a target the engagement forbids.
+func TestRelayedTunnelHonoursTheGate(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	}))
+	defer origin.Close()
+	authority := strings.TrimPrefix(origin.URL, "http://")
+
+	p := newTestProxy(t, denyAll{})
+	conn, err := net.Dial("tcp", p.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, "CONNECT "+authority+" HTTP/1.1\r\nHost: "+authority+"\r\n\r\n")
+	br := bufio.NewReader(conn)
+	if line, _ := br.ReadString('\n'); !strings.Contains(line, "200") {
+		t.Fatalf("CONNECT reply = %q", line)
+	}
+	for {
+		l, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read the CONNECT headers: %v", err)
+		}
+		if l == "\r\n" {
+			break
+		}
+	}
+	io.WriteString(conn, "GET /secret HTTP/1.1\r\nHost: "+authority+"\r\nConnection: close\r\n\r\n")
+	out, _ := io.ReadAll(br)
+	if !strings.Contains(string(out), "403") {
+		t.Fatalf("relayed response = %q, want a refusal", out)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("origin was reached %d times despite the refusal", hits.Load())
 	}
 }
 
