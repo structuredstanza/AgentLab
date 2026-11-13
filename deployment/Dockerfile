@@ -205,7 +205,15 @@ RUN set -eux; \
     playwright install --with-deps chromium || echo "WARN: chromium download failed; relying on an existing browser"; \
     ls "$PLAYWRIGHT_BROWSERS_PATH"/*/chrome-linux*/chrome >/dev/null 2>&1 \
       || { echo "no Chromium present and the download failed"; exit 1; }; \
+    ln -sfn "$(ls -d "$PLAYWRIGHT_BROWSERS_PATH"/chromium-*/chrome-linux64 | sort -V | tail -1)" \
+      "$PLAYWRIGHT_BROWSERS_PATH/current"; \
     rm -rf /var/lib/apt/lists/* /root/.npm
+
+# The browser MCP is spawned with --executable-path pointing at
+# $PLAYWRIGHT_BROWSERS_PATH/current/chrome: its own default is the branded
+# "chrome" channel, and its pinned Playwright expects a revision this image
+# does not carry, so both fail with "Chromium ... is not found". The link is
+# built above from whatever revision the install produced.
 
 # REA reverse-engineering MCP (backs the `rea` skill). Pinned to the release
 # verified against this image; Node >=22.23.4 is required.

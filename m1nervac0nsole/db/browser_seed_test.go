@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +19,9 @@ func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
 	t.Cleanup(func() { d.Close() })
 
 	const key = "browser_mcp_enabled_v1"
-	const seedArgs = `["@playwright/mcp","--headless"]`
+	const chromiumKey = "browser_mcp_chromium_v1"
+	const commandKey = "browser_mcp_command_v1"
+	const oldSeedArgs = `["@playwright/mcp","--headless"]` // what a build before the --browser fix seeded
 	const backup = "browser-test-backup"
 
 	// Save the shared row + flag and move the row aside under a temporary name,
@@ -27,10 +30,11 @@ func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
 	var (
 		hadRow  bool
 		enabled bool
+		command string
 		args    string
 		env     string
 	)
-	err = d.QueryRow(`SELECT enabled, args, env FROM mcp_servers WHERE name='browser'`).Scan(&enabled, &args, &env)
+	err = d.QueryRow(`SELECT enabled, command, args, env FROM mcp_servers WHERE name='browser'`).Scan(&enabled, &command, &args, &env)
 	switch {
 	case err == nil:
 		hadRow = true
@@ -39,6 +43,14 @@ func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldFlag, hadFlag, err := d.GetSetting(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldChromium, hadChromium, err := d.GetSetting(chromiumKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCommand, hadCommand, err := d.GetSetting(commandKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,12 +65,22 @@ func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM mcp_servers WHERE name='browser'`)
 		if hadRow {
-			_, _ = d.Exec(`UPDATE mcp_servers SET name='browser', enabled=$1, args=$2, env=$3 WHERE name=$4`, enabled, args, env, backup)
+			_, _ = d.Exec(`UPDATE mcp_servers SET name='browser', enabled=$1, command=$2, args=$3, env=$4 WHERE name=$5`, enabled, command, args, env, backup)
 		}
 		if hadFlag {
 			_ = d.SetSetting(key, oldFlag)
 		} else {
 			_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, key)
+		}
+		if hadChromium {
+			_ = d.SetSetting(chromiumKey, oldChromium)
+		} else {
+			_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, chromiumKey)
+		}
+		if hadCommand {
+			_ = d.SetSetting(commandKey, oldCommand)
+		} else {
+			_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, commandKey)
 		}
 	})
 
@@ -96,10 +118,10 @@ func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
 
 	// An older install: the row was seeded disabled and the migration never ran.
 	// The first startup after the upgrade flips it, once.
-	if _, err := d.Exec(`UPDATE mcp_servers SET enabled=false, args=$1, env='{}' WHERE name='browser'`, seedArgs); err != nil {
+	if _, err := d.Exec(`UPDATE mcp_servers SET enabled=false, command='npx', args=$1, env='{}' WHERE name='browser'`, oldSeedArgs); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, key); err != nil {
+	if _, err := d.Exec(`DELETE FROM settings WHERE key IN ($1, $2, $3)`, key, chromiumKey, commandKey); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.seedBuiltins(); err != nil {
@@ -110,6 +132,32 @@ func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
 	}
 	if v, _, _ := d.GetSetting(key); v != "true" {
 		t.Fatalf("the one-shot flag was not set (got %q)", v)
+	}
+	// The same upgrade names the browser: the branded "chrome" channel and the
+	// MCP's own expected revision are both absent from the image, so a row
+	// without --executable-path fails every navigation.
+	var gotArgs string
+	if err := d.QueryRow(`SELECT args::text FROM mcp_servers WHERE name='browser'`).Scan(&gotArgs); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotArgs, `"--executable-path"`) || !strings.Contains(gotArgs, `/opt/ms-playwright/current/chrome`) {
+		t.Fatalf("the migrated row does not name the chromium executable: %s", gotArgs)
+	}
+	// Running as root in the guest, Chromium refuses to start with its sandbox.
+	if !strings.Contains(gotArgs, `"--no-sandbox"`) {
+		t.Fatalf("the migrated row does not disable the Chromium sandbox: %s", gotArgs)
+	}
+	// npx resolves the package over the network, and every child inherits the
+	// egress proxy: the handshake hung. The image's global binary is used instead.
+	var gotCmd string
+	if err := d.QueryRow(`SELECT command FROM mcp_servers WHERE name='browser'`).Scan(&gotCmd); err != nil {
+		t.Fatal(err)
+	}
+	if gotCmd != "playwright-mcp" {
+		t.Fatalf("command = %q, want playwright-mcp", gotCmd)
+	}
+	if strings.Contains(gotArgs, "@playwright/mcp") {
+		t.Fatalf("the package name is still in the args: %s", gotArgs)
 	}
 
 	// A toggle-off after the migration survives the next restart.

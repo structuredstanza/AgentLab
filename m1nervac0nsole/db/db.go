@@ -261,9 +261,9 @@ ON CONFLICT (agent_id, var_name) DO UPDATE
 	// so we never clobber user edits (args/env/visibility) on restart.
 	if _, err := d.Exec(`
 INSERT INTO mcp_servers(name, transport, command, args, env, enabled)
-VALUES ('browser', 'stdio', 'npx', $1, '{}', true)
+VALUES ('browser', 'stdio', 'playwright-mcp', $1, '{}', true)
 ON CONFLICT (name) DO NOTHING`,
-		`["@playwright/mcp","--headless"]`); err != nil {
+		`["--headless","--executable-path","/opt/ms-playwright/current/chrome","--no-sandbox"]`); err != nil {
 		return fmt.Errorf("seed browser mcp: %w", err)
 	}
 	// Older builds seeded that same row DISABLED. Enable it once for those
@@ -276,6 +276,40 @@ ON CONFLICT (name) DO NOTHING`,
 			return fmt.Errorf("enable browser mcp: %w", err)
 		}
 		_ = d.SetSetting("browser_mcp_enabled_v1", "true")
+	}
+	// The first seed omitted --executable-path, and @playwright/mcp then looks
+	// for the branded "chrome" channel (or a browser revision its own Playwright
+	// build expects), neither of which the guest image ships: every navigation
+	// failed with "Chromium distribution 'chrome' is not found". Point the
+	// seeded row at the image's stable chromium link once; a row that already
+	// names an executable is left alone.
+	if v, _, _ := d.GetSetting("browser_mcp_chromium_v1"); v != "true" {
+		if _, err := d.Exec(`
+UPDATE mcp_servers
+SET args = args || '["--executable-path","/opt/ms-playwright/current/chrome","--no-sandbox"]'::jsonb
+WHERE name = 'browser'
+  AND args @> '["@playwright/mcp"]'::jsonb
+  AND NOT (args @> '["--executable-path"]'::jsonb)`); err != nil {
+			return fmt.Errorf("point browser mcp at chromium: %w", err)
+		}
+		_ = d.SetSetting("browser_mcp_chromium_v1", "true")
+	}
+	// The first seed spawned `npx @playwright/mcp`, and npx resolves the package
+	// over the network: inside the app every child inherits http_proxy pointing
+	// at the masking egress proxy, so the handshake hung until the caller's
+	// deadline ("connection closed" before the stderr capture landed). The
+	// image installs the same package globally; run its binary directly.
+	if v, _, _ := d.GetSetting("browser_mcp_command_v1"); v != "true" {
+		if _, err := d.Exec(`
+UPDATE mcp_servers
+SET command = 'playwright-mcp',
+    args = (SELECT coalesce(jsonb_agg(e), '[]'::jsonb)
+            FROM jsonb_array_elements(args) e
+            WHERE e <> '"@playwright/mcp"'::jsonb)
+WHERE name = 'browser' AND command = 'npx' AND args @> '["@playwright/mcp"]'::jsonb`); err != nil {
+			return fmt.Errorf("point browser mcp at the global binary: %w", err)
+		}
+		_ = d.SetSetting("browser_mcp_command_v1", "true")
 	}
 	// Seed the Obscura browser MCP (stdio, enabled). It is the lighter
 	// JS-engine alternative to the Chromium MCP; it cannot trust the recording

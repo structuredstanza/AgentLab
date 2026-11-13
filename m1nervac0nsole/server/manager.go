@@ -735,7 +735,10 @@ func (m *Manager) syncBrowserMCPProxy() {
 	env := decodeStrMap(srv.Env)
 	delete(env, "NODE_EXTRA_CA_CERTS")
 	if proxy != "" {
-		args = append(args, "--proxy-server", proxy)
+		// The recorder MITMs every connection, so the browser must accept its
+		// certificate. Chromium does not read NODE_EXTRA_CA_CERTS; without this
+		// flag every https:// navigation fails with ERR_CERT_AUTHORITY_INVALID.
+		args = append(args, "--proxy-server", proxy, "--ignore-https-errors")
 		if cert != "" {
 			env["NODE_EXTRA_CA_CERTS"] = cert
 		}
@@ -754,8 +757,8 @@ func (m *Manager) syncBrowserMCPProxy() {
 }
 
 // stripProxyArgs removes any --proxy-server/--proxy-bypass flags (both "--flag val"
-// and "--flag=val" forms) so they can be re-added cleanly from current state,
-// without mutating the input slice.
+// and "--flag=val" forms) and the bare --ignore-https-errors flag, so they can be
+// re-added cleanly from current state, without mutating the input slice.
 func stripProxyArgs(args []string) []string {
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
@@ -764,7 +767,8 @@ func stripProxyArgs(args []string) []string {
 			i++ // skip the following value too
 			continue
 		}
-		if strings.HasPrefix(a, "--proxy-server=") || strings.HasPrefix(a, "--proxy-bypass=") {
+		if a == "--ignore-https-errors" ||
+			strings.HasPrefix(a, "--proxy-server=") || strings.HasPrefix(a, "--proxy-bypass=") {
 			continue
 		}
 		out = append(out, a)
