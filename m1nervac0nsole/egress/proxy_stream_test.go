@@ -465,15 +465,24 @@ func TestProxyReleasesSlotAfterUpstreamFailure(t *testing.T) {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
 	}
 
-	// The same single slot must serve the next request.
-	ok, err := client.Get(origin.URL + "/ok")
-	if err != nil {
-		t.Fatalf("request after a failed exchange failed: %v", err)
+	// The same single slot must serve the next request. The handler releases it
+	// after the response is written, so a client that reconnects the instant it
+	// reads the 502 can still be refused; poll like the bound test above rather
+	// than assuming the release already happened.
+	var lastStatus int
+	for range 50 {
+		ok, err := client.Get(origin.URL + "/ok")
+		if err != nil {
+			t.Fatalf("request after a failed exchange failed: %v", err)
+		}
+		lastStatus = ok.StatusCode
+		ok.Body.Close()
+		if lastStatus == http.StatusOK {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	defer ok.Body.Close()
-	if ok.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (the slot was not released)", ok.StatusCode)
-	}
+	t.Fatalf("status = %d, want 200 (the slot was not released)", lastStatus)
 }
 
 // Close must drop the connections being served and let Serve return promptly,
