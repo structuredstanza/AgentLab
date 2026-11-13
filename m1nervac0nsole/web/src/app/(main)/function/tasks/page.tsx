@@ -744,7 +744,7 @@ export default function TasksPage() {
       // The batch route answers 202 with one error per task, so the evidence
       // gate arrives here instead of as a 409. Keep the blocked tasks selected
       // and let the dialog retry exactly those with force.
-      const blocked = failed.filter((item) => item.error?.startsWith(ARCHIVE_GATE_PREFIX));
+      const blocked = failed.filter((item) => item.gate === "evidence");
       if (blocked.length > 0) {
         setSelectedIds((prev) => {
           const next = new Set(prev);
@@ -1559,10 +1559,6 @@ function archiveBlockReason(t: Translator, task: Task): string {
   }
   return "";
 }
-
-// The batch route reports the gate per item instead of as a 409; the refusal
-// text is the backend's own, so its prefix is the only marker available.
-const ARCHIVE_GATE_PREFIX = "Cannot archive:";
 
 function TaskArchiveAction({
   task,

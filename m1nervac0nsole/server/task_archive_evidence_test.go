@@ -145,6 +145,7 @@ func TestTaskArchiveEvidenceGate(t *testing.T) {
 			OK     bool   `json:"ok"`
 			Queued bool   `json:"queued"`
 			Error  string `json:"error"`
+			Gate   string `json:"gate"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &batch); err != nil {
@@ -156,11 +157,13 @@ func TestTaskArchiveEvidenceGate(t *testing.T) {
 	for _, item := range batch.Items {
 		switch item.ID {
 		case blocked.ID:
-			if item.OK || item.Queued || !strings.Contains(item.Error, blockedText) {
+			// The client keys its retry-with-force on this field, not on the
+			// message text: the batch route answers 202 for every item.
+			if item.OK || item.Queued || item.Gate != "evidence" || !strings.Contains(item.Error, blockedText) {
 				t.Fatalf("blocked batch item=%+v", item)
 			}
 		case clean.ID:
-			if !item.OK || !item.Queued || item.Error != "" {
+			if !item.OK || !item.Queued || item.Error != "" || item.Gate != "" {
 				t.Fatalf("clean batch item=%+v", item)
 			}
 		default:

@@ -149,6 +149,10 @@ export interface ArchiveBatchItem {
   ok: boolean;
   queued: boolean;
   error?: string;
+  // "evidence": the archive gate refused this task because a finding still has
+  // no bound traffic. The batch route answers 202, so this field, not the error
+  // text, is what the retry-with-force path keys on.
+  gate?: "evidence";
 }
 
 // ---- Asset graph (global, shared across tasks) ----

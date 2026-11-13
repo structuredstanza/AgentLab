@@ -40,6 +40,9 @@ type archiveBatchItem struct {
 	Queued  bool   `json:"queued"`
 	Error   string `json:"error,omitempty"`
 	Archive int64  `json:"archive_id,omitempty"`
+	// Gate names the refusal so the client does not have to match the message
+	// text: the batch route answers 202, and only this field is a contract.
+	Gate string `json:"gate,omitempty"`
 }
 
 func (s *Server) startTaskArchiveWorker() {
@@ -626,6 +629,7 @@ func (s *Server) queueTaskArchivesBatch(w http.ResponseWriter, r *http.Request) 
 			item.OK, item.Queued, item.Error = false, false, err.Error()
 		case blocker != "":
 			item.OK, item.Queued, item.Error = false, false, blocker
+			item.Gate = "evidence"
 		default:
 			archive, err := s.m.pg.QueueTaskArchive(numeric)
 			if err != nil {
