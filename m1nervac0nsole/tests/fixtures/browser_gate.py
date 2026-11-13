@@ -108,5 +108,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8099
     open(ACCESS_LOG, "a").close()
-    print("flag:", FLAG, "port:", port, flush=True)
+    # The flag is deliberately not printed: the agent runs in this guest and
+    # could read a log file instead of driving the browser.
+    print("port:", port, flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
