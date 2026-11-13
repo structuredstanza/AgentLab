@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 

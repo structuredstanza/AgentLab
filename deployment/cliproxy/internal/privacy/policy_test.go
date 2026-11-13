@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 )
 
 type stubTransport struct {
@@ -54,7 +54,7 @@ func newTestPolicy(t *testing.T, stub http.RoundTripper, sink Sink) (http.RoundT
 	if err != nil {
 		t.Fatal(err)
 	}
-	pol, err := NewPolicy(PolicyConfig{Identifiers: []string{"ARTEX"}, Receipts: rc, Sink: sink})
+	pol, err := NewPolicy(PolicyConfig{Identifiers: []string{"m1nervac0nsole"}, Receipts: rc, Sink: sink})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestZeroConfigRejected(t *testing.T) {
 }
 
 func TestPartialConfigRejected(t *testing.T) {
-	if _, err := NewPolicy(PolicyConfig{Identifiers: []string{"artex"}}); err == nil {
+	if _, err := NewPolicy(PolicyConfig{Identifiers: []string{"m1nervac0nsole"}}); err == nil {
 		t.Fatal("partial config accepted")
 	}
 }
@@ -104,9 +104,9 @@ func TestCleanInferencePassesAndIsCaptured(t *testing.T) {
 }
 
 func TestCanaryVariantsDenied(t *testing.T) {
-	b64 := base64.StdEncoding.EncodeToString([]byte("artex"))
+	b64 := base64.StdEncoding.EncodeToString([]byte("m1nervac0nsole"))
 	cases := map[string]string{
-		"plain":              `{"model":"m","messages":[{"role":"user","content":"ask ARTEX"}]}`,
+		"plain":              `{"model":"m","messages":[{"role":"user","content":"ask m1nervac0nsole"}]}`,
 		"zero-width":         `{"model":"m","messages":[{"role":"user","content":"AR\u200bTEX"}]}`,
 		"variation-selector": `{"model":"m","messages":[{"role":"user","content":"AR\uFE0FTEX"}]}`,
 		"bidi-format":        `{"model":"m","messages":[{"role":"user","content":"AR\u202ETEX"}]}`,
@@ -123,7 +123,7 @@ func TestCanaryVariantsDenied(t *testing.T) {
 			if !errors.Is(err, contract.ErrDenied) {
 				t.Fatalf("want ErrDenied, got %v", err)
 			}
-			if strings.Contains(strings.ToLower(err.Error()), "artex") {
+			if strings.Contains(strings.ToLower(err.Error()), "m1nervac0nsole") {
 				t.Fatal("denial error echoed the identifier")
 			}
 			if stub.calls != 0 {
@@ -157,7 +157,7 @@ func TestNativeMediaRejectedButToolSchemaAllowed(t *testing.T) {
 func TestGzipBodyScanned(t *testing.T) {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
-	zw.Write([]byte(`{"model":"m","messages":[{"role":"user","content":"ARTEX"}]}`))
+	zw.Write([]byte(`{"model":"m","messages":[{"role":"user","content":"m1nervac0nsole"}]}`))
 	zw.Close()
 	req := messagesRequest(t, "")
 	req.Body = io.NopCloser(bytes.NewReader(buf.Bytes()))

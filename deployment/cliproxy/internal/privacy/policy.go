@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 )
 
 // PolicyConfig configures the required outbound admission decorator.
 type PolicyConfig struct {
-	// Identifiers are ARTEX identifiers and project names that must never leave the host.
+	// Identifiers are m1nervac0nsole identifiers and project names that must never leave the host.
 	Identifiers []string
 	Receipts    contract.Receipts
 	Sink        Sink

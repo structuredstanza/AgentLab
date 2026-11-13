@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/artex/cliproxyhost/internal/contract"
-	"github.com/artex/cliproxyhost/internal/store"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/store"
 )
 
 type controlledDisconnectStore struct {

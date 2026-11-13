@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thank you for the report. Filling in the fields below helps us reproduce and fix it faster.
-        **Do not use this template for security vulnerabilities. Report them through the private process in [SECURITY.en.md](https://github.com/jiwoochris/artex-global/blob/main/SECURITY.en.md).**
+        **Do not use this template for security vulnerabilities. Report them through the private process in [SECURITY.en.md](https://github.com/structuredstanza/AgentLab/blob/main/m1nervac0nsole/SECURITY.en.md).**
   - type: checkboxes
     id: preflight
     attributes:
@@ -22,7 +22,7 @@ body:
     attributes:
       label: What happened
       description: Describe both the expected behavior and the actual behavior.
-      placeholder: "e.g. Detection results should be in Korean, but they are printed in Chinese."
+      placeholder: "e.g. The findings list stays empty, but the task shows findings."
     validations:
       required: true
   - type: textarea
@@ -54,7 +54,7 @@ body:
         - Web UI / server (web / server)
         - Install / deploy (Docker / scripts)
         - LLM provider integration
-        - Documentation / translation
+        - Documentation
         - Not sure
     validations:
       required: true
@@ -63,7 +63,7 @@ body:
     attributes:
       label: Version
       description: Enter the release tag or commit hash.
-      placeholder: "e.g. v2.2.0 or b45ba04"
+      placeholder: "e.g. v0.3.15 or b45ba04"
     validations:
       required: true
   - type: input
@@ -71,6 +71,6 @@ body:
     attributes:
       label: Environment
       description: OS, whether you use Docker, the LLM model, and so on.
-      placeholder: "e.g. macOS 15 / Docker Compose / claude-opus-4-8"
+      placeholder: "e.g. Ubuntu 24.04 / Docker Compose / claude-opus-4-8"
     validations:
       required: false

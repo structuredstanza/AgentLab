@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/artex/cliproxyhost/internal/contract"
-	"github.com/artex/cliproxyhost/internal/store"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/store"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 

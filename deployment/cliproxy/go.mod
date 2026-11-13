@@ -1,4 +1,4 @@
-module github.com/artex/cliproxyhost
+module github.com/structuredstanza/cliproxyhost
 
 go 1.26.10
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export ARTEX llm_records snapshots to training JSONL.
+"""Export m1nervac0nsole llm_records snapshots to training JSONL.
 
 Input: <raw-dir>/llm_records.jsonl, one JSON object per line with the
 llm_records columns as stored by llmrec. request_body and response_body are
@@ -77,7 +77,7 @@ PROVENANCE_FILE = "provenance.json"
 RAW_PROVENANCE = "open-weight-local"  # the only provenance that makes reasoning "raw"
 
 NOTICE = (
-    "ARTEX trace export: provenance and limits\n"
+    "m1nervac0nsole trace export: provenance and limits\n"
     "- This directory holds only train.jsonl (redacted) and this NOTICE.txt.\n"
     "- Rejected rows are unredacted and live in the source snapshot as rejects.jsonl.\n"
     "- The source snapshot retains the verbatim wire bytes in llm_records.jsonl. This export does not copy raw bodies.\n"
@@ -1979,7 +1979,7 @@ def export(raw_dir: str, out_dir: str) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        description="Export ARTEX llm_records to redacted training JSONL. Rejects and reasoning.jsonl go to <raw-dir>.",
+        description="Export m1nervac0nsole llm_records to redacted training JSONL. Rejects and reasoning.jsonl go to <raw-dir>.",
     )
     p.add_argument("--raw-dir", required=True, help="snapshot dir containing llm_records.jsonl")
     p.add_argument("--output-dir", required=True, help="training dir for train.jsonl and NOTICE.txt (created 0700)")

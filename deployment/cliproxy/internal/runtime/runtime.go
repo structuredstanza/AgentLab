@@ -13,14 +13,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/artex/cliproxyhost/internal/catalog"
-	"github.com/artex/cliproxyhost/internal/contract"
-	"github.com/artex/cliproxyhost/internal/infer"
-	"github.com/artex/cliproxyhost/internal/lifecycle"
-	"github.com/artex/cliproxyhost/internal/privacy"
-	"github.com/artex/cliproxyhost/internal/server"
-	"github.com/artex/cliproxyhost/internal/store"
-	"github.com/artex/cliproxyhost/internal/usage"
+	"github.com/structuredstanza/cliproxyhost/internal/catalog"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/infer"
+	"github.com/structuredstanza/cliproxyhost/internal/lifecycle"
+	"github.com/structuredstanza/cliproxyhost/internal/privacy"
+	"github.com/structuredstanza/cliproxyhost/internal/server"
+	"github.com/structuredstanza/cliproxyhost/internal/store"
+	"github.com/structuredstanza/cliproxyhost/internal/usage"
 	core "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -175,7 +175,7 @@ func New(dataRoot string, token []byte) (*Runtime, error) {
 		return nil, errors.New("could not initialize private capture store")
 	}
 	pol, err := privacy.NewPolicy(privacy.PolicyConfig{
-		Identifiers: []string{"ARTEX", "AgentLab", "artex-global"},
+		Identifiers: []string{"m1nervac0nsole", "AgentLab", "m1nervac0nsole-global"},
 		Receipts:    receipts,
 		Sink:        captures,
 	})

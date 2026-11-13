@@ -7,7 +7,7 @@
 !/lab
 !/deployment/
 /deployment/guest-dist/
-!/artex-global/
+!/m1nervac0nsole/
 !/.github/
 !/tests/
 
@@ -24,7 +24,7 @@
 # Credentials and runtime databases must never be published.
 .env
 .env.*
-!/artex-global/.env.example
+!/m1nervac0nsole/.env.example
 *.sqlite
 *.sqlite-*
 *.db

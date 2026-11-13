@@ -3,9 +3,9 @@
 !deployment/Dockerfile
 !deployment/guest-start.py
 !deployment/guest-export.py
-!artex-global/
-!artex-global/dist/
-!artex-global/dist/amd64/
-!artex-global/dist/amd64/artex
-!artex-global/skills/
-!artex-global/skills/**
+!m1nervac0nsole/
+!m1nervac0nsole/dist/
+!m1nervac0nsole/dist/amd64/
+!m1nervac0nsole/dist/amd64/m1nervac0nsole
+!m1nervac0nsole/skills/
+!m1nervac0nsole/skills/**

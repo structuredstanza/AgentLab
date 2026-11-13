@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 )
 
 func TestArgonThinkingRoutePreservesLogicalProfileAndNativePayload(t *testing.T) {

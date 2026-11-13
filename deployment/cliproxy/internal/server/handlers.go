@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/artex/cliproxyhost/internal/contract"
-	"github.com/artex/cliproxyhost/internal/store"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/store"
 )
 
 const maxSessionIDLen = 128

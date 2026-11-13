@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 )
 
 const testToken = "test-capability-token"

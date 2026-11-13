@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 )
 
 // receiptDomain separates receipt signatures from any other use of the host key.
-const receiptDomain = "artex-cliproxy-replay-receipt-v1\x00"
+const receiptDomain = "m1nervac0nsole-cliproxy-replay-receipt-v1\x00"
 
 var errReceipt = errors.New("replay receipt rejected")
 

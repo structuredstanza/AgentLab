@@ -7,8 +7,7 @@ name: docs
 # they depend on the network and are flaky; scripts/check-doc-links.py checks only internal references.
 # It uses only the Python standard library and makes no network connections, so it finishes
 # deterministically and does not flap due to external factors such as Docker Hub rate limits. Go build,
-# static analysis, and tests are handled by ci.yml, detection-rule reproduction by detections.yml, and
-# the web UI build by web.yml.
+# static analysis, and tests are handled by ci.yml, and the web UI build by web.yml.
 on:
   push:
     branches: ["**"]
@@ -27,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: artex-global
+        working-directory: m1nervac0nsole
     steps:
       - uses: actions/checkout@v4
       # python3 is preinstalled on the ubuntu-latest runner, and the script uses only the

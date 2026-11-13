@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../artex-global/extension/background.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../m1nervac0nsole/extension/background.js", import.meta.url), "utf8");
 
 function captureHarness(bodies) {
   const handlers = {};

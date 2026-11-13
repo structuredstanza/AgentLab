@@ -5,7 +5,7 @@ name: external-links
 # are flaky, so they are not checked in the internal link merge gate (docs.yml). That is why this workflow
 # runs only on a weekly schedule and manual runs (workflow_dispatch), not on push or PR, so it **does not block merges**,
 # and when an external link degrades or goes offline, the periodic run surfaces it in red. Internal links and anchors are handled by docs.yml, Go build,
-# ci.yml handles build/analysis/tests, detections.yml handles detection rules, and web.yml handles the Korean UI build.
+# ci.yml handles build/analysis/tests, and web.yml handles the Korean UI build.
 #
 # --strict fails only if there is at least one DOWN (404, 410, 5xx, DNS/connection error, etc.) that is not in the allowlist (scripts/external-links-allowlist.txt).
 # DNS/connection errors) outside the allowlist. RESTRICTED (bot blocking, rate limiting, etc., while the host
@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: artex-global
+        working-directory: m1nervac0nsole
     steps:
       - uses: actions/checkout@v4
       # python3 is installed by default on the ubuntu-latest runner, and the script uses only the standard library,

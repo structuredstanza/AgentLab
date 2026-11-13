@@ -1,4 +1,4 @@
-image: agentlab/artex:deepseek-v1
+image: agentlab/m1nervac0nsole:deepseek-v1
 pull_policy: never
 cpus: 4
 memory: 8G
@@ -25,4 +25,4 @@ network:
     - 127.0.0.1:8787:8787
 labels:
   purpose: autonomous-task-trace-collection
-  application: artex-global
+  application: m1nervac0nsole

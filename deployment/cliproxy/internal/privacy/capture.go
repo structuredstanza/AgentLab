@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 )
 
 // Direction says which side of an inference exchange a Record holds.

@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 )
 
 const (

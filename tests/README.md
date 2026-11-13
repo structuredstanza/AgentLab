@@ -4,7 +4,7 @@ One entry point for every suite. Run all of them, or name an area.
 
 ```sh
 tests/run.sh            # everything
-tests/run.sh go         # artex-global Go tests
+tests/run.sh go         # m1nervac0nsole Go tests
 tests/run.sh proxy      # provider-proxy tests
 tests/run.sh python     # lab / guest-start / export_traces (stdlib unittest)
 tests/run.sh web        # Next.js UI
@@ -14,7 +14,7 @@ tests/run.sh dev        # dev-launcher process contract
 The Go suites need a database for `db` and `server`:
 
 ```sh
-export ARTEX_PG_DSN='postgres://postgres@127.0.0.1:55770/artex?sslmode=disable'
+export M1NERVAC0NSOLE_PG_DSN='postgres://postgres@127.0.0.1:55770/m1nervac0nsole?sslmode=disable'
 ```
 
 ## Why most Go tests are not in this directory
@@ -28,22 +28,22 @@ Go requires a test file to sit in the same directory as the package it tests, so
   touches, or rewriting it as a black-box test of the exported API. Both make the
   code worse to satisfy a folder layout, so they stay beside their code.
 - **Black-box** (`package foo_test`) — these use only the exported API, so they can
-  live anywhere. They are in `artex-global/tests/go/`.
+  live anywhere. They are in `m1nervac0nsole/tests/go/`.
 
 If you are looking for a test, use the index below; if you are running one,
 `tests/run.sh go` covers every package including the co-located ones.
 
 ## Index
 
-### `artex-global/tests/go/` — relocated black-box Go tests
+### `m1nervac0nsole/tests/go/` — relocated black-box Go tests
 
 | Package | Tests | What it covers |
 |---|---|---|
-| `artex-global/tests/go/manifest` | 12 | Tool manifest parsing, emission, golden fixtures, live builtin manifest |
-| `artex-global/tests/go/scope` | 16 | Engagement scope: exclusion rules, enforcement |
-| `artex-global/tests/go/useragent` | 1 | Every outbound request sets an identity header (source walk) |
+| `m1nervac0nsole/tests/go/manifest` | 12 | Tool manifest parsing, emission, golden fixtures, live builtin manifest |
+| `m1nervac0nsole/tests/go/scope` | 16 | Engagement scope: exclusion rules, enforcement |
+| `m1nervac0nsole/tests/go/useragent` | 1 | Every outbound request sets an identity header (source walk) |
 
-Fixtures for the manifest goldens live in `artex-global/tests/go/manifest/testdata/golden`.
+Fixtures for the manifest goldens live in `m1nervac0nsole/tests/go/manifest/testdata/golden`.
 
 ### Go tests kept beside their package
 
@@ -66,7 +66,7 @@ Fixtures for the manifest goldens live in `artex-global/tests/go/manifest/testda
 | `egress/` | 1 | 6 |
 | `limits/` | 1 | 14 |
 | `nativeproxy/` | 1 | 11 |
-| `cmd/artex/` | 1 | 2 |
+| `cmd/m1nervac0nsole/` | 1 | 2 |
 
 ### `tests/python/`
 
@@ -83,6 +83,6 @@ tag, apply `core.patch`, and run against that. `run-tests.sh` does this in a
 temporary directory and cleans up. Tests of the host-side additions live in
 `internal/infer`, `internal/server`, and `internal/privacy`.
 
-### `artex-global/web/`
+### `m1nervac0nsole/web/`
 
 Vitest, run with `tests/run.sh web`.

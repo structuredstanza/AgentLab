@@ -7,7 +7,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 )
 
 // Replayed is one previously admitted opaque native state and its receipt.

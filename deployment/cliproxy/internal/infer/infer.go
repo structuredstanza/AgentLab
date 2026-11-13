@@ -15,9 +15,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/nativepolicy"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 
-	"github.com/artex/cliproxyhost/internal/catalog"
-	"github.com/artex/cliproxyhost/internal/contract"
-	"github.com/artex/cliproxyhost/internal/store"
+	"github.com/structuredstanza/cliproxyhost/internal/catalog"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/store"
 )
 
 // Stop reasons reported on the done record.

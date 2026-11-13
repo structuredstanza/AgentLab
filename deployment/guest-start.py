@@ -2,12 +2,12 @@
 """AgentLab guest supervisor (stdlib only; runs as guest root via `msb exec`).
 
 Start order: lock -> PostgreSQL (/state/postgres, loopback TCP + /run/postgresql socket)
--> artex DB role/database -> tcpdump (must report "listening on") -> ARTEX under strace.
-Stop order on SIGTERM/SIGINT or ARTEX exit: ARTEX group -> tcpdump (SIGINT, flushes pcap)
+-> m1nervac0nsole DB role/database -> tcpdump (must report "listening on") -> m1nervac0nsole under strace.
+Stop order on SIGTERM/SIGINT or m1nervac0nsole exit: m1nervac0nsole group -> tcpdump (SIGINT, flushes pcap)
 -> PostgreSQL (pg_ctl -m fast).
 
-Exit: ARTEX's exit code (128+signal if killed), 1 on any failure, 3 if another supervisor holds the lock.
-Outputs: /state/runtime/{artex,jwt.key,status.json,secrets/artex-db.dsn,logs/...}
+Exit: m1nervac0nsole's exit code (128+signal if killed), 1 on any failure, 3 if another supervisor holds the lock.
+Outputs: /state/runtime/{m1nervac0nsole,jwt.key,status.json,secrets/m1nervac0nsole-db.dsn,logs/...}
          /state/captures/<session-id>/{manifest.json,pcap/,strace/,logs/}
 """
 import datetime as dt
@@ -34,7 +34,7 @@ LOCK_PATH = f"{RUNTIME}/supervisor.lock"
 STATUS_PATH = f"{RUNTIME}/status.json"
 SUPERVISOR_PID = f"{STATE}/supervisor.pid"
 CURRENT_CAPTURE = f"{STATE}/current-capture.json"
-DSN_PATH = f"{RUNTIME}/secrets/artex-db.dsn"
+DSN_PATH = f"{RUNTIME}/secrets/m1nervac0nsole-db.dsn"
 PGDATA = f"{STATE}/postgres"
 PG_LOGDIR = f"{RUNTIME}/logs/postgres"
 PG_LOG = f"{PG_LOGDIR}/postgres.log"
@@ -45,21 +45,21 @@ PG_HBA = """# managed by guest-start.py; rewritten on every start
 local   all   all                 trust
 host    all   all   127.0.0.1/32  scram-sha-256
 """
-ARTEX_DATA = f"{STATE}/artex"
+M1NERVAC0NSOLE_DATA = f"{STATE}/m1nervac0nsole"
 CAPTURES = f"{STATE}/captures"
 ADMIN_SECRET = "/run/secrets/agentlab-admin"
 DIST = "/dist"
 # ./lab build stages the host build here (read-only mount). The image's baked
 # copies are only the fallback for a sandbox created before the mount existed.
-DIST_BIN = f"{DIST}/artex"
-IMAGE_BIN = DIST_BIN if os.path.exists(DIST_BIN) else "/opt/artex/artex"
+DIST_BIN = f"{DIST}/m1nervac0nsole"
+IMAGE_BIN = DIST_BIN if os.path.exists(DIST_BIN) else "/opt/m1nervac0nsole/m1nervac0nsole"
 # Skills must stay writable (create_skill, upload), so the build is synced into
 # /state at every start instead of being read from the mount.
-SKILLS_DIR = f"{STATE}/skills" if os.path.isdir(f"{DIST}/skills") else "/opt/artex/skills"
+SKILLS_DIR = f"{STATE}/skills" if os.path.isdir(f"{DIST}/skills") else "/opt/m1nervac0nsole/skills"
 SKILL_MANIFEST = f"{STATE}/skills/.guest-dist.json"
 BROWSERS_DIR = "/opt/ms-playwright"
 # Guest-local capture proxy; not the host native provider proxy, which also listens on 8788.
-ARTEX_ARGS = ["-addr", ":8787", "-proxy", "127.0.0.1:8788", "-data", ARTEX_DATA]
+M1NERVAC0NSOLE_ARGS = ["-addr", ":8787", "-proxy", "127.0.0.1:8788", "-data", M1NERVAC0NSOLE_DATA]
 STRACE_ARGS = ["-ff", "-ttt", "-T", "-yy", "-s256", "-e", "trace=process,file,network"]
 
 
@@ -113,7 +113,7 @@ def ring_segments():
     disk and killing the engagement.
     """
     try:
-        st = os.statvfs(ARTEX_DATA)
+        st = os.statvfs(M1NERVAC0NSOLE_DATA)
         free_mb = st.f_bavail * st.f_frsize // (1024 * 1024)
         reserve_mb = ring_reserve_mb(st)
     except OSError:
@@ -250,7 +250,7 @@ def acquire_lock():
 
 def prepare_dirs():
     pw = pwd.getpwnam("postgres")
-    for d in (RUNTIME, f"{RUNTIME}/secrets", PG_LOGDIR, ARTEX_DATA, CAPTURES, PG_SOCKDIR, PGDATA):
+    for d in (RUNTIME, f"{RUNTIME}/secrets", PG_LOGDIR, M1NERVAC0NSOLE_DATA, CAPTURES, PG_SOCKDIR, PGDATA):
         os.makedirs(d, exist_ok=True)
     for parent in (STATE, RUNTIME, f"{RUNTIME}/logs"):
         os.chmod(parent, 0o711)  # PostgreSQL needs traversal; host AgentLab remains private.
@@ -282,7 +282,7 @@ class Session:
             "supervisor": proc_info(os.getpid()),
             "postgres": {"status": "not_started"},
             "capture": {"status": "not_started", "limits": CAPTURE_LIMITS},
-            "artex": {"status": "not_started", "strace_args": STRACE_ARGS,
+            "m1nervac0nsole": {"status": "not_started", "strace_args": STRACE_ARGS,
                       "strace_notes": "process/file/network syscalls; decoded string arguments limited to 256 bytes"},
             "errors": [],
         }
@@ -293,7 +293,7 @@ class Session:
         write_file(os.path.join(self.dir, "manifest.json"),
                    json.dumps(self.m, indent=2, sort_keys=True) + "\n", 0o600)
         pids = {"supervisor": os.getpid(), "postgres": self.m["postgres"].get("pid"),
-                "tcpdump": self.m["capture"].get("pid"), "artex_strace": self.m["artex"].get("strace_pid")}
+                "tcpdump": self.m["capture"].get("pid"), "m1nervac0nsole_strace": self.m["m1nervac0nsole"].get("strace_pid")}
         write_file(STATUS_PATH, json.dumps({"session_id": self.id, "state": self.m["state"],
                                             "updated_at": self.m["updated_at"], "pids": pids}, indent=2) + "\n")
 
@@ -392,28 +392,28 @@ def pg_provision(bindir):
     script = (
         "\\set ON_ERROR_STOP 1\n"
         f"\\set pw '{pw}'\n"
-        "SELECT format('CREATE ROLE artex LOGIN PASSWORD %L', :'pw') "
-        "WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'artex')\\gexec\n"
-        "SELECT format('ALTER ROLE artex LOGIN NOSUPERUSER PASSWORD %L', :'pw')\\gexec\n"
-        "SELECT 'CREATE DATABASE artex OWNER artex' "
-        "WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'artex')\\gexec\n"
+        "SELECT format('CREATE ROLE m1nervac0nsole LOGIN PASSWORD %L', :'pw') "
+        "WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'm1nervac0nsole')\\gexec\n"
+        "SELECT format('ALTER ROLE m1nervac0nsole LOGIN NOSUPERUSER PASSWORD %L', :'pw')\\gexec\n"
+        "SELECT 'CREATE DATABASE m1nervac0nsole OWNER m1nervac0nsole' "
+        "WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'm1nervac0nsole')\\gexec\n"
     )
     run(as_postgres([f"{bindir}/psql", "-X", "-q", "-h", PG_SOCKDIR, "-p", str(PG_PORT),
                      "-U", "postgres", "-d", "postgres", "-f", "-"]),
-        "artex role/database provisioning", input_=script.encode(), redact=(pw,))
-    dsn = f"postgres://artex:{pw}@127.0.0.1:{PG_PORT}/artex?sslmode=disable"
+        "m1nervac0nsole role/database provisioning", input_=script.encode(), redact=(pw,))
+    dsn = f"postgres://m1nervac0nsole:{pw}@127.0.0.1:{PG_PORT}/m1nervac0nsole?sslmode=disable"
     write_file(DSN_PATH, dsn + "\n", 0o600)
     return dsn
 
 
-# ---------- ARTEX / inputs ----------
+# ---------- app / inputs ----------
 
 def admin_password():
     try:
         with open(ADMIN_SECRET, "rb") as f:
             raw = f.read()
     except FileNotFoundError:
-        log(f"{ADMIN_SECRET} not mounted: ARTEX_ADMIN_PASSWORD not set (use the setup-token flow)")
+        log(f"{ADMIN_SECRET} not mounted: M1NERVAC0NSOLE_ADMIN_PASSWORD not set (use the setup-token flow)")
         return None
     pw = raw.rstrip(b"\r\n").decode()
     if not pw:
@@ -427,12 +427,12 @@ def app_env(dsn, admin_pw):
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "HOME": "/root",
         "LANG": "C.UTF-8",
-        "ARTEX_SELFUPDATE_SMOKE": "1",
-        "ARTEX_PG_DSN": dsn,
-        "ARTEX_SKILL_DIR": SKILLS_DIR,
+        "M1NERVAC0NSOLE_SELFUPDATE_SMOKE": "1",
+        "M1NERVAC0NSOLE_PG_DSN": dsn,
+        "M1NERVAC0NSOLE_SKILL_DIR": SKILLS_DIR,
         "PLAYWRIGHT_BROWSERS_PATH": BROWSERS_DIR,
-        "ARTEX_NATIVE_PROXY_URL": "http://host.microsandbox.internal:8788",
-        "ARTEX_NATIVE_PROXY_TOKEN_FILE": "/run/secrets/agentlab-native-proxy",
+        "M1NERVAC0NSOLE_NATIVE_PROXY_URL": "http://host.microsandbox.internal:8788",
+        "M1NERVAC0NSOLE_NATIVE_PROXY_TOKEN_FILE": "/run/secrets/agentlab-native-proxy",
     }
     # Route target-bound HTTP through the identity proxy. The host native proxy
     # is excluded from it, or model calls would be rewritten as target traffic.
@@ -450,18 +450,18 @@ def app_env(dsn, admin_pw):
         # browser User-Agent still leaves with this process's TLS fingerprint.
         # With no reachable masking proxy the backend fails those probes closed
         # instead of going direct.
-        "ARTEX_EGRESS_PROXY": proxy,
-        "ARTEX_EGRESS_CA": EGRESS_CA,
+        "M1NERVAC0NSOLE_EGRESS_PROXY": proxy,
+        "M1NERVAC0NSOLE_EGRESS_CA": EGRESS_CA,
         "SSL_CERT_FILE": EGRESS_CA,
         "CURL_CA_BUNDLE": EGRESS_CA,
         "REQUESTS_CA_BUNDLE": EGRESS_CA,
         "NODE_EXTRA_CA_CERTS": EGRESS_CA,
-        "ARTEX_MAX_CONCURRENT_SCANS": str(MAX_SCANS),
-        "ARTEX_MAX_SCANS_PER_TARGET": str(MAX_SCANS_PER_TARGET),
-        "ARTEX_MAX_REQUESTS_PER_MINUTE": str(EGRESS_RPM),
+        "M1NERVAC0NSOLE_MAX_CONCURRENT_SCANS": str(MAX_SCANS),
+        "M1NERVAC0NSOLE_MAX_SCANS_PER_TARGET": str(MAX_SCANS_PER_TARGET),
+        "M1NERVAC0NSOLE_MAX_REQUESTS_PER_MINUTE": str(EGRESS_RPM),
     })
     if admin_pw is not None:
-        env["ARTEX_ADMIN_PASSWORD"] = admin_pw
+        env["M1NERVAC0NSOLE_ADMIN_PASSWORD"] = admin_pw
     return env
 
 
@@ -507,7 +507,7 @@ def sync_skills(src=f"{DIST}/skills", dst=SKILLS_DIR, manifest=SKILL_MANIFEST):
 def install_binary():
     if not os.path.exists(IMAGE_BIN):
         raise Fatal(f"{IMAGE_BIN} missing: run ./lab build and recreate the sandbox with ./lab resize-state")
-    dst = f"{RUNTIME}/artex"
+    dst = f"{RUNTIME}/m1nervac0nsole"
     shutil.copyfile(IMAGE_BIN, dst + ".new")
     os.chmod(dst + ".new", 0o755)
     os.replace(dst + ".new", dst)  # jwt.key is generated beside this binary (config.BaseDir) and persists in RUNTIME
@@ -744,44 +744,44 @@ def stop_tcpdump(sess, p):
         sess.error(f"tcpdump exit code {p.returncode}")
 
 
-# ---------- ARTEX ----------
+# ---------- app ----------
 
 def start_app(sess, binary, env):
     strace = shutil.which("strace")
     if strace is None:
         raise Fatal("strace not installed")
-    out_path = os.path.join(sess.logs, "artex.stdout.log")
-    err_path = os.path.join(sess.logs, "artex.stderr.log")
-    cmd = [strace, *STRACE_ARGS, "-o", os.path.join(sess.strace, "strace"), binary, *ARTEX_ARGS]
+    out_path = os.path.join(sess.logs, "m1nervac0nsole.stdout.log")
+    err_path = os.path.join(sess.logs, "m1nervac0nsole.stderr.log")
+    cmd = [strace, *STRACE_ARGS, "-o", os.path.join(sess.strace, "strace"), binary, *M1NERVAC0NSOLE_ARGS]
     with open(out_path, "ab") as out, open(err_path, "ab") as err:
         p = subprocess.Popen(cmd, cwd=RUNTIME, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=err, start_new_session=True)
     try:
-        sess.m["artex"].update(status="running", started_at=now_iso(), strace_pid=p.pid,
+        sess.m["m1nervac0nsole"].update(status="running", started_at=now_iso(), strace_pid=p.pid,
                                strace_process=proc_info(p.pid), argv=cmd, binary=binary,
-                               sha256=sess.m["artex"].get("sha256"), stdout_log=out_path, stderr_log=err_path,
-                               env_keys=sorted(env), skills_dir=SKILLS_DIR, data_dir=ARTEX_DATA)
+                               sha256=sess.m["m1nervac0nsole"].get("sha256"), stdout_log=out_path, stderr_log=err_path,
+                               env_keys=sorted(env), skills_dir=SKILLS_DIR, data_dir=M1NERVAC0NSOLE_DATA)
         sess.save()
     except BaseException:
         try:
             stop_app(sess, p)
         except Exception as error:
-            sess.error(f"ARTEX startup cleanup failed: {error}")
+            sess.error(f"m1nervac0nsole startup cleanup failed: {error}")
         raise
     return p
 
 
 def stop_app(sess, p):
-    pgid = p.pid  # start_new_session: strace is the group leader; ARTEX runs in its group
+    pgid = p.pid  # start_new_session: strace is the group leader; m1nervac0nsole runs in its group
     if p.poll() is None:
         signal_group(pgid, signal.SIGTERM)
         try:
             p.wait(APP_STOP_TIMEOUT)
         except subprocess.TimeoutExpired:
-            sess.error(f"ARTEX did not exit within {APP_STOP_TIMEOUT}s of SIGTERM; SIGKILL to group {pgid}")
+            sess.error(f"m1nervac0nsole did not exit within {APP_STOP_TIMEOUT}s of SIGTERM; SIGKILL to group {pgid}")
             signal_group(pgid, signal.SIGKILL)
             p.wait()
-    if signal_group(pgid, 0):  # members outlived the leader (e.g. browsers spawned by ARTEX)
+    if signal_group(pgid, 0):  # members outlived the leader (e.g. browsers spawned by m1nervac0nsole)
         signal_group(pgid, signal.SIGTERM)
         if not wait_group_gone(pgid, APP_STOP_TIMEOUT):
             sess.error(f"process group {pgid} still alive after SIGTERM; SIGKILL")
@@ -791,7 +791,7 @@ def stop_app(sess, p):
         suffix = path.rsplit(".", 1)[1]
         if suffix.isdigit():
             traced.append(int(suffix))
-    sess.m["artex"].update(status="stopped" if p.returncode == 0 else "exited", exit_code=p.returncode,
+    sess.m["m1nervac0nsole"].update(status="stopped" if p.returncode == 0 else "exited", exit_code=p.returncode,
                            exit_code_normalized=exit_code(p.returncode), ended_at=now_iso(),
                            pids=sorted(traced))
 
@@ -803,7 +803,7 @@ def shutdown(sess, app, tcpd, bindir, vpn=None, egress=None):
         sess.set_state("stopping")
     except Exception as error:
         sess.error(f"could not persist stopping state: {error}")
-    for name, process, stop in (("artex", app, stop_app), ("capture", tcpd, stop_tcpdump),
+    for name, process, stop in (("m1nervac0nsole", app, stop_app), ("capture", tcpd, stop_tcpdump),
                                 ("vpn", vpn, stop_vpn), ("egress", egress, stop_egress)):
         if process is not None:
             try:
@@ -854,7 +854,7 @@ def main():
         sess.save()
         dsn = pg_provision(bindir)
         binary, digest = install_binary()
-        sess.m["artex"]["sha256"] = digest
+        sess.m["m1nervac0nsole"]["sha256"] = digest
         if synced := sync_skills():
             log(f"skills: {synced} files synced from {DIST}/skills into {SKILLS_DIR}")
         env = app_env(dsn, admin_password())
@@ -867,13 +867,13 @@ def main():
         last_sample = 0.0
         while app is not None and app.poll() is None and STOP["signal"] is None:
             if tcpd.poll() is not None:
-                raise Fatal(f"tcpdump exited while ARTEX was running (rc={tcpd.returncode}); ARTEX stopped to avoid uncaptured runs")
+                raise Fatal(f"tcpdump exited while m1nervac0nsole was running (rc={tcpd.returncode}); m1nervac0nsole stopped to avoid uncaptured runs")
             # Kill switch: a dropped tunnel must stop the engagement, not silently
             # resume egress over the host's own address.
             if egress.poll() is not None:
-                raise Fatal(f"egress proxy exited while ARTEX was running (rc={egress.returncode}); ARTEX stopped so no request leaves with the wrong identity")
+                raise Fatal(f"egress proxy exited while m1nervac0nsole was running (rc={egress.returncode}); m1nervac0nsole stopped so no request leaves with the wrong identity")
             if vpn is not None and vpn.poll() is not None:
-                raise Fatal(f"openvpn exited while ARTEX was running (rc={vpn.returncode}); ARTEX stopped to avoid traffic leaving outside the tunnel")
+                raise Fatal(f"openvpn exited while m1nervac0nsole was running (rc={vpn.returncode}); m1nervac0nsole stopped to avoid traffic leaving outside the tunnel")
             if time.monotonic() - last_sample >= 1:
                 sess.sample_resources()
                 last_sample = time.monotonic()

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 	core "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 )
 

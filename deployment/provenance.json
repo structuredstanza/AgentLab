@@ -1,5 +1,5 @@
 {
-  "source_repository": "https://github.com/BaaRai/ARTEX",
+  "source_repository": "https://github.com/BaaRai/m1nervac0nsole",
   "source_commit": "7f8c7cbcae7324e823d8952371ae2013521cc711",
   "source_version": "allocation-reset-20261031T011927Z",
   "microsandbox": "0.7.11",
@@ -7,19 +7,19 @@
   "build_go": "go1.27.3-X:nodwarf5 linux/amd64",
   "build_node": "v26.12.1",
   "build_npm": "12.2.1",
-  "image": "agentlab/artex:astra-reviewed-20261031t010522z",
+  "image": "agentlab/m1nervac0nsole:astra-reviewed-20261031t010522z",
   "docker_image_id": "sha256:f7618aeab146c7cd3afcfdbf186f7e5b617e2dccc559ddc8a262e4b9de13df3d",
   "runtime_manifest_digest": "sha256:daf969bcfe668262460ff3978206ee6ed76ab69015c6e4490abf4cec7b6cfe39",
-  "artex_binary_sha256": "50fa3b3674e36f3f8a5ad4d05811b6bd310d6d78f41fdf3aa614677be197b5dc",
+  "m1nervac0nsole_binary_sha256": "50fa3b3674e36f3f8a5ad4d05811b6bd310d6d78f41fdf3aa614677be197b5dc",
   "model_backend": "llama.cpp / shared bonsai.service",
   "upstream_source_modified": true,
   "allocation_reset_ui_patch": {
     "version": "allocation-reset-20261031T011927Z",
-    "applied_to_running_vm": "artex-agentlab-astra-reviewed-20261031t010522z",
+    "applied_to_running_vm": "m1nervac0nsole-agentlab-astra-reviewed-20261031t010522z",
     "deployment": "atomic binary replacement after graceful supervisor stop; existing VM rootfs and data retained",
     "runtime_binary_sha256": "50fa3b3674e36f3f8a5ad4d05811b6bd310d6d78f41fdf3aa614677be197b5dc",
     "base_runtime_image_unchanged": true,
-    "fresh_create_image": "agentlab/artex:allocation-reset-20261031t011927z",
+    "fresh_create_image": "agentlab/m1nervac0nsole:allocation-reset-20261031t011927z",
     "fresh_create_image_id": "sha256:0cdf5ab8c0a88b0c17d6a094e4f1d0309989285a5729f95ca27c144375ebe8db",
     "evidence": ".upstream-work/reset-display-20261031T011927Z",
     "tests_passed": 13,
@@ -43,7 +43,7 @@
     "verification": "reviews/astra-fixes-20261030T203817Z/verification.json",
     "owned_sdk": {
       "base": "BaaRai/Norma v0.4.4",
-      "source": "artex-global/third_party/norma",
+      "source": "m1nervac0nsole/third_party/norma",
       "license": "Apache-2.0",
       "multilingual_test_fixtures_retained": true
     },
@@ -52,8 +52,8 @@
     "deployment_unchanged": false
   },
   "astra_vm_deployment": {
-    "sandbox": "artex-agentlab-astra-reviewed-20261031t010522z",
-    "replaced_sandbox": "artex-agentlab-native-codex-capture",
+    "sandbox": "m1nervac0nsole-agentlab-astra-reviewed-20261031t010522z",
+    "replaced_sandbox": "m1nervac0nsole-agentlab-native-codex-capture",
     "replaced_sandbox_removed": true,
     "status": "running; installed binary, native host and real capture checks passed",
     "oauth_backend": "native CLIProxyAPI v8.0.47; not the retired SDK bridge",
@@ -73,13 +73,13 @@
   },
   "native_oauth_cutover": {
     "historical": true,
-    "sandbox": "artex-agentlab-native-codex-capture",
-    "previous_sandbox_retained_stopped": "artex-agentlab-native-allocation",
+    "sandbox": "m1nervac0nsole-agentlab-native-codex-capture",
+    "previous_sandbox_retained_stopped": "m1nervac0nsole-agentlab-native-allocation",
     "engine": "CLIProxyAPI v8.0.47",
     "engine_commit": "90c447d3a8727d115aa7552ec93ce023736ed492",
     "host_binary_sha256": "46e1fc4adf64424eeec5e66d9981ae60d6eeb8bb51566881cca5425862fa1586",
-    "unit": "artex-cliproxy.service",
-    "legacy_unit": "artex-sdk-bridge.service and its deployment source removed; native Codex inference verified; native live refresh still unexercised",
+    "unit": "m1nervac0nsole-cliproxy.service",
+    "legacy_unit": "m1nervac0nsole-sdk-bridge.service and its deployment source removed; native Codex inference verified; native live refresh still unexercised",
     "pre_cutover_export": "exports/20261030T194331.920164Z",
     "quiescent_rollback_archive": ".upstream-work/native-live-cutover-20261030T180625Z/stopped-state.tar",
     "rollback_archive_sha256": "bf720ccb09fd08f97f0c861ecc5fdeeb521b5110b2c6620c6d0e8bcfbb731e7e",
@@ -114,7 +114,7 @@
     "limits": "Provider-exposed summary and opaque encrypted state only, not hidden internal chain-of-thought; live tool execution was not exercised."
   },
   "allocation_correctness": {
-    "image_base": "agentlab/artex:native-20261030t180625z",
+    "image_base": "agentlab/m1nervac0nsole:native-20261030t180625z",
     "image_base_docker_id": "sha256:99bf858f19f31a99590901a75286cc84b09c98578b05c2d2985343a9b7325d39",
     "packaging": "Incremental image replaces only the embedded app binary on the verified native tooling image; full tooling rebuild timed out and was not deployed.",
     "exhausted": "Explicit measured exhaustion remains zero for Codex, Claude and Antigravity.",
@@ -127,8 +127,8 @@
     "evidence_directory": ".upstream-work/sdk-cleanup.r37zx0mn"
   },
   "upstream_feature_cutover": {
-    "sandbox": "artex-agentlab-integrated",
-    "previous_sandbox_retained_stopped": "artex-agentlab-quota",
+    "sandbox": "m1nervac0nsole-agentlab-integrated",
+    "previous_sandbox_retained_stopped": "m1nervac0nsole-agentlab-quota",
     "agentlab_base_commit": "d5f47d88a9191be5abada6af59c67d5d38281aed",
     "integration_snapshot": "uncommitted local feature integration; source_commit identifies the incoming upstream reference, not an identical source tree",
     "pre_cutover_export": "exports/20261030T023029.892204Z",
@@ -167,8 +167,8 @@
     "oauth_replacement": "planned CLIProxyAPI replacement remains gated on native reasoning/replay fidelity and privacy; current owned OAuth service retained until complete cutover passes"
   },
   "english_cutover": {
-    "sandbox": "artex-agentlab-english",
-    "previous_sandbox_retained": "artex-agentlab-capture",
+    "sandbox": "m1nervac0nsole-agentlab-english",
+    "previous_sandbox_retained": "m1nervac0nsole-agentlab-capture",
     "source_comment_files_translated": 275,
     "source_comment_occurrences_translated": 5171,
     "obsolete_localization_policy_comments_removed": 4,
@@ -180,12 +180,12 @@
     "primary_service_left_stopped": true
   },
   "provider_chain_and_quota_cutover": {
-    "sandbox": "artex-agentlab-quota",
-    "previous_sandbox_retained": "artex-agentlab-allocation",
+    "sandbox": "m1nervac0nsole-agentlab-quota",
+    "previous_sandbox_retained": "m1nervac0nsole-agentlab-allocation",
     "earlier_sandboxes_retained_stopped": [
-      "artex-agentlab-sdk",
-      "artex-agentlab-english",
-      "artex-agentlab-capture"
+      "m1nervac0nsole-agentlab-sdk",
+      "m1nervac0nsole-agentlab-english",
+      "m1nervac0nsole-agentlab-capture"
     ],
     "pre_cutover_export": "exports/20261029T215217.941467Z",
     "features": [
@@ -203,9 +203,9 @@
     "primary_service_left_stopped": true
   },
   "sdk_cutover": {
-    "sandbox": "artex-agentlab-sdk",
+    "sandbox": "m1nervac0nsole-agentlab-sdk",
     "hostname": "agentlab-worker",
-    "previous_sandbox_retained": "artex-agentlab-english",
+    "previous_sandbox_retained": "m1nervac0nsole-agentlab-english",
     "pre_cutover_export": "exports/20261029T165523.134563Z",
     "sdk_package": "@oh-my-pi/pi-ai",
     "sdk_version": "18.13.3",
@@ -283,8 +283,8 @@
       "google-antigravity"
     ],
     "codex_grant_survived_helper_restart": true,
-    "codex_connection_visible_in_artex": true,
-    "all_verified_connections_visible_in_artex": true,
+    "codex_connection_visible_in_m1nervac0nsole": true,
+    "all_verified_connections_visible_in_m1nervac0nsole": true,
     "expiry_contract": "RFC 3339 timestamps for status and completed login",
     "status_fix_isolated_tests_passed": 100,
     "status_fix_isolated_tests_failed": 0,
@@ -426,13 +426,13 @@
     "findings_fixed": 38,
     "artefact": ".audit/agentlab-audit-fixes.patch",
     "report": ".audit/AUDIT-REPORT.md",
-    "applied_to_running_vm": "artex-agentlab-astra-reviewed-20261031t010522z",
-    "deployment": "atomic binary replacement after supervisor stop; guest scripts and skills already matched the committed source, so only /opt/artex/artex changed",
+    "applied_to_running_vm": "m1nervac0nsole-agentlab-astra-reviewed-20261031t010522z",
+    "deployment": "atomic binary replacement after supervisor stop; guest scripts and skills already matched the committed source, so only /opt/m1nervac0nsole/m1nervac0nsole changed",
     "runtime_binary_sha256": "e2d3e39911c937021291e8ebd26bc26ba739948d01662b41aa8d9da812a365de",
     "base_runtime_image_unchanged": true,
-    "fresh_create_image": "agentlab/artex:audit-fixes-20261103t172719z",
+    "fresh_create_image": "agentlab/m1nervac0nsole:audit-fixes-20261103t172719z",
     "fresh_create_image_id": "sha256:b3660a098222",
-    "fresh_create_image_note": "minimal overlay FROM agentlab/artex:astra-reviewed-20261031t010522z replacing only /opt/artex/artex; a full Dockerfile rebuild failed at the Playwright npm layer on DNS (EAI_AGAIN), which does not affect the binary",
+    "fresh_create_image_note": "minimal overlay FROM agentlab/m1nervac0nsole:astra-reviewed-20261031t010522z replacing only /opt/m1nervac0nsole/m1nervac0nsole; a full Dockerfile rebuild failed at the Playwright npm layer on DNS (EAI_AGAIN), which does not affect the binary",
     "fresh_create_image_booted": false,
     "evidence": ".upstream-work/audit-fixes-20261103T172719Z",
     "tests": {
@@ -447,7 +447,7 @@
     },
     "live_verification": [
       "/api/health reports the new build and login succeeds",
-      "guest /state/runtime/artex sha256 equals the host build",
+      "guest /state/runtime/m1nervac0nsole sha256 equals the host build",
       "idx_llm_records_task, idx_llm_usage_task, idx_intercept_pending_task present in guest postgres",
       "duplicate skill create returns 409",
       "9 MiB JSON body rejected in 58 ms by the 8 MiB cap",
@@ -476,11 +476,11 @@
     ],
     "runtime_binary_sha256": "ca5e81866647406124c49fb26b131082375284bb16e45ee2972a90cbe1527f45",
     "deployment": "atomic binary replacement after graceful supervisor stop; guest scripts and skills unchanged",
-    "applied_to_running_vm": "artex-agentlab-astra-reviewed-20261031t010522z",
+    "applied_to_running_vm": "m1nervac0nsole-agentlab-astra-reviewed-20261031t010522z",
     "base_runtime_image_unchanged": true,
-    "fresh_create_image": "agentlab/artex:regressions-20261103t190955z",
+    "fresh_create_image": "agentlab/m1nervac0nsole:regressions-20261103t190955z",
     "fresh_create_image_id": "sha256:49f282922db9",
-    "fresh_create_image_note": "minimal overlay FROM agentlab/artex:astra-reviewed-20261031t010522z replacing only /opt/artex/artex; a full Dockerfile rebuild still fails at the Playwright npm layer on host DNS",
+    "fresh_create_image_note": "minimal overlay FROM agentlab/m1nervac0nsole:astra-reviewed-20261031t010522z replacing only /opt/m1nervac0nsole/m1nervac0nsole; a full Dockerfile rebuild still fails at the Playwright npm layer on host DNS",
     "fresh_create_image_booted": false,
     "tests": {
       "go_build_vet": "clean",
@@ -524,10 +524,10 @@
       }
     },
     "generator": "skills/privesc/scripts/build-indexes.py",
-    "applied_to_running_vm": "artex-agentlab-astra-reviewed-20261031t010522z",
-    "deployment": "skill tree streamed into /opt/artex/skills/privesc; no binary change, the Go build is unchanged from the previous cutover",
+    "applied_to_running_vm": "m1nervac0nsole-agentlab-astra-reviewed-20261031t010522z",
+    "deployment": "skill tree streamed into /opt/m1nervac0nsole/skills/privesc; no binary change, the Go build is unchanged from the previous cutover",
     "runtime_binary_sha256": "ca5e81866647406124c49fb26b131082375284bb16e45ee2972a90cbe1527f45",
-    "fresh_create_image": "agentlab/artex:privesc-20261103t191800z",
+    "fresh_create_image": "agentlab/m1nervac0nsole:privesc-20261103t191800z",
     "fresh_create_image_id": "sha256:ab3242bce98c",
     "fresh_create_image_note": "overlay FROM astra-reviewed adding the binary and the skills tree",
     "verified": [
@@ -540,10 +540,10 @@
   },
   "toolchain_and_vpn_20261103": {
     "source_commit": "877ee73",
-    "sandbox": "artex-agentlab-toolchain-20261103t2135z",
-    "replaced_sandbox": "artex-agentlab-toolchain-20261103t2125z (removed; shipped the base image's older guest-start.py)",
+    "sandbox": "m1nervac0nsole-agentlab-toolchain-20261103t2135z",
+    "replaced_sandbox": "m1nervac0nsole-agentlab-toolchain-20261103t2125z (removed; shipped the base image's older guest-start.py)",
     "pre_cutover_export": "exports/20261103T211359.944713Z",
-    "image": "agentlab/artex:toolchain-skills",
+    "image": "agentlab/m1nervac0nsole:toolchain-skills",
     "image_id": "sha256:afe651992d12",
     "image_layers": "Dockerfile.toolchain adds the offensive toolchain to the astra-reviewed base; a second overlay adds the binary and skills. A full Dockerfile rebuild was not possible: the Playwright Chromium CDN answers 403 'not available in your location' on this network, and the Dockerfile now tolerates that rather than failing the build.",
     "toolchain": {
@@ -598,7 +598,7 @@
       "tests": "5 unit tests in deployment/test_guest_start.py covering no-profile, missing openvpn, no address, tun-only address selection, and the kill switch",
       "live_proof": {
         "staged": "198-byte profile streamed in, mode 0600, sha256 matched on both sides",
-        "fail_closed": "unreachable endpoint -> manifest state=failed, vpn=stopped, capture=not_started, artex=not_started, error 'openvpn exited during start (rc=1)'",
+        "fail_closed": "unreachable endpoint -> manifest state=failed, vpn=stopped, capture=not_started, m1nervac0nsole=not_started, error 'openvpn exited during start (rc=1)'",
         "clean_path": "profile removed -> state=running, vpn=None, capture=running, health OK"
       }
     },
@@ -617,8 +617,8 @@
   },
   "scope_manifests_evidence_20261103": {
     "source_commit": "c6fb5ecb61ee1929025ead141b052e3fa6bfc6e9",
-    "sandbox": "artex-agentlab-scope-20261103t2320z",
-    "image": "agentlab/artex:scope-manifests-v3",
+    "sandbox": "m1nervac0nsole-agentlab-scope-20261103t2320z",
+    "image": "agentlab/m1nervac0nsole:scope-manifests-v3",
     "image_id": "sha256:cc87851c2407",
     "runtime_binary_sha256": "977221e0aae7c9ddcef7fdba8e1ae61f76e63a64ce2fd8bed7b350c247055401",
     "adaptations": {
@@ -675,7 +675,7 @@
       "task_scope.effect migrated; an exclude row surfaces through GET /api/tasks/{id}/scope",
       "findings.evidence_path migrated",
       "skills: 15 present; capture settings enforced",
-      "guest /state/runtime/artex sha256 matches the host build"
+      "guest /state/runtime/m1nervac0nsole sha256 matches the host build"
     ],
     "not_verified": [
       "no agent conversation was driven end to end, so run_tool was exercised through its Go test path and the HTTP catalog rather than by a model choosing it",
@@ -693,11 +693,11 @@
   },
   "egress_identity_20261104": {
     "source_commit": "72f3502279787506c425554f830a3a2611d147f5",
-    "sandbox": "artex-agentlab-egress-20261104t0200z",
-    "image": "agentlab/artex:egress-identity-v5",
+    "sandbox": "m1nervac0nsole-agentlab-egress-20261104t0200z",
+    "image": "agentlab/m1nervac0nsole:egress-identity-v5",
     "image_id": "sha256:91f021f363f2",
     "runtime_binary_sha256": "7cf78567d4797c4ee8fb1273b12b4b75b543a78e779f7bceeddb435e54783b1c",
-    "problem": "Every tool named itself to the target: curl/7.88.1, Wget/1.21.3, Python-urllib/3.11, WhatWeb/0.5.5, gobuster/3.5, and sqlmap and dalfox sent no User-Agent at all. The backend added artex-enrich/1.0 and Go-http-client/1.1 on its own requests.",
+    "problem": "Every tool named itself to the target: curl/7.88.1, Wget/1.21.3, Python-urllib/3.11, WhatWeb/0.5.5, gobuster/3.5, and sqlmap and dalfox sent no User-Agent at all. The backend added m1nervac0nsole-enrich/1.0 and Go-http-client/1.1 on its own requests.",
     "measured_before": {
       "curl": "curl/7.88.1",
       "wget": "Wget/1.21.3",
@@ -769,8 +769,8 @@
   },
   "identity_leaks_and_templates_20261104": {
     "source_commit": "116b4a1aca41202dd80b72bc0880b4779a457e22",
-    "sandbox": "artex-agentlab-templates-20261104t0310z",
-    "image": "agentlab/artex:egress-templates-v1",
+    "sandbox": "m1nervac0nsole-agentlab-templates-20261104t0310z",
+    "image": "agentlab/m1nervac0nsole:egress-templates-v1",
     "image_id": "sha256:2a4a757587af",
     "survey_method": "every HTTP tool was run against a local capture listener and the headers it actually sent were recorded; classification is case-insensitive because sqlmap sends User-agent with a lower-case a",
     "leaks_found": {
@@ -827,22 +827,22 @@
   },
   "supply_chain_and_scan_limits_20261104": {
     "source_commit": "0028ebd46f8bcb924168191ebf8f420749de34bd",
-    "sandbox": "artex-agentlab-limits-20261104t0500z",
-    "image": "agentlab/artex:scan-limits-v3",
+    "sandbox": "m1nervac0nsole-agentlab-limits-20261104t0500z",
+    "image": "agentlab/m1nervac0nsole:scan-limits-v3",
     "image_id": "sha256:09e3e7c2c128",
     "runtime_binary_sha256": "6e756f897fe4cc41cd2557d54ecfa6c3f48aed285363866f79922819b1fbda89",
     "supply_chain": {
-      "question": "was a backdoored Artex image pulled from a public registry?",
+      "question": "was a backdoored m1nervac0nsole image pulled from a public registry?",
       "answer": "no",
       "evidence": [
-        "every image in the local store is agentlab/artex:*, built by our Dockerfile; the only foreign bases are node, python, alpine and jasonish/suricata",
-        "every VM ever created runs an agentlab/artex tag (msb list)",
-        "the image each build ships carries a binary whose sha256 equals our locally compiled dist/amd64/artex",
-        "ghcr.io/jiwoochris/artex-global:latest resolves to config digest sha256:3bf27b43ee430a778b82c67368e7daac7f8830d029b985f8086f88ef30f89200, which appears in no container we ever created and is absent from the image store",
+        "every image in the local store is agentlab/m1nervac0nsole:*, built by our Dockerfile; the only foreign bases are node, python, alpine and jasonish/suricata",
+        "every VM ever created runs an agentlab/m1nervac0nsole tag (msb list)",
+        "the image each build ships carries a binary whose sha256 equals our locally compiled dist/amd64/m1nervac0nsole",
+        "ghcr.io/jiwoochris/m1nervac0nsole:latest resolves to config digest sha256:3bf27b43ee430a778b82c67368e7daac7f8830d029b985f8086f88ef30f89200, which appears in no container we ever created and is absent from the image store",
         "our docker-compose.yml carried that ghcr reference only between the 2026-10-29 import (d5f47d8) and its removal on 2026-11-03 (e404ecb); deployment never used compose, it builds with docker build and loads into microsandbox",
         "the release workflow only pushes (push: true) and never pulls"
       ],
-      "residual_risk": "our repo still contains a release job that PUBLISHES to ghcr.io/jiwoochris/artex-global. That is an outbound publish path, not a pull, but whoever controls that namespace receives the image."
+      "residual_risk": "our repo still contains a release job that PUBLISHES to ghcr.io/jiwoochris/m1nervac0nsole. That is an outbound publish path, not a pull, but whoever controls that namespace receives the image."
     },
     "scan_limits": {
       "changed": "hard per-tool rate clamping removed; it pinned every HTTP tool to 1 rps, which made a full 13,687-template nuclei pass take about 2.3 hours",
@@ -872,8 +872,8 @@
   },
   "tool_seed_tracking_20261104": {
     "source_commit": "6f2f3f1fe56b992f63403b04195fc4b6f0137099",
-    "sandbox": "artex-agentlab-seed-20261104t0600z",
-    "image": "agentlab/artex:seed-tracking-v1",
+    "sandbox": "m1nervac0nsole-agentlab-seed-20261104t0600z",
+    "image": "agentlab/m1nervac0nsole:seed-tracking-v1",
     "image_id": "sha256:872c83c8feb4",
     "runtime_binary_sha256": "b29e285c3870ab534f9f5b3f119676e5a7b18faf860cd0945e46f40de393cbac",
     "defect": "SeedTool inserted code-defined descriptions and schemas with ON CONFLICT DO NOTHING. /state is a host mount, so the row outlived the image and a description changed in code never reached an existing database. The DO NOTHING was deliberate: it stopped a restart wiping operator edits. Neither intent was recorded, so the two cases were indistinguishable.",

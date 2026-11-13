@@ -6,8 +6,8 @@
 # regress the browser or the recon tools.
 #
 #   docker build --network=host --build-arg TARGETARCH=amd64 \
-#     -f deployment/Dockerfile.toolchain -t agentlab/artex:toolchain .
-FROM agentlab/artex:astra-reviewed-20261031t010522z
+#     -f deployment/Dockerfile.toolchain -t agentlab/m1nervac0nsole:toolchain .
+FROM agentlab/m1nervac0nsole:astra-reviewed-20261031t010522z
 ARG TARGETARCH=amd64
 
 # The supervisor gains the OpenVPN path, so it must ship with this layer;

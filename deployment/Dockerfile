@@ -2,10 +2,10 @@
 #
 # AgentLab guest image for microsandbox. Runtime only: nothing is compiled here.
 # Build context is /mnt/Research/AgentLab (see Dockerfile.dockerignore). Requires the upstream binary first:
-#   artex-global/dist/<TARGETARCH>/artex   (built with artex-global/build.sh)
-#   docker build -f deployment/Dockerfile -t agentlab/artex:local /mnt/Research/AgentLab
+#   m1nervac0nsole/dist/<TARGETARCH>/m1nervac0nsole   (built with m1nervac0nsole/build.sh)
+#   docker build -f deployment/Dockerfile -t agentlab/m1nervac0nsole:local /mnt/Research/AgentLab
 #
-# Tools mirror upstream artex-global/Dockerfile (python/curl/git/jq/ripgrep/nmap/dns/netcat/whois, Node + Playwright + Chromium),
+# Tools mirror upstream m1nervac0nsole/Dockerfile (python/curl/git/jq/ripgrep/nmap/dns/netcat/whois, Node + Playwright + Chromium),
 # plus PostgreSQL server/client (Debian default, 15 on bookworm), tcpdump, strace and procps.
 FROM node:22-bookworm-slim
 ARG TARGETARCH
@@ -58,6 +58,121 @@ RUN set -eux; \
     nuclei -update-templates >/dev/null 2>&1 && test "$(find /root/nuclei-templates -name '*.yaml' | wc -l)" -gt 1000; \
     ffuf -V >/dev/null; dalfox --version >/dev/null 2>&1 || true; sqlmap --version >/dev/null
 
+# Manifest toolbox: every `requires` in m1nervac0nsole/manifest/builtin must
+# resolve here, or the agent's tool call fails at runtime. Bookworm packages
+# what it can; the rest are pinned release binaries, git tags or interpreter
+# packages. Each binary is exercised below so a silent install failure cannot
+# ship an image whose manifests reference a missing tool.
+ARG NAABU_VERSION=v2.7.0
+ARG DNSX_VERSION=v1.3.1
+ARG GAU_VERSION=v2.2.4
+ARG AMASS_VERSION=v5.1.3
+ARG GOWITNESS_VERSION=3.2.2
+ARG FEROXBOOSTER_VERSION=v2.13.1
+ARG RUSTSCAN_VERSION=2.4.1
+ARG NIKTO_VERSION=2.6.1
+ARG ENUM4LINUX_NG_VERSION=v1.3.10
+# NetExec's v1.5.1 tag pulls certipy-ad, whose current releases require Python
+# >=3.12; bookworm ships 3.11. Pin the commit verified against this image.
+ARG NETEXEC_COMMIT=97b31bf1d017e12476a1082c30203d4c5febe85c
+ARG IMPACKET_VERSION=impacket_0_13_1
+ARG WAFW00F_VERSION=2.4.2
+ARG WPSCAN_VERSION=3.8.28
+ARG SECLISTS_VERSION=2026.2
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      masscan hydra whatweb sslscan mtr-tiny traceroute nbtscan \
+      smbclient ldap-utils testssl.sh libxml-writer-perl \
+      ruby ruby-dev libxml2-dev libxslt1-dev zlib1g-dev python3-dev libffi-dev gcc make pkg-config; \
+    rm -rf /var/lib/apt/lists/*; \
+    ln -sf /usr/bin/testssl /usr/local/bin/testssl.sh; \
+    gh="https://github.com"; \
+    case "$TARGETARCH" in amd64) ARCH=amd64; RARCH=x86_64;; arm64) ARCH=arm64; RARCH=aarch64;; esac; \
+    zip_install() { \
+      curl -fsSL "$1" -o /tmp/t.zip \
+      && unzip -o -q /tmp/t.zip -d /tmp/td \
+      && find /tmp/td -type f -name "$2" -exec install -m 0755 {} /usr/local/bin/ \; \
+      && rm -rf /tmp/t.zip /tmp/td; }; \
+    tgz_install() { \
+      curl -fsSL "$1" -o /tmp/t.tgz \
+      && mkdir -p /tmp/td && tar -xzf /tmp/t.tgz -C /tmp/td \
+      && find /tmp/td -type f -name "$2" -exec install -m 0755 {} /usr/local/bin/ \; \
+      && rm -rf /tmp/t.tgz /tmp/td; }; \
+    zip_install "$gh/projectdiscovery/naabu/releases/download/$NAABU_VERSION/naabu_${NAABU_VERSION#v}_linux_${ARCH}.zip" naabu; \
+    zip_install "$gh/projectdiscovery/dnsx/releases/download/$DNSX_VERSION/dnsx_${DNSX_VERSION#v}_linux_${ARCH}.zip" dnsx; \
+    tgz_install "$gh/lc/gau/releases/download/$GAU_VERSION/gau_${GAU_VERSION#v}_linux_${ARCH}.tar.gz" gau; \
+    tgz_install "$gh/owasp-amass/amass/releases/download/$AMASS_VERSION/amass_linux_${ARCH}.tar.gz" amass; \
+    curl -fsSL "$gh/sensepost/gowitness/releases/download/$GOWITNESS_VERSION/gowitness-${GOWITNESS_VERSION}-linux-${ARCH}" -o /usr/local/bin/gowitness; \
+    chmod 0755 /usr/local/bin/gowitness; \
+    tgz_install "$gh/epi052/feroxbuster/releases/download/$FEROXBOOSTER_VERSION/${RARCH}-linux-feroxbuster.tar.gz" feroxbuster; \
+    if [ "$ARCH" = amd64 ]; then RS=x86_64-linux-rustscan.tar.gz.zip; else RS=aarch64-linux-rustscan.zip; fi; \
+    curl -fsSL "$gh/RustScan/RustScan/releases/download/$RUSTSCAN_VERSION/$RS" -o /tmp/r.zip; \
+    mkdir -p /tmp/r && unzip -o -q /tmp/r.zip -d /tmp/r; \
+    find /tmp/r -name '*.tar.gz' -exec tar -xzf {} -C /tmp/r \; ; \
+    find /tmp/r -type f -name rustscan -exec install -m 0755 {} /usr/local/bin/ \; ; \
+    rm -rf /tmp/r /tmp/r.zip; \
+    git clone --depth 1 --branch "$NIKTO_VERSION" https://github.com/sullo/nikto /opt/nikto; \
+    rm -rf /opt/nikto/.git; \
+    chmod 0755 /opt/nikto/program/nikto.pl; \
+    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto; \
+    git clone --depth 1 https://github.com/CiscoCXSecurity/enum4linux /opt/enum4linux; \
+    rm -rf /opt/enum4linux/.git; \
+    install -m 0755 /opt/enum4linux/enum4linux.pl /usr/local/bin/enum4linux; \
+    git clone --depth 1 --branch "$IMPACKET_VERSION" https://github.com/fortra/impacket /opt/impacket; \
+    rm -rf /opt/impacket/.git; \
+    python3 -m pip install --no-cache-dir --break-system-packages /opt/impacket; \
+    for f in /opt/impacket/examples/*.py; do \
+      b=$(basename "$f" .py); \
+      [ "$b" = __init__ ] && continue; \
+      printf '#!/bin/sh\nexec python3 %s "$@"\n' "$f" > "/usr/local/bin/impacket-$b"; \
+      chmod 0755 "/usr/local/bin/impacket-$b"; \
+    done; \
+    python3 -m pip install --no-cache-dir --break-system-packages \
+      "git+https://github.com/Pennyw0rth/NetExec@${NETEXEC_COMMIT}" \
+      "git+https://github.com/cddmp/enum4linux-ng@${ENUM4LINUX_NG_VERSION}" \
+      "wafw00f==${WAFW00F_VERSION}"; \
+    gem install --no-document nokogiri -- --use-system-libraries; \
+    gem install --no-document wpscan -v "$WPSCAN_VERSION"; \
+    git clone --depth 1 --branch "$SECLISTS_VERSION" https://github.com/danielmiessler/SecLists /usr/share/seclists; \
+    rm -rf /usr/share/seclists/.git; \
+    for t in masscan hydra whatweb sslscan mtr traceroute nbtscan smbclient ldapsearch \
+             testssl.sh nikto enum4linux enum4linux-ng nxc impacket-secretsdump wpscan \
+             wafw00f naabu dnsx gau amass feroxbuster rustscan gowitness; do \
+      command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; \
+    done; \
+    masscan --version 2>&1 | grep -qi masscan; \
+    whatweb --version 2>&1 | grep -qi whatweb; \
+    nikto -Version 2>&1 | grep -qi nikto; \
+    enum4linux-ng -h 2>&1 | grep -qi enum4linux; \
+    impacket-secretsdump -h 2>&1 | grep -qi impacket; \
+    wpscan --version 2>&1 | grep -q "$WPSCAN_VERSION"; \
+    feroxbuster --version 2>&1 | grep -qi feroxbuster; \
+    rustscan --version 2>&1 | grep -qi rustscan; \
+    gau --version 2>&1 | grep -qi gau; \
+    test -f /usr/share/seclists/Discovery/Web-Content/common.txt
+
+# PEASS-ng: the privesc skill's enumeration suite. The Linux and macOS scripts and
+# static binaries run inside the guest; the Windows executables are staged for
+# transfer to a target, so they stay non-executable here.
+ARG PEASS_VERSION=20261109-f4fdadd7
+RUN set -eux; \
+    mkdir -p /opt/peass; \
+    for a in linpeas.sh linpeas_fat.sh linpeas_small.sh \
+             linpeas_linux_amd64 linpeas_linux_arm64 linpeas_linux_arm linpeas_linux_386 \
+             linpeas_darwin_amd64 linpeas_darwin_arm64 \
+             winPEAS.bat winPEASany.exe winPEASany_ofs.exe winPEASx64.exe winPEASx64_ofs.exe \
+             winPEASx86.exe winPEASx86_ofs.exe; do \
+      curl -fsSL -o "/opt/peass/$a" \
+        "https://github.com/peass-ng/PEASS-ng/releases/download/${PEASS_VERSION}/$a"; \
+    done; \
+    chmod 0755 /opt/peass/linpeas*.sh /opt/peass/linpeas_linux_* /opt/peass/linpeas_darwin_*; \
+    chmod 0644 /opt/peass/winPEAS*; \
+    ln -sf /opt/peass/linpeas.sh /usr/local/bin/linpeas; \
+    ln -sf /opt/peass/linpeas_fat.sh /usr/local/bin/linpeas_fat; \
+    ln -sf /opt/peass/linpeas_small.sh /usr/local/bin/linpeas_small; \
+    linpeas -h 2>&1 | grep -qi "privilege escalation"
+
 # bbot recursive recon orchestrator: isolated venv with preinstalled dependencies
 ARG BBOT_VERSION=3.0.2
 RUN set -eux; \
@@ -71,6 +186,16 @@ RUN set -eux; \
     ! grep -qE "Installing|ERRR|CRITICAL" /tmp/bbot-dry.log || { cat /tmp/bbot-dry.log; exit 1; }
 
 # Pin matching browser tooling so rebuilds retain the verified runtime.
+# Obscura: Rust headless browser (stealth build) for the obscura MCP server and skill.
+ARG OBSCURA_VERSION=v0.2.6
+RUN set -eux; \
+    case "$TARGETARCH" in amd64) OBSCURA_ARCH=x86_64;; arm64) OBSCURA_ARCH=aarch64;; esac; \
+    curl -fsSL "https://github.com/h4ckf0r0day/obscura/releases/download/${OBSCURA_VERSION}/obscura-${OBSCURA_ARCH}-linux-stealth.tar.gz" -o /tmp/obscura.tgz; \
+    mkdir -p /tmp/obscura && tar -xzf /tmp/obscura.tgz -C /tmp/obscura; \
+    find /tmp/obscura -type f \( -name obscura -o -name obscura-worker \) -exec install -m 0755 {} /usr/local/bin/ \;; \
+    rm -rf /tmp/obscura /tmp/obscura.tgz; \
+    obscura --version
+
 # The Chromium download is geo-restricted on some networks (cdn.playwright.dev
 # answers 403 "not available in your location"), so a rebuild on such a network
 # would fail even though the image is otherwise fine. Keep the browser when it is
@@ -81,6 +206,10 @@ RUN set -eux; \
     ls "$PLAYWRIGHT_BROWSERS_PATH"/*/chrome-linux*/chrome >/dev/null 2>&1 \
       || { echo "no Chromium present and the download failed"; exit 1; }; \
     rm -rf /var/lib/apt/lists/* /root/.npm
+
+# REA reverse-engineering MCP (backs the `rea` skill). Pinned to the release
+# verified against this image; Node >=22.23.4 is required.
+RUN npm install -g rea-agents@6.8.0 && rea --version
 
 # ---- exploit development, debugging, reverse engineering -------------------
 # Exploit development needs a working debugger and gadget finder next to the
@@ -178,10 +307,10 @@ RUN set -eux; \
     ln -s /opt/exploitdb/searchsploit /usr/local/bin/searchsploit; \
     searchsploit --version >/dev/null 2>&1 || true
 
-COPY artex-global/dist/${TARGETARCH}/artex /opt/artex/artex
-COPY artex-global/skills/ /opt/artex/skills/
+COPY m1nervac0nsole/dist/${TARGETARCH}/m1nervac0nsole /opt/m1nervac0nsole/m1nervac0nsole
+COPY m1nervac0nsole/skills/ /opt/m1nervac0nsole/skills/
 COPY deployment/guest-start.py deployment/guest-export.py /opt/agentlab/
-RUN chmod 0755 /opt/artex/artex /opt/agentlab/guest-start.py \
+RUN chmod 0755 /opt/m1nervac0nsole/m1nervac0nsole /opt/agentlab/guest-start.py \
  && mkdir -p /state /run/secrets
 
 EXPOSE 8787

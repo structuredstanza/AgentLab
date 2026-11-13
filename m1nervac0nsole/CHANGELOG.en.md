@@ -1,0 +1,383 @@
+# Changelog
+
+English
+
+This document records the changes in this edition. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [Unreleased]
+
+### MCP servers and asset sync
+
+- Add the REA reverse-engineering MCP server (`rea mcp`, `rea-agents@6.8.0`, Node >=22.23.4) to both images and seed it enabled; the `rea` skill unlocks its 229 tools on demand. Enable the seeded `obscura` server so its skill can unlock its tools too.
+- Remove the external asset-sync feature end to end: its `/api/sync/*` routes, the sync implementation and its tests, the seeded placeholder MCP row, the Asset Sync page and nav entry, the API client, types, messages and mock fixtures. A placeholder MCP row left by an earlier install is inert and can be deleted from the MCP page.
+
+### Guest image toolbox
+
+- Install every binary the tool manifests declare in the guest image: masscan, hydra, whatweb, sslscan, mtr, traceroute, nbtscan, smbclient, ldap-utils, testssl.sh, nikto, enum4linux, enum4linux-ng, netexec, impacket (fortra), wpscan, wafw00f, feroxbuster, rustscan, naabu, dnsx, gau, amass, gowitness, plus SecLists at `/usr/share/seclists`. The manifests already declared these tools, but the image never contained them, so those tool calls failed at runtime with a missing binary.
+- Ship the full PEASS-ng release at `/opt/peass` (`20261109-f4fdadd7`): `linpeas.sh`, `linpeas_fat.sh`, `linpeas_small.sh`, the static Linux and macOS binaries, and the Windows `winPEAS*.exe` / `winPEAS.bat` set. The `privesc` skill now documents each file and when to use it.
+
+### Engagement integrity
+
+- Give hints a lifecycle. `add_hint` / `add_task_hint` accept `supersedes: [ids]`, which marks those hints `consumed`; the planner's graph overview now lists only `active` hints, so a superseded instruction stops arriving every round. `POST /api/tasks/{id}/hints/{hid}/state` closes one by hand, and task wrap-up consumes whatever is left.
+- Let the planner retract non-running work. `kill_work` previously errored unless the intent had a live worker; it now falls through to the operator cancel path (soft delete, recorded reason) for open and paused intents, and requires a `reason`, which is recorded on the running path too.
+- Ask the planner to reconcile instead of only adding. The hint trigger no longer says "if no intent covers it yet"; it now instructs the planner to treat a prohibitive hint as a constraint and `kill_work` / `steer_work` the intents that contradict it.
+- Refuse to auto-complete a task that still has paused intents, and push a churn trigger when three intents on one asset are exhausted so the planner changes technique instead of re-issuing a variant.
+- Report coverage explicitly: the generated report has a **Coverage** section naming in-scope assets with no recorded exploration activity, so an untouched host reads as untested rather than clean.
+- Block archiving a task whose findings still have no bound traffic evidence (`evidence_version = 0`), naming each finding; `{"force": true}` overrides it for findings that are not HTTP traffic.
+
+### Operational memory
+
+- Deliver what agents write. The prompt-block renderer stopped at the first entry that did not fit and rendered whole knowledge bodies into a 2,200-character block, so on a measured task only 12 of 87 worker reflections ever reached a later worker. One packer now skips an entry that does not fit, clips each item, and reports the ids it wrote; the usage ledger records those, so "shown" means shown.
+- Make the start-of-task block an index: adopted environment entries in full, then one `K17 [technique] <title>` line per adopted entry the task can see. `recall(id="K17")` returns the full text under the same visibility rule as search.
+- Build the per-launch and per-round block from one selector (`db.SelectMemory`) instead of four separate paths: prior attempts by finished intents on the same assets, each shown by its best-matching yielded fact; four reflection slots with tooling lessons and same-asset rows first and agent-written rows ahead of engine rows; and an index of the task's own candidates.
+- `reflect` accepts `scope: tooling` for a lesson true of every worker, and `about` + `verdict` (`confirmed|wrong|stale`) to judge an earlier item. A verdict renders next to its target and never hides it; no agent changes an entry's status.
+- `recall` builds its query with PostgreSQL's own parser, normalises rank by length, ignores terms that match most entries, and searches every reflection instead of substring-matching the newest 50.
+- Record the origin intent of an agent-written knowledge entry (`knowledge_entries.origin_intent_id`).
+- Add a review queue. `GET /api/knowledge/review?task_id=` lists a task's candidates ordered by what their origin intent produced, with the redaction count a promotion would make and the nearest adopted entry; the Memory page's Review view promotes through the existing bulk action. Finished tasks with candidates show "N to review" on the tasks list and detail page (`GET /api/knowledge/review/counts`), and the archive dialog says how many unreviewed candidates will be lost.
+- `GET /api/memory/preview` takes `intent_id` and renders the launch block that worker got, as of its launch.
+- Ask a worker that ran out of budget for one `reflect` before its closing sentence; those runs previously left no lesson.
+- Remove the engine's "defence response" reflection, a substring match on 403/429/captcha/waf/blocked that fired on file sizes, hex blobs and the engine's own hook messages and then took prompt slots from reflections workers wrote.
+- Stop the scrubber corrupting technique text: `::` scope syntax (`[Convert]::ToBase64String`), OIDs and glued version numbers (`v1.8.0.191`) are no longer read as IP addresses, loopback and unspecified addresses are not target identifiers, and `basic authentication`, attribute-only `Set-Cookie:` lines and word-shaped slash paths survive. The rules fail closed: a slash run that is not made of words, a cookie line with any non-attribute pair and a bare four-part number (indistinguishable from an address) are still redacted. Credentials and routable addresses are redacted as before.
+- Scrub and filter RSI lessons at render time the way knowledge is (they skipped both), and truncate them on rune boundaries.
+
+### Console fixes
+
+- Show knowledge-entry and reflection IDs in the Memory browser and their detail sheets, so a curator reference ("candidate #32", "reflection #119") resolves to a visible row.
+- Move the curator chat out of the side pane into a **Curator** tab beside Knowledge, Reflections and Preview.
+- Stop the coverage-graph drawer from clipping its content: the Radix scroll-area table wrapper is pinned to the panel width with a fixed layout, so long intent text wraps inside the drawer instead of widening it past the viewport.
+- Sending a message to a worker that is still running now pauses the intent and delivers the message; previously the send was a silent no-op because the server only accepts messages for a paused intent. The send button is available while the worker runs.
+
+### Identifier cutover
+
+- Rename the Go module to `github.com/structuredstanza/AgentLab/m1nervac0nsole`, the source tree to `m1nervac0nsole/`, the binary to `m1nervac0nsole`, the database and role to `m1nervac0nsole`, the auth cookie to `m1nervac0nsole_token`, the sandbox prefix to `m1nervac0nsole-agentlab-`, the image to `agentlab/m1nervac0nsole` and the provider unit to `m1nervac0nsole-cliproxy.service`.
+- Every environment variable carries the `M1NERVAC0NSOLE_` prefix (`M1NERVAC0NSOLE_PG_DSN`, `M1NERVAC0NSOLE_CONFIG`, `M1NERVAC0NSOLE_MEMORY`, `M1NERVAC0NSOLE_EGRESS_PROXY`, …). The egress failure header is `X-M1nervac0nsole-Egress`; browser storage keys and benchmark flags are renamed too (`--console-url`, `--console-token`, `--console-password`, `--console-username`).
+- Migration is a cutover, not an alias: existing deployments need a new `config.json`/DSN, the new environment names, a fresh `m1nervac0nsole` database (the previous database is left untouched but unused), and an image rebuilt and tagged `agentlab/m1nervac0nsole:*`. A sandbox created before the cutover carries the previous name prefix, so `./lab stop` no longer matches it; remove it before `./lab start`.
+
+### Guard framing and comments
+
+- Replace the m1nervac0nsole-branded guard prefix with a neutral `[platform control - not target defense]` marker in the model-facing block message, and update the tests that pinned the old string. The framing still tells the agent that the block is a platform decision, not a target-side defense.
+- Rebrand the remaining internal comments and docstrings (build/install/start/update scripts, package docs, benchmark runners, guest supervisor sections, `lab` docstring) to the product name. Environment-variable names, binary/DB/cookie identifiers and historical changelog entries are unchanged.
+
+### Removal pass
+
+- Delete the DingTalk, Feishu and WeCom notification adapters, their registry entries, the markdown body renderer only they used, and their UI fields and labels. Existing rows of those kinds now fail closed as unregistered; the generic webhook, Telegram and email channels remain.
+- Remove dead code verified to have no runtime consumer: the empty `selfupdate/` directory, the no-op `POST /api/gc`, `GET /api/audit` and its in-memory attribution counters, `scope.Verdict.Allowed()`, the orphan `/system/agents/detail` page, the unused `zustand` dependency, `formatCurrency`, the `data-navbar-style` attribute, the never-set `NavItem.disabled`/`newTab` fields and their branches, two retired navigation keys, and unreachable JSX after the root redirect.
+- Drop unreferenced assets and duplicated docs: 14 upstream screenshot captures plus `wx.png`, `deployment/fixtures/gemini_native_sse.txt`, the dead external-link allowlist row, and the two `docs/features` copies that duplicated the script READMEs.
+- Ship the php2shell PoC payload inside its skill (`skills/php2shell/poc/`), where the injected `Base directory` actually resolves; delete the `playwright-cli` and `rea` skills (generic manual, unseeded MCP) and the vendored `linpeas.sh`.
+- Lazy-load the mock dataset: a production build no longer references the fixture chunk, and `zustand` is gone from the dependency tree.
+- Fix the stale repository plumbing: issue/PR templates and the release image namespace no longer point at the upstream account, the PR checklist names the real gates, `benchmark-results/` is ignored, and both link checkers now scan the root docs and `.github/` (with percent-encoded anchors decoded).
+
+### Forensics and detections layer removed
+
+- Remove the `detections/` pack entirely: the Sigma atomic and correlation rules, the Suricata rule, the ATT&CK Navigator layer, the indicator CSV and MISP event, the host-triage script, and their Docker test suites, plus the guide (`docs/defense-en.md`), the `detections.yml` CI job and the pre-commit hook. The pack's contribution contract goes with it.
+- The default ports `8787`/`8788` are unchanged. The m1nervac0nsole-branded guard prefix was later replaced by a neutral marker (see above).
+
+### Operator account and usage notice
+
+- Rename the single operator account to `minerva` in the server login check, JWT subject, login/setup screens, change-password copy, reset script, lab CLI and benchmark runner. The username is not stored in the database, so an existing deployment keeps its password and signs in as `minerva` after upgrading; tokens issued before the change keep their old subject until they expire.
+- Name the product in the usage notice as `m1nervac0nsole`, keeping the AGPL-3.0 terms unchanged.
+
+### m1nervac0nsole console refactor
+
+- Rebrand the product-facing console, authentication screens, icons, reports and notifications as `m1nervac0nsole`, preserving m1nervac0nsole/Norma attribution and existing deployment, authentication, API and forensic identifiers.
+- Adopt the minervacyb.org black, hairline and blue-gray visual system with locally packaged Manrope and DM Mono. Remove theme switching, appearance options, presets and their persistence/generation code; old appearance cookies cannot override the fixed design.
+- Regroup the same navigation destinations into Operations, Evidence, Intelligence and Configuration, sharing that data with the command palette. Keep approvals visible in the header, with one shared pending-count poller and a keyboard skip link before navigation.
+- Flatten shared surfaces and workflow sections, retain semantic severity/status colors, and move secondary filters into named disclosures. Dense tables scroll locally instead of crushing columns; the memory curator retains its full-height right pane and mobile pane switch.
+
+### Stopping the absence loop
+
+- A task can now be handed back to the human instead of being planned at forever. `report_blocked` (planner-only) parks the task in the new `needs_operator` status with a `blocked_reason` and an operator action, the planner and worker loops refuse to run while it holds, and resuming clears both. Admission of new work (a goal added, a rerun) also answers the block.
+- The pause path no longer swallows its own signal: pausing an intent now wakes the planner and derives that intent's reflections, as the terminal path always did. A paused intent counts as active (`HasActiveIntent`), so an intent waiting on a human no longer reads as a stalled frontier and no longer triggers the "zero intents is not allowed" lead. Quiet mode keeps the narrower `HasOpenOrRunningIntent`, so the pause wake still gets its round.
+- The planner prompt lists environmental absence as a third legitimate reason to produce no intent, and both the hard floor and the empty-frontier lead now name `report_blocked` as the move when the target is unreachable. In a real engagement the old behaviour spent roughly a quarter of 63 intents re-asking whether a dead host had come back.
+- `graph_overview` lists `paused_intents` (compact, capped at 12), so an intent waiting on a human is visible where every other intent state is, instead of being described by a sentence the planner round had to append.
+
+### Memory that can be read back
+
+- `recall` could not find what the same task had just written: the knowledge query ANDed every token of a natural-language question and the reflection half was a whole-query substring match. Both now share one tokenizer (`db.MemoryTokens` / `db.MemorySearchTerms`); knowledge matches any term and ranks by overlap, reflections are scored by term overlap.
+- Knowledge written during a task reaches the next round: the memory block is a per-round provider instead of a snapshot taken before the task started.
+- New `environment` knowledge scope for lessons about the platform rather than the target (proxy behaviour, network shape). Adopted environment entries are always injected at task start, independent of the name/goal term match, with their own cap; the `env:<name>` tag names the deployment. Agents still write only task-scoped candidates; promotion stays an owner action.
+- New `lead` kind: a route that was reasoned out but never executed. `knowledge_add` takes a `proof_basis`, and a `playbook` that cannot cite `executed-live` or `executed-lab` is stored as a `lead` and says so.
+- Agent-written knowledge and reflections are generalized at write time with the same identifier scrubbing promotion uses, so a lesson reads as a condition and a mechanism rather than as one box's address. Operator entries keep their identifiers; the concrete values stay in the exploration graph.
+- The knowledge tsvector is built with the `english` configuration, so `reachable` finds `reachability` and `proxies` finds `proxy` - the vocabulary these lessons are actually written in. A guarded migration rebuilds the generated column once, only while it still says `simple`.
+- The operator's knowledge list filter keeps AND semantics (a filter should narrow as you type), but when an exact match returns nothing it retries with the ORed terms and marks the response `relaxed`, so a dead-end query degrades into "no exact match; showing related" instead of an empty list.
+
+### Managing the memory
+
+- New `/system/memory` screen: browse knowledge with every filter the store supports (scope, kind, status, source, tag, origin task, company, free text, date range), real paging driven by a true total, ranked search outside a task lens, and a visible "no exact match - showing related" state instead of a silently widened result. Entry detail edits title/body/kind/tags/status, promotes with a scope and company picker, demotes, retires, deletes, and reports the redactions each write made. Multi-select drives `POST /api/knowledge/bulk`, which answers per id so a partial failure names the rows that failed.
+- Reflections are curated across tasks, not one task at a time: `task_reflections` gained an english tsvector, the store a filtered/paginated cross-task query, and the API list, stats, edit, delete and `graduate`. Graduating writes a task-scoped candidate with `source='reflection'`; nothing leaves the task until an operator promotes it, and the UI says so in both steps.
+- `knowledge_usage` records which entries were actually read back, at the three existing read sites: the start-of-task block, the per-round block, and an agent's `recall` call (the strongest signal, because the agent asked). Recording is best-effort telemetry on a batched insert; a ledger failure never fails a prompt build or a tool call. `GET /api/knowledge/{id}/usage` reports hits and last-used.
+- `GET /api/memory/preview?task_id=` renders exactly what a task's prompt would carry - start block, round block and the ids behind each - so the effect of an edit is visible before a task runs. The preview deliberately records no usage: an operator looking is not an agent reading.
+- New `curator` assistant and a chat pane beside the browser, reusing the existing conversation stack rather than adding a second one. It gets five tools of its own (`memory_search`, `memory_read`, `memory_propose`, `reflection_search`, `task_digest`), each seeded with a `tools` row bound to `["curator"]` so `ToolResolve` keeps them off every other agent - a host tool without that row would reach worker and planner. The curator is propose-only: it writes task-scoped candidates, scrubbed and generalized like any agent write, and cannot adopt, promote, retire or delete.
+- A curator proposal raises the operator approval card before it is stored, and nothing an instance has saved can switch that off. Being in the intercept scope only puts a tool into the rule/judge path, and a call that matches no rule is allowed - which is how `memory_propose` was first stored unseen. It is now approval-required in the interceptor itself, so an empty rule table, an allow rule, a disabled judge and an `intercept_enabled_tools` list saved before the curator existed all still ask; a deny rule still denies. The four read tools stay ungated: gating a search would make the curator unusable without protecting anything.
+- `POST /api/knowledge?dry_run=true` returns the entry a write would store and the redactions it would make without storing it, through the same scrub path as the real write.
+- Browser verification exposed a content-height curator pane and overlapping long table cells. Memory now uses a viewport-bounded workspace: the curator fills the visible right side below the application header, messages scroll independently, and the composer stays visible while the knowledge/reflection browser scrolls. On narrow screens the curator has an explicit open/close path instead of disappearing; table text remains inside its column and full details stay available.
+
+### A proxy that cannot fake reachability
+
+- The masking egress proxy answered `CONNECT` with `200 Connection Established` before it had dialled anything, so a tool saw a successful tunnel and a forged certificate for a host that does not exist, and the real failure arrived inside the tunnel as a 502 that read like the site's answer. CONNECT is now preceded by a TCP probe (3 s timeout) cached per authority (2 min, 4096 entries), and an unreachable target gets a 502 labelled `X-m1nervac0nsole-Egress: dial-failed` with no certificate minted.
+- Every proxy-generated failure carries that header, and enrichment drops a response that has it: no service row, no `last_seen` bump, no exchange recorded against the target. A 502 the masker produced can no longer be stored as the target's status code.
+- Assets carry `last_unreachable_at`, `open_ports` entries carry provenance (`model` for an `insert_assets` claim, `probe` for an observed connection), and `graph_overview` exposes a `target_liveness` block, so absence is a fact the planner reads instead of prose it infers.
+- New `tcp_probe` worker tool: a direct dial that ignores the proxy environment, distinguishes connected / refused / timed-out / DNS failure, and writes the liveness result.
+- A successful enrichment probe clears `last_unreachable_at`: a host that answers HTTP is reachable, and only `tcp_probe` used to be able to say so. The clear runs on the probe's own transaction, so it commits with the result that proved it.
+- The masking proxy keeps its browser encoding fingerprint upstream but decodes gzip, deflate or brotli when the downstream client did not negotiate that encoding. Curator WebFetch can now read compressed sources instead of receiving binary data with a successful HTTP status; decoding failures are labelled proxy failures. Enrichment advertises the encodings it handles so its raw response capture remains unchanged.
+- A regression test pins the recording proxy's CONNECT honesty. It dials upstream before answering because `UpstreamCert` defaults to true, and with the masking proxy probing first, a tunnel to a dead host now fails at CONNECT instead of succeeding against a forged certificate. Nothing asserted that before, so adding `NewUpstreamCertAddon(false)` would have silently restored the artefact.
+
+### Ownership and SDK
+
+- Move the Go module to `github.com/structuredstanza/AgentLab/m1nervac0nsole` and the vendored agent SDK to `github.com/structuredstanza/norma`, matching where the code is actually published. Every import, the `replace` directive and the CI invocations follow. The retired upstream account is no longer named anywhere outside the AGPL copyright notice in `third_party/norma/LICENSE`, and the README, SECURITY, defense guide and external-link allowlist now point at the published upstream this fork tracks.
+- Update the vendored SDK from Norma v0.4.4 to v0.4.6 as a three-way merge, so the local changes (`llm/prepare.go`, `llm/snippet.go`, the cache and prepare tests, the agentcore, summarizer, query, openai, retry, types and archive edits) survive. Upstream's new `harness/untrusted.go` comes in with it.
+
+### Deployment
+
+- Stop the VM from running whatever the image was built with. `lab start` rebuilds the application into `deployment/guest-dist/` (frontend export plus the `embedui` binary, the skills, `guest-start.py` and `guest-export.py`) whenever a source file is newer than that build, and the directory is mounted read-only at `/dist`. The supervisor copies the binary and syncs the skills into `/state/skills` at every start, so a code, skill or supervisor change reaches the VM on the next start. A skill deleted upstream is removed; a skill created in the UI is kept. `./lab build` forces the build without starting the VM, and `lab start` names the recreate command when a sandbox predates the mount. The image's copies remain only as the fallback for such a sandbox.
+
+### Knowledge base, reflection pool and storage
+
+- Add a knowledge base and a reflection pool (`knowledge_entries`, `task_reflections`). Agents get `recall`, `knowledge_add` and `reflect`; the engine derives reflections at the end of every intent and at task close (tool error rate, duplicate requests, no-yield intents, guard denials, defence responses, finding quality, calls per finding, skill misses). The planner sees a Recent reflections block every round and each worker intent receives it, so the next batch starts from what the last one learned. Retrieval is Postgres full-text search; semantic recall waits for an embedding provider. `M1NERVAC0NSOLE_MEMORY=off|inject` (default `inject`); see `RSI.md`.
+- Keep memory operationally safe: every write is scrubbed for credentials, agent-written entries are task-private candidates that never leave their task, promotion to company or global scope is an owner action that replaces the origin task's hosts, IPs and company names with placeholders, and per-task caps bound noise.
+- Make the persistent state volume expandable. The default `/state` quota rises from 50 GiB to 150 GiB, `AGENTLAB_STATE_QUOTA_GB` overrides it at creation (0 = none), `./lab resize-state <GB> --yes` recreates the VM with a new quota while keeping `state/`, and `lab` refuses to create a VM when the host filesystem has less than `AGENTLAB_MIN_HOST_FREE_GB` (default 20) free. The packet-capture ring now scales with the volume (`AGENTLAB_CAPTURE_RING_GB`, default 64) with a reserve of 20 percent of the volume instead of a fixed 4 GB ceiling.
+- Move the CI workflows and issue/PR templates to the repository root `.github/`; they lived under `m1nervac0nsole/.github/`, which GitHub never reads, so no workflow ever ran. Jobs now run in `m1nervac0nsole/`, `setup-go` follows `go.mod`, and the export-script and extension tests run from the repository root.
+- Retire the `m1nervac0nsole-selfupdate` detection indicator and its rule: the self-update client was removed, so nothing emits that User-Agent. The Sigma, Suricata, ATT&CK, triage and defense-guide material no longer tells defenders to hunt for it.
+- Centralize the web unit tests in `web/tests/` and run the two suites that had never executed (`activity-merge`, `chat-mentions`).
+- Delete verified dead code and orphans: unused `db/nkey.go` key builders and other unreachable Go helpers, 22 unreferenced web components, 16 uncalled API methods, 19 unused npm dependencies, and unreferenced scripts and docs. Restore the multibyte test fixtures that the ASCII cutover had hollowed out.
+- `lab start` now refuses to share `state/` with any other running `m1nervac0nsole-agentlab-*` sandbox (it checked a fixed list of old names), `tests/run.sh` rejects an unknown area, and `dev.sh` serves the frontend on the `:5173` that the docs and CORS allowlist expect.
+
+### Audit fixes
+
+- Stop web search and WebFetch from inheriting the ambient `HTTP_PROXY`/`HTTPS_PROXY`. `web_search_proxy` and `WebFetchProxy` document "empty = direct", but an empty value fell through to `http.DefaultTransport`, so in the deployed guest every search left through the masking egress proxy — which owns the `Accept` header and replaces it with a browser value. Brave Search validates that header and answered `422 Unable to validate request parameter(s)`; DuckDuckGo's scrape endpoint saw the masked identity instead of the client's own. An empty proxy now dials directly (`tool.newFetchClient`), matching the per-profile LLM proxy's rule in `agent/provider.go`. The transport is cloned from `http.DefaultTransport`, so the dial timeout and HTTP/2 support it used to inherit are kept.
+
+- Admit a scan whose declared rate exceeds the engagement ceiling instead of waiting forever. The reservation is clamped to `MaxRequestsPerMinute`, so the shipped `ffuf` (50 rps), `feroxbuster` (50 rps) and `nuclei` (150 rps) defaults start at the cap; fractional rates (`-rate 1.5`) are parsed as a real budget instead of silently disabling the check.
+- Key the per-target rate gate and the scan limiter on one normalised host, so `EXAMPLE.com`, `example.com.` and `example.com` share a budget, and two distinct IPv6 literals no longer collapse into one bucket.
+- Reject a negative or overflowing chunk size in the egress proxy. `ParseInt` accepts a leading sign, so `-1` reached `make()` and panicked the process — reachable from an untrusted origin's response as well as a client body. Honour `Transfer-Encoding` over `Content-Length` rather than acting on whichever header appears first.
+- Restore `127.0.0.1:8787` as the `-addr` default; the placeholder value could not bind, so a flag-less launch failed at startup.
+- Extract the candidate assets of a tool call from its decoded JSON values as well as its raw bytes. One escape (`\u0065vil.example`) previously defeated both the scope exclusion list and every intercept deny rule, because the guard inspected the encoded envelope while the tool executed the decoded value. Bare IPv6 literals and mixed-case hostnames are extracted too.
+- Give the exclusion side of the task scope a writer: `effect` is persisted by the scope INSERT, accepted by `add_task_scope` and `POST /api/tasks/{id}/scope`, and rejected for kinds the guard cannot evaluate. A `root_domain` exclusion now covers its subtree, and a rule that could never match an asset is refused instead of stored.
+- Key the scope dedup index on `effect`. Auto-scope records every discovered host as an include, so the ordinary case — excluding a host the task is already scoped to — hit that row, was dropped by `ON CONFLICT DO NOTHING`, and the API reported success while the guard never fired. Both rows now coexist and the exclusion wins.
+- Keep exclusions out of the coverage denominator and the untested backlog, and unify the last duplicated scope-to-asset predicate. An excluded host was counted as in-scope, so the agent was told to test what the guard refuses and coverage could never reach 100%.
+- Extract IPv6 CIDRs and compressed literals in the scope scan. `net.ParseIP` rejects `2001:db8::/32`, so an excluded IPv6 range was never enforced, and the candidate normaliser trimmed the colons off `::1` and `fe80::`.
+- Fail closed when a safety check cannot read its rules: the asset gate, the scope checker, and the intercept enabled-tool cache now refuse rather than allowing everything. A database blip previously degraded each of them to "allow all".
+- Check the `Link` and `SetNodeState` errors before `prove_goal` declares a task complete, so a task cannot close on evidence that was never persisted.
+- Return in-flight intents to the frontier on a graceful shutdown. `shutdown` was missing from the pause-cause list, so every restart marked them `blocked` — a state the frontier never selects — and silently discarded the work in progress.
+- Read the per-task LLM rotation chain through its mutex-protected snapshot; the unlocked slice read could index out of range and panic the process after a chain edit.
+- Match intercept deny rules against the decoded arguments, not only the encoded envelope. `{"command":"\u0072m -rf /"}` decodes to `rm -rf /` and ran while no rule matched; the guard's scope scan had already been fixed, but the rule matcher had not.
+- Repair a corrupt worker transcript instead of failing the run. Surfacing the error was right, but the transcript id is deterministic per intent, so every retry hit the same bytes and the intent was parked in a state the frontier never selects — permanently bricked. The partial trailing line is now dropped, and only an unrepairable file is moved aside.
+- Validate that a loaded CA can actually sign: it must be a CA, permit `keyCertSign`, and be valid now. A matching key/cert pair that failed any of these loaded cleanly and then produced "unknown authority" at every tool.
+- Cap node summaries at 160 runes everywhere they reach an agent, not only in `list_facts`. `graph_overview` embeds recent facts in the planner's current turn on every round, where compaction cannot evict them, so one oversized summary could permanently exceed the context window.
+- Bound the `limit`/`size` query parameters of the activity, frontier, conversation and command endpoints. An unbounded value reached SQL `LIMIT` verbatim, so one cookie-authenticated cross-site GET could materialise every row with its metadata.
+- Add `ReadTimeout`, `IdleTimeout` and `MaxHeaderBytes` to the HTTP server. `WriteTimeout` stays unset because SSE and downloads hold a response open by design.
+- Use one scope-to-asset predicate for both the coverage denominator and the agent's asset context. They had drifted: only one matched an `ip`/`cidr` row against `a.domain`, so a service on an IP literal appeared in `list_assets` but was never counted as covered and never appeared in the untested backlog.
+- Run the `guard` and `intercept` packages in CI's database job; their fail-closed tests previously only ever skipped.
+- Keep credential columns in `lab export` verbatim and say so in the export manifest: `llm_profiles.api_key`, `oauth_grants` tokens, `task_credentials` and `notify_channels.config` travel with the archive so it stays faithful to the captured database. Redaction is left to the consumer, and the per-table `SELECT` is where it would go.
+- Bind `run_tool` and `list_tools` to the worker and the planner, not only to the Auto agent. `ToolResolve` drops a catalog tool whose agent binding omits the running agent, so a worker's only execution path was Bash — while `run_tool`'s description and the `recon-orchestration` skill told the model to prefer `run_tool` over hand-built Bash command lines. A model asked to use a tool it did not have is why scans were driven through Bash. Existing databases are backfilled once, since `SeedTool` is first-insert-only.
+- Enforce the task boundary inside `run_tool` on its resolved `target`, which is what its description already promised. Until now nothing checked scope there: the guard's text scan reads the raw tool-call arguments, which is a different question from whether the named host is excluded. A task that excluded a host is now refused before the tool starts.
+- Ship `recon-orchestration` visible to the agents that hold `run_tool` (`auto`, `pentest`, `worker`, `planner`). It was absent from the built-in skill visibility map, so no agent saw it by default: the skill explaining how to choose and drive a manifest tool never reached the agents the tool was bound to.
+- Make a skill toggle-off durable. Turning a skill off deleted the visibility row, and the built-in seed — which runs on every startup — inserted it straight back, silently undoing the choice the seed's own comment promised to respect. Off now writes `enabled=false`, and the replace-all path disables unlisted skills instead of deleting them, so the seed's insert-if-absent finally behaves as documented. Existing installations where a built-in skill had been turned off will see it re-bound once on upgrade, because the old delete destroyed the record.
+- Reach HTTP/2 origins from the egress proxy by speaking h2 on the existing uTLS connection. The old HTTP/1.1 re-dial still negotiated h2 because the Chrome preset supplied its own ALPN extension, causing a protocol mismatch and `502`. This removes the second handshake; it does not establish full browser-fingerprint equivalence.
+- Fill in the scheme default port for plain-HTTP proxy requests. `http://example.com/` carries no port, and dialling a bare host fails with "missing port in address", so every `http://` request returned 502.
+- Forward the caller's credentials instead of an allowlist. `X-API-Key`, `X-Auth-Token`, `SOAPAction` and every vendor `X-*` header were dropped, so an authenticated request got 401 through the proxy and 200 without it, with nothing in the response or log to explain the difference. The identity's own headers (`User-Agent`, `Accept`, `Accept-Language`, `Sec-Fetch-*`, `sec-ch-ua*`) are still replaced rather than forwarded.
+- Refuse to replace an unusable CA. An unreadable, incomplete or mismatched `ca.pem`/`ca.key` pair caused a new CA to be generated and written over the certificate the guest's whole trust store points at, with no error and no log. It is now a startup error, and the key/cert pairing is validated.
+- Honour context cancellation in the egress proxy and attach its request logger. Shutdown cancels upstream dials and handshakes, closes live sockets, and bounds handler drain instead of requiring the guest's SIGKILL fallback.
+
+### Proxy bounds and task-scoped enrichment
+
+- Stream HTTP/1.1 and HTTP/2 responses instead of buffering or silently cutting them at 32 MiB. Preserve HEAD lengths, response trailers and framing; a short origin body remains visibly incomplete. The 32 MiB limit still applies to buffered requests.
+- Bound active client connections at 512, reject overload with `503`, and release slots on failure, client abort and shutdown.
+- Keep self-signed targets reachable while warning about failed upstream certificate verification. Warnings use fixed reason classes, exclude certificate-controlled text and credentials, and are deduplicated in a bounded 4096-host set.
+- Bound cached leaf certificates at 4096, mint outside the cache mutex, share same-host concurrent minting, and renew expired entries. Reclaim idle rate windows and compact consumed timestamps without resetting live request budgets.
+- Activate DNS and HTTP enrichment after successful worker asset insertion. Carry task identity through the queue, check task state and exclusions before dispatch and redirects, and lock task liveness during writeback so a late probe cannot recreate assets after task deletion. Refused jobs do not consume the cooldown for a resumed task.
+- Send enrichment HTTP through an explicitly configured masking proxy with CA verification and no direct fallback. Capture complete observations up to 256 KiB, including redirect hops, through the existing external-traffic recorder; skip incomplete observations with a log rather than inventing complete evidence. Decode gzip, Brotli and deflate before extracting titles, with a bounded decompressed prefix.
+- Use the configured masker as the recording proxy's in-memory upstream fallback when no operator global proxy is set. Do not overwrite the saved setting or add scope policy to the masking proxy.
+- Start the masker from the guest and development launchers with explicit URL/CA configuration. Development startup requires its own child's readiness signal, and cleanup terminates only owned process groups.
+
+### Detection rules
+
+- Retire the `m1nervac0nsole-enrich/1.0` indicator and every rule built on it: the Sigma atomic rule, the enrichment scan-velocity and fan-out correlations with their matching samples, the two Suricata signatures (sid 1000001/1000002), the indicator CSV and MISP rows, the host-triage log marker, and the reconnaissance entries in the ATT&CK layer. Enrichment probes now leave through the masking egress proxy with the engagement's pinned browser identity, so no request carries that User-Agent and every one of those rules was a false indicator that could never fire. Enrichment is detected by behaviour instead.
+
+### Codebase review
+
+- Remove the write-only Gemini accumulator `terminal` field and its assignment; completion still depends on candidate finish reasons and function calls. Preserve the separate Claude and Codex terminal checks.
+- Enforce tool approval against canonical names in both planner and worker paths, including aliases, cancellation, and explicit rejection.
+- Prepare profile runtimes before committing activation or replacement, serialize cache publication, and report profile-deletion failures without disconnecting rejected deletions.
+- Persist session-scoped native selection and readable-history handoff grants before dispatch. Verify source receipts locally against the credential epoch; preserve only the destination's signed suffix, and do not count rejected history as a provider failure.
+- Keep per-turn native Complete mode through SDK wrappers, profile changes, pools, and compaction. Run judges and side questions independently of the main native transcript; reject unsafe or incomplete judge answers.
+- Own the Norma SDK source locally, based on BaaRai/Norma v0.4.4, with its license and modification notices. Exercise the nested SDK module explicitly in CI. Translate imported shell-tool messages, notifications, archive labels, and comments to English with syntax-aware utility checks.
+- Preserve exact JSON numbers through signed replay, readable handoffs, tool execution, and export. Advertise Codex tool definitions so native agents can discover and execute their tools.
+- Bound SSE setup cancellation without canceling a successfully established MCP connection. Drain disconnect operations once, even when concurrent callers cancel.
+- Constrain workspace access to its opened root, including symlink races. Create attachments atomically, retain the original destination on read failure, and remove multipart scratch files.
+- Commit initial task credentials with task creation, preserving password bytes exactly. Complete supervisor cleanup despite full capture storage or broken diagnostics; retain browser-capture headers.
+- Round-trip legacy evidence archives without changing binary bodies or treating literal blob markers as references. Reject missing, incomplete, ambiguous, or corrupt evidence before import commits.
+- Recover final native wire schemas and effective thinking metadata; keep provider summaries and opaque reasoning digests distinct. Export valid native tool-loop history without leaking replay envelopes, and reject malformed or duplicate historical envelopes.
+- Preserve empty-candidate Antigravity safety refusals as refusals rather than truncated streams, including refusal-chain handling.
+
+### Subscription allocation correctness
+
+- Keep explicit exhausted quota at zero remaining for Codex, Claude and Antigravity; omit missing or unmeasured windows instead of treating them as full allocation.
+- Remove Antigravity's model-availability fallback from quota measurement; only measured quota-summary buckets are displayed.
+- Preserve last-good allocation as visibly stale when native status, dashboard polling or settings refresh fails. Keep unavailable subscriptions visible without fabricated percentages.
+- Show subscription resets as remaining days/hours (for example, `4d2hr`) on both the dashboard and profile settings, instead of displaying only a clock time.
+
+### Upstream feature integration
+
+- Integrate BaaRai/m1nervac0nsole at `7f8c7cb`, retaining AgentLab's owned OAuth, refusal status and provider fallbacks, subscription allocation, English-only interface, and private trace capture.
+- Add task credentials with explicit password reveal/copy, outcome and capability-gap APIs, evidence-backed RSI candidate extraction and off/shadow/inject modes. No automatic lesson adoption or harness self-modification.
+- Add goal validation, repeated-direction warnings, consecutive-failure escalation, opt-in per-intent profile rotation, planner quiet mode, and pause-aware task deadlines.
+- Add keyless Ollama profiles, token pricing and EUR cost accounting, MCP connection health and per-server timeouts, and authenticated browser traffic ingestion with an optional extension.
+- Import recon tooling and gated skills, benchmark and submission-review utilities, finding-evidence standards, and prompt-injection hardening; use the Norma 0.4.4 fork.
+- Remove application self-update endpoints, components, and restart machinery. Local builds retain customizations; binary staging recognizes identical absolute and relative output paths.
+- Preserve generated reasoning, provider summaries and opaque replay state separately. Redact task-vault passwords from accepted training samples while retaining raw private archives unchanged.
+
+### OAuth-authenticated LLM profiles
+
+- Run Claude Code, Codex and Antigravity subscription OAuth through the owned native executor; the app uses the authenticated nativeproxy API configured by `M1NERVAC0NSOLE_NATIVE_PROXY_URL` and `M1NERVAC0NSOLE_NATIVE_PROXY_TOKEN_FILE`. Keep login, PKCE/callback, refresh, account/project onboarding, cancellation, and disconnect on the native host; never call OMP OAuth or AuthStorage at runtime.
+- Remove the retired owned Bun/OMP SDK bridge, its deployment unit, and bridge-only dependencies after native cutover. New connections use fresh human OAuth on the native host; no legacy grants are imported. Earlier bridge deployment records and captures remain historical evidence, while live native OAuth/refresh checks remain pending human validation.
+- Use real per-provider native input codecs and preserve terminal response/state, signatures, encrypted reasoning, and the host-issued replay receipt in the v2 `provider_state` envelope. Store that envelope in `response_body.provider_state`; preserve API-key and Ollama transports unchanged.
+- Include configured reasoning effort in native state and training metadata. Treat same-model thinking downgrades as distinct fallback choices, retain the branch across turns, and keep handoff provenance local rather than adding it to provider requests. Allow repeated model IDs at different effective efforts in profile settings; label inherited effort explicitly and reject duplicate effective choices, including the primary.
+- Discover model-specific reasoning efforts from the local native catalog before login, reject unsupported explicit settings, and prevent stale model responses from changing another profile's options. Failed or canceled re-login preserves existing grants; disconnect drains active requests before deleting credentials.
+- Request native Codex reasoning summaries with `reasoning.summary: "auto"` and Gemini thoughts with `includeThoughts: true` whenever thinking is enabled; preserve explicit disabled behavior and capture only provider-returned reasoning.
+- Serialize OAuth grant expiry as RFC 3339 timestamps across the native host API so completed logins and saved connections decode correctly in m1nervac0nsole instead of reporting an unavailable login status.
+- Refresh expired native grants directly before inference, independently of allocation polling. Preserve upstream quota and authorization failures as bounded HTTP 429/401/403 errors without exposing private provider error details.
+- Keep local worker-chat deduplication markers out of provider inputs, and redact Go JSON-escaped task-vault secrets from accepted training samples while leaving original private captures intact.
+- Normalize surrounding whitespace consistently when the native host and app read private bearer capability files; reject empty/whitespace-only files and retain private-file permission checks.
+- Move the refusal fallback chain into each provider profile: an ordered, editable list of fallback models (with optional reasoning effort) tried on the same account, validated against the provider catalog, before the task's profile chain advances. The global refusal switch remains the master control.
+- Show remaining 5-hour and 7-day subscription allocation with reset times in each subscription profile and on the main dashboard, read through native host usage endpoints with caching, 429 backoff, and stale-on-error display.
+- Capture native Gemini thought summaries and opaque replay signatures from JSON/SSE, preserve signed multi-turn tool history, and export the actual native tool schemas. Summaries, open-weight reasoning traces, and opaque state remain distinct dataset types. Signatures are not recoverable chain-of-thought.
+- Record provider refusals as `refused`, distinct from quota exhaustion and transport errors. Optional refusal fallback follows the task's customizable ordered profile chain and retries only the current model request before any answer or tool call is committed. When transitioning between models on a native chain, prior-model multi-turn history retains visible user and assistant text while historical tool interactions are converted into readable transcript text in the outbound request without opaque provider state or thinking signatures; uninspectable attachment blocks fail closed. Subsequent turns remain on the branch model and replay its new valid native state while separate sessions start on the primary model, and local trace request bodies capture explicit handoff metadata (`from_models`, `to_model`, `readable_history`, `prefix_count`). Already delivered output and executed tools are never replayed.
+
+### English-only application
+
+- Retain only English UI catalogs and documentation variants; remove language selectors and localized server/config message wrappers.
+- Translate application-authored errors, notifications, role/tool metadata, editable built-in prompts, and conversation framing. Use English date formatting and native English mention kinds while retaining readers for historical mention syntax.
+- Migrate only exact known shipped prompt/tool/trigger defaults. Preserve operator-custom values, tool bindings, limits, historical conversations, and all previous prompt versions.
+- Write model approval reasons with `[Model]` while keeping classification and display support for records written with the legacy Chinese prefix.
+- Translate authored source comments into English, including embedded SQL, script heredocs, and Markdown code fences. Preserve non-comment code and literal legacy protocol data.
+- Translate the prompts that reach the model, which the earlier pass missed: the cold-node compaction prompt, the planner's to-do and change blocks, the worker's traffic and artifact rules, the goal framing, and the judge's input boundary. The compaction prompt being Chinese made every compacted summary come back in Chinese and flow on into planner context and the graph view. Chat mention labels shown in the dropdown are English too.
+- Preserve every legacy and third-party match string byte-for-byte, but spell each non-ASCII character as a `\u`/`\x{}`/`U&` escape so no CJK character remains in source: the legacy `[Model]`-era reason prefixes and mention tokens for saved history, the relabel migrations and orchestration constants that match shipped bytes verbatim, ICP scope keywords, log-severity keywords, and the quota markers that classify provider error text (an upstream may answer in Chinese whatever this application's own language is).
+- Replace the web-only CJK check with `scripts/check-cjk.py`, which gates every authored source file (Go, Python, TypeScript, JavaScript, JSON, CSS, SQL, TOML) and the built HTML, and rejects any CJK codepoint outright — with no content exceptions, since every retained match byte now lives only as an ASCII escape. The old check read only `web/out` and `web/src`, so a Chinese prompt string that no browser renders but every model reads passed it — which is how the compaction prompt drove the model to answer in Chinese unnoticed.
+
+### Fixed
+
+- Distinguish task report loading failures from empty reports and offer a retry button. Late responses from a previous task cannot replace the current task report.
+- Standardize benchmark runner (`scripts/benchmark/run_bench.py`) authentication on valid session `M1NERVAC0NSOLE_TOKEN` or `/api/auth/login` session tokens via `M1NERVAC0NSOLE_PASSWORD`, removing obsolete raw `M1NERVAC0NSOLE_JWT_KEY` minting to match password-hash-derived JWT signing.
+- Strengthen trace exporter test coverage in `deployment/test_export_traces.py` to exercise task credential scrubbing across open-weight reasoning, provider summaries, tool arguments, tool results, and text, ensuring corrupt snapshots fail closed and raw snapshots remain byte-for-byte unchanged.
+
+#### Data loss and correctness (audit)
+
+- **Behaviour change.** Archive compaction refuses to delete a host whose exchange count grew after the archive snapshot, and records the refusal as a task-archive warning. Captures taken while a package is compressing are no longer deleted from the hot store, so an archived task may retain traffic until a later cleanup.
+- **Behaviour change.** A provider key taken from a saved LLM profile is now only ever sent to that profile's stored `base_url`. Testing a different endpoint requires supplying that endpoint's own key.
+- **Behaviour change.** `traffic.json` in an archive package is written as a stream instead of being assembled in memory and marshalled. The structure and meaning are unchanged; field order differs and memory use drops from roughly six times the captured bytes to one exchange.
+- **Behaviour change.** The tool-approval gate now denies when its rule set cannot be read — it keeps enforcing the last set that loaded, and refuses rather than allowing if none ever loaded. Previously a database outage silently let every call through.
+- Credential re-saves with a blank password keep the stored one instead of overwriting the agent-generated secret with an empty string.
+- Workspace uploads stage to a temporary name and rename on success, so a copy that fails partway no longer truncates the file already on disk.
+- Failed captures (blocked, aborted, DNS failure) are recorded with status 0 and the transport error instead of being dropped by the browser extension, and are no longer rewritten to HTTP 200 by ingest.
+- Exchange ids no longer wrap within one second, so a burst no longer overwrites already-stored captures.
+- A task-delete staging journal records the task id, so a process exit between the PostgreSQL and SQLite commits is resolved on restart rather than leaving traffic orphaned.
+- Skill-editor file reads are guarded against out-of-order responses, so a slow read can no longer save one file's contents into another.
+- JSON request bodies are bounded at 8 MiB, with the skill-file route raised to its documented per-file limit; an unauthenticated oversized body no longer amplifies into gigabytes of heap.
+- Exporter redaction covers scheme auth headers, `Cookie`/`Set-Cookie`, camelCase credential keys and URL-encoded task passwords; unparseable records are rejected rather than aborting the run, and `train.jsonl` is replaced atomically so a failed export leaves the previous dataset intact.
+- Provider error bodies are bounded and scrubbed of credential shapes before reaching `llm_health.last_error` and `llm_records.error`, both of which are displayed in the UI.
+- The worker conclusion read by the planner and `get_worker_output` reads newest-first, so a long tool-heavy run no longer reports that its worker produced no output.
+
+#### Runtime failures found by running an engagement
+
+- **Behaviour change.** The pcap ring is sized from the filesystem it writes to instead of a fixed 32 x 128 MB. On a 4096 MB `/state` quota the fixed ring was 4 GB: a live engagement reached 3.4 GB of capture, the volume hit zero bytes free, and m1nervac0nsole, PostgreSQL and the supervisor all went down with it. The ring now leaves a 1536 MB reserve, keeps the 32-segment value as an upper bound and a 4-segment floor, and the manifest records the ring actually used rather than the one requested.
+- The built-in critical-path rule matched a bare `/` as its first alternative, so it denied any command where `rm` stood within 60 characters of an absolute path — an agent's own cookie-jar cleanup was rejected because `curl` later in the same line used `-D /dev/null`. The gap now excludes `;`, `&` and `|` so the path must belong to `rm`'s own simple command, and root matches only as a whole token. Existing databases are rewritten by `migrateCriticalPathRuleV5`, which touches only a row still holding the shipped bytes.
+- Captured response bodies no longer end mid-rune. The capture bound is a byte count, so the cut landed inside a 3-byte character and PostgreSQL rejected the entire `llm_records` insert on that byte (SQLSTATE 22021), losing the record. The cut now backs off to a character boundary first.
+- Tool output returned to the model is bounded at 8000 characters instead of the 30000 default. A live worker call carried 253 KB of tool results — 76% of a 341 KB request — and the transcript is re-sent every turn, so five oversized messages accounted for 22% of every request. The spill file still keeps the full output and the tool returns a head plus a pointer.
+
+### Added
+
+- **Enforced engagement boundary.** `scope` evaluates an asset against include/exclude rules and the tool guard refuses a call naming an excluded host, so the boundary is a decision rather than a sentence in the prompt. An exclusion always wins over a more specific include; among includes the longest pattern wins; an asset no rule mentions is `unknown`, never `out`, because a pasted scope table is routinely incomplete. `task_scope` gains an `effect` column and a row with `effect='exclude'` is enforced. `scope.Problem` rejects a rule that could never match an asset — a program's out-of-scope section is usually a mix of *where* and *what*, and filing "denial of service by flooding" as a scope rule leaves the engagement looking bounded when it is not. (`scope/`, `guard/scope.go`, `db/task_scope_check.go`)
+- **Asset kind derived from the value.** `AddAutoScope` now decides whether a value is an apex, a subdomain, an IP or a CIDR from the value itself, keeping the caller's label as a hint. One host filed as both `domain` and `subdomain` made a boundary that matched neither. (`db/scope_kind.go`)
+- **TOML manifest layer for external tools.** 32 manifests declare a tool's parameters, its argv template, how its output splits into records, and which record fields become an asset or a fact. The set is embedded in the binary, so a deployment cannot ship without it. `run_tool` executes a manifest-backed tool and returns parsed assets and facts; `list_tools` exposes the catalog. `GET /api/tool-manifests` serves the same declarations to the UI. Every manifest has a golden case in `manifest/testdata/golden/`, and `TestEveryManifestHasAGoldenCase` fails when a new tool ships without one. (`manifest/`, `server/manifest_tools.go`)
+- **Finding evidence spilled to files.** Evidence above 8 KiB is written content-addressed under the evidence directory and referenced from `findings.evidence_path`, so a list query no longer carries megabytes of request bodies it never reads. Content addressing means the same evidence recorded twice writes one file, and the filename doubles as an integrity check. (`evidence/finding_evidence.go`, `findings.evidence_path`)
+
+#### Regressions restored from the upstream base
+
+Four behaviours that this fork had lost relative to its own base commit (`7f8c7cb`), each with the test that guards it:
+
+- **Behaviour change.** `POST /api/skills` and `PUT /api/skills/{name}` emit YAML-quoted frontmatter values and re-parse the written file before answering. A description containing a colon, `#`, flow bracket, quote or comma used to produce unparseable YAML: every field after the metacharacter was dropped, the skill loaded under its directory name with an empty description, and a skill-gated MCP server was skipped without a word. A write that does not round-trip now returns 500 and is rolled back instead of landing silently. (`server/skill_frontmatter_test.go`, `server/shipped_skills_test.go`)
+- **Behaviour change.** `GET /api/tasks/{id}` returns the same token and goal aggregates as `GET /api/tasks`. The detail response previously carried zeros, so a task page showed no spend and no goal progress until the separate stats poll resolved. (`server/task_detail_metrics_test.go`)
+- **Behaviour change.** The `mcp_status` platform tool reports each MCP server's transport, enabled state, cached tool count and last connect outcome, so an agent can tell a broken server from one it never needed. It seeds on the next start and defaults to the Auto agent, like the other platform tools. (`server/platform_tools.go`)
+- **Behaviour change.** Testing a saved LLM profile with the form's `streaming` field omitted now uses the profile's stored stream mode. A non-streaming profile tested from the list view was sent a streaming request and reported "no return text" for a provider that had answered correctly. (`server/llm_test_fallback_test.go`)
+
+### Added
+
+- **`privesc` skill** covering Linux and Windows escalation: enumeration order, sudo/SUID/capability escapes, service and cron misconfiguration, credential discovery, and the four-part proof standard for an escalation finding. Ships two generated indexes — `reference/gtfobins.json` (458 executables by escape class and context) and `reference/lolbas.json` (248 signed Windows binaries by category) — plus the PEASS-ng `linpeas.sh` release artifact, all usable offline at a pinned version. `scripts/build-indexes.py` regenerates the indexes from the upstream trees; provenance and checksums are in `reference/README.md`.
+
+
+## [0.3.15-global.1] · 2026-10-14 · m1nervac0nsole-global transition release
+
+The release that turns the Korean edition (`0.3.15-ko.1`) into m1nervac0nsole-global, a multilingual edition for defenders and researchers worldwide. Based on upstream m1nervac0nsole 0.3.15; no agent features were changed.
+
+### Identity · multilingual (m1nervac0nsole-global rename)
+
+- **Rebranded the m1nervac0nsole Korean edition as the m1nervac0nsole global edition.** The identity shifts from a region-specific edition to a multilingual edition that defenders and researchers worldwide can reach. No agent features were changed; only the multilingual layer and the docs were touched.
+  - **Switched the default language from Korean to English.** User-facing output now defaults to English (bootstrap layer `config.DefaultLanguage`, web `DEFAULT_LOCALE`, `config.example.json`, and the `.env.example` comment); Korean, Chinese, and Spanish are selectable in Settings. The agent-package standalone fallback (`agent.defaultOutputLang`) and the Korean golden tests were left in place to avoid regressions.
+  - **Reworded the identity strings to the global edition.** Replaced the "Korean edition" wording in the READMEs (Korean, English, Chinese), CONTRIBUTING, SECURITY, the maintainer runbook, and the issue/PR templates, and renamed the English README's "Why a Korean edition" section and its anchor (`#why-a-korean-edition` → `#why-a-global-edition`). The repository slug and image path are renamed to `m1nervac0nsole` together in the 'Repository rename' section below in this release.
+
+### English-first README and screenshots
+
+- **Promoted the English README to the repository landing page.** The English document is now `README.md` (the first screen), the Korean body moved to a separate file that has since been removed, and the links and anchors from the root docs to the top-level README were rewired to English. The README links inside the detections tree were left as-is.
+- **Replaced the preview screenshots with English ones.** Recaptured the mock UI in the default English and placed them under `screenshots/en/` (dashboard, findings, chat); the old Korean captures (`screenshots/ko/`) were removed.
+- **Made on-screen dates follow the app language.** Replaced 18 hard-coded `ko-KR` locales with `getDateLocale()` in `web/src/i18n/datetime.ts` (display language → BCP47), so dates render in English by default.
+- **Translated the demo data to English.** Translated ~220 user-facing Korean strings in the mock data (`web/src/lib/mock/{data,handler}.ts`) to English, preserving commands, payloads, URLs, and identifiers verbatim.
+
+### Repository rename (m1nervac0nsole-ko → m1nervac0nsole)
+
+- **Renamed the repository to `m1nervac0nsole`.** Changed the GitHub slug to `jiwoochris/m1nervac0nsole` (old URLs kept via GitHub redirects) and the container image path to `ghcr.io/jiwoochris/m1nervac0nsole`. Replaced 126 occurrences across 37 files in the repo — badges, clone URLs, `docker-compose.yml`, `release.yml`, `install.sh`, docs, edition labels, detection-rule authors, the MISP event name. The Go module path and the historical version tag (`0.3.15-ko.1`) were left unchanged.
+
+### Localization (i18n)
+
+- **Show built-in agent names and descriptions per language.** The built-in agents (goal decomposition, planning, main, execution, Auto, penetration test, vulnerability retest) are DB seed data (`builtinAgents` in `db/db.go` and the retest agent in `server/finding_retests.go`), so their names, descriptions, and prompt-variable labels used to appear only in Chinese. They are now looked up by agent `key` in `web/messages/` and shown in the current language (falling back to the DB value). User-created agents keep showing their DB values. Applied to the agent list, the editor drawer, and the chat screen; approval/intercept records that come from a chat now show the agent name instead of its internal key (e.g. `pentest`).
+
+### Upstream sync
+
+- **Model judge (fallback approval) token usage is reported separately (upstream 0.3.15, #191).** This upstream change was missing from 0.3.15-ko.1. Judge calls are metered as `worker=judge`, served by the new `GET /api/intercept/judge/usage`. Under the model judge switch in "System → Command interception", a card shows cumulative calls, input, output and cache read/write plus a 30-day daily bar chart.
+
+### Security
+
+- **Closed the remaining gaps in the #22 auth hardening.** A failed password-hash read was still folded into "no password" in token verification and in startup first-run handling, caching an empty hash. Token verification now refuses on a failed read, and startup skips env-var initialisation and setup-token issuance. `M1NERVAC0NSOLE_ADMIN_PASSWORD` initialisation is also stored once via `InsertSettingIfAbsent` and checked against the 72-byte limit. The `/setup` screen shows a retry notice instead of the form when it cannot confirm the state (the UI part of upstream #197).
+
+## [0.3.15-ko.1] · 2026-10-12 · First Korean-edition release
+
+The first release of the Korean edition, based on upstream m1nervac0nsole 0.3.15.
+
+### Distribution
+
+- **The Korean-edition Docker image is now published.** Upstream's `autumn27/m1nervac0nsole` image was taken down from Docker Hub, which broke the `docker compose up -d` quick start. Each release tag now pushes a multi-architecture (amd64/arm64) image to `ghcr.io/jiwoochris/m1nervac0nsole`, and `docker-compose.yml` pulls that image.
+
+### Security
+
+- **Blocked remote takeover of the first-run admin account.** An instance without a password accepted `POST /api/auth/init` unauthenticated, so whoever reached the port first could set the admin password and obtain a JWT (privately reported by Dangel). Initialisation now requires the setup token (`setup_token`) printed only on the server console at startup, and wrong attempts are rate-limited. Added `M1NERVAC0NSOLE_SETUP_TOKEN` and `M1NERVAC0NSOLE_ADMIN_PASSWORD` for unattended deployments and a token field on the `/setup` screen.
+- **Default bind address is now 127.0.0.1.** The `m1nervac0nsole -addr` default moves from `:8787` to `127.0.0.1:8787`, and `docker-compose.yml` publishes 8787 as `${M1NERVAC0NSOLE_BIND:-127.0.0.1}`. Deployments reached from other machines must pass `-addr :8787` or set `M1NERVAC0NSOLE_BIND=0.0.0.0` in `.env`. Starting without a password on a non-loopback address logs a warning.
+- **Changing the password invalidates every existing token.** The JWT signing key is derived from the password hash, so a change through the UI, `reset-password.sh`, or a direct DB edit ends earlier sessions. Users must log in once after upgrading. The change-password response carries a fresh token so the current browser session continues.
+- **Replaced wildcard CORS with an allowlist.** Instead of `Access-Control-Allow-Origin: *`, headers are only sent for origins in `M1NERVAC0NSOLE_CORS_ORIGINS` (default: `next dev` at `http://localhost:5173`). Also added server-side minimum password length (8) and audit logs for failed initialisation/login attempts (with client address).
+- **Ported the authentication hardening from upstream m1nervac0nsole 0.3.15.** Password-setting reads now fail closed with 503 instead of reporting `initialized:false` (`authStatus`, `authInit`, `authLogin`, change-password). First-time setup is atomic via `INSERT ... ON CONFLICT DO NOTHING` ([`db.InsertSettingIfAbsent`](db/settings.go)), so the primary-key constraint protects the existing value even when the read check is unreliable. Passwords over 72 bytes are rejected with 400 instead of 500, and a database connection-pool cap (32) reduces the path where a `too many clients` error can masquerade as a read failure. Ported to match upstream commit `a951e4a` (0.3.15); only the parts not already covered by PR #20 were added.
+
+### Localization (i18n)
+
+- **Added switching to English, Chinese and Spanish.** Korean remains the default. Picking a language under "Display language" in Settings switches the web UI (`web/messages/{ko,en,zh,es}.json`), agent-written reports, summaries and chat replies, and server error messages and status labels together. Operator console logs and the server default followed the configured language. The agent's behavioural-instruction body is still left in its original language.
+- **Forced user-facing output into Korean.** The benchmarked agent's behavioral-instruction body (the "brain") is left in its original language to preserve performance, and a code-level fixed segment (`langDirective`) instructs the agent to write only the user-facing output (vulnerability reports, fact summaries, final summaries, chat replies) in Korean. Commands, payloads, code, and raw logs are kept in their original form.
+- **Translated the web UI into Korean.** Introduced `next-intl` into the Next App Router and split the strings into `web/messages/ko.json` and `web/messages/zh.json`. The original Chinese is preserved in `zh.json` so that it can be compared against upstream updates. Screen strings for the dashboard, vulnerabilities, chat, notification delivery, interception, LLM settings, and more were translated into Korean.
+- **Translated the server API's user-facing errors and responses into Korean.** HTTP error and response text that is returned to the browser was replaced with Korean. Text that feeds back into the agent brain as input, however, was kept in its original language to prevent benchmark drift, and the reasoning behind each such decision is recorded in the repository's working documents.
+- **Reorganized the documentation in Korean.** Created a Korean `README.md`, kept an English `README.en.md` alongside it, and preserved the original Chinese as an upstream-preserved file.
+
+### Defense and detection resources
+
+- **Added a defense and detection guide.** An English guide (`docs/defense-en.md`) that covers how an autonomous AI attack differs from a traditional scanner, the fingerprints (IoCs) a defender can observe, entry points and hardening, detection rules, and incident response.
+- **Provides deployable detection rules.** The guide's fingerprints were turned into rules you can use directly. The host and log layer is covered by [Sigma](https://sigmahq.io) atomic and correlation rules (`detections/sigma/`), and the network layer by [Suricata](https://suricata.io) rules (`detections/suricata/`) that target the enrich prober and norma SDK WebFetch User-Agents.
+- **Visualized ATT&CK coverage.** The techniques that the rules tag were organized into a MITRE ATT&CK Navigator layer (`detections/attack/`).
+- **Provides machine-readable indicators of compromise (IoCs) in standard formats.** The unique fingerprints that m1nervac0nsole emits were collected into a single CSV (`detections/indicators/m1nervac0nsole_indicators.csv`), along with a MISP event (`detections/indicators/m1nervac0nsole_indicators.misp.json`) carrying the same indicators that can be imported straight into a threat-intelligence platform. Indicators that a rule backs are marked with `to_ids`, while host-forensic ports are marked separately as triage clues.
+- **Attached reproducible detection tests.** Eight test suites prove the rules by actually running them (Sigma structure and compilation checks, Sigma live event-matching, backend portability, SigmaHQ convention lint, Suricata load and firing, ATT&CK layer consistency, indicator-to-source matching, and MISP export ↔ CSV synchronization). A batch runner that runs them all at once and a pre-commit example were added and wired into the CI merge gate. Sigma live event-matching confirms that the rules not only compile but actually fire on malicious sample events and stay silent on benign ones, for both the atomic and the correlation rules.
+
+### Repository hardening
+
+- **Added security and misuse warnings and Korean legal notices.** The scope of use, notices under the Network Act and the Personal Information Protection Act, and a misuse-prohibition warning were added at the top of the README.
+- **Replaced the screen preview with Korean UI screenshots.**
+- **Set up a maintainer runbook and a contributing guide.** Added a runbook (`MAINTAINING.en.md`, since removed with the retired localization pipeline) for preventing upstream-sync and translation drift, and a detection-rule contribution contract ([`CONTRIBUTING.en.md`](CONTRIBUTING.en.md)). The runbook also documents the release pipeline's build assumptions and how to verify them locally without a tag.
+- **Added push/PR merge-gate CI.** The upstream repository ran CI only on tag releases, but this fork runs — on every push and pull request — a Go build, static analysis (`go vet`), and unit tests ([`ci.yml`](../.github/workflows/ci.yml)); a Korean UI static build ([`web.yml`](../.github/workflows/web.yml)); and integrity checks for the documentation's repository-internal links and image references ([`docs.yml`](../.github/workflows/docs.yml)), catching regressions introduced during localization before they merge. Integration tests that require a database are verified alongside a PostgreSQL service isolated per package. The documentation link check runs as a deterministic script ([`scripts/check-doc-links.py`](scripts/check-doc-links.py)) that does not depend on an external network, so the many relative links the multilingual documents point at one another — and the screen-preview images — cannot merge while broken. Documentation anchor (`#heading`) links are also checked against headings using the same slug rules as GitHub, catching table-of-contents and cross-reference links that silently break when heading text changes. The detection-rule suite is handled by the merge gate described in the "Defense and detection resources" section above.
+- **Periodically checks external-link liveness.** External links the documents point at — the defense guide's incident-reporting channels and standards references — depend on remote server state and are flaky, so they are kept out of the merge gate; instead a non-blocking workflow ([`external-links`](../.github/workflows/external-links.yml)) runs a browser-User-Agent, GET, redirect-following check ([`scripts/check-external-links.py`](scripts/check-external-links.py)) every Monday and on manual dispatch. A host that is alive but blocks the check method (bot protection, rate limiting) and upstream-inherited dead links we cannot fix (an allowlist) are not counted as failures, so it turns red only when an external link our documents curate newly breaks.
+- **Established contribution and governance infrastructure.** Added bug and feature issue templates ([`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)) and a pull-request template ([`PULL_REQUEST_TEMPLATE.md`](../.github/PULL_REQUEST_TEMPLATE.md)), a security-vulnerability reporting policy ([`SECURITY.en.md`](SECURITY.en.md)), and a code of conduct ([`CODE_OF_CONDUCT.en.md`](CODE_OF_CONDUCT.en.md)), so that external contributors submit issues, PRs, and security reports in a consistent format.
+- **Completed an English documentation layer for overseas contributors.** This repository is Korean-first, but English versions of the core documents are provided so that contributors, security researchers, and defenders who do not read Korean can reach the same information. In addition to the English README and the defense guide (`docs/defense-en.md`), there are English versions of the changelog ([`CHANGELOG.en.md`](CHANGELOG.en.md)), the security reporting policy ([`SECURITY.en.md`](SECURITY.en.md)), the code of conduct ([`CODE_OF_CONDUCT.en.md`](CODE_OF_CONDUCT.en.md)), the contributing guide ([`CONTRIBUTING.en.md`](CONTRIBUTING.en.md)), the maintainer runbook (`MAINTAINING.en.md`, since removed with the retired localization pipeline), the traffic-evidence design document ([`docs/finding-traffic-evidence-en.md`](docs/finding-traffic-evidence-en.md)), and the bug and feature issue templates.
+
+---

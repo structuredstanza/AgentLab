@@ -154,11 +154,11 @@ class NativeProxyBootstrapTests(unittest.TestCase):
         (root / 'deployment').mkdir()
         (root / 'dist').mkdir()
         (root / 'dist/provider-proxy').write_text('binary\n')
-        (root / 'deployment/artex-cliproxy.service').write_text('[Service]\n')
+        (root / 'deployment/m1nervac0nsole-cliproxy.service').write_text('[Service]\n')
         return mock.patch.multiple(
             lab, ROOT=root, PROXY_BIN=root / 'dist/provider-proxy', PROXY_STATE=root / 'proxy-state',
             PROXY_TOKEN=root / 'secrets/native-proxy-token',
-            PROXY_UNIT=root / 'deployment/artex-cliproxy.service',
+            PROXY_UNIT=root / 'deployment/m1nervac0nsole-cliproxy.service',
         )
 
     def test_restart_preserves_private_proxy_capability(self):
@@ -182,7 +182,7 @@ class NativeProxyBootstrapTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root, home = Path(tmp) / 'lab', Path(tmp) / 'home'
             root.mkdir()
-            installed = home / '.config/systemd/user/artex-cliproxy.service'
+            installed = home / '.config/systemd/user/m1nervac0nsole-cliproxy.service'
             installed.parent.mkdir(parents=True)
             installed.write_text('user-owned service\n')
             with self.prepare(root), mock.patch.object(lab.Path, 'home', return_value=home):
@@ -198,16 +198,16 @@ class NativeProxyBootstrapTests(unittest.TestCase):
 class SharedStateGuardTests(unittest.TestCase):
     def test_another_running_agentlab_vm_blocks_start(self):
         listing = mock.Mock(returncode=0,
-                            stdout=f'{lab.NAME}\nartex-agentlab-old\nartex-htb-1\n',
+                            stdout=f'{lab.NAME}\nm1nervac0nsole-agentlab-old\nm1nervac0nsole-htb-1\n',
                             stderr='')
         with mock.patch.object(lab, 'start_provider_proxy'), \
                 mock.patch.object(lab.subprocess, 'run', return_value=listing):
-            with self.assertRaisesRegex(RuntimeError, 'artex-agentlab-old'):
+            with self.assertRaisesRegex(RuntimeError, 'm1nervac0nsole-agentlab-old'):
                 lab.start()
 
     def test_own_and_unrelated_sandboxes_do_not_block(self):
         listing = mock.Mock(returncode=0,
-                            stdout=f'{lab.NAME}\nartex-htb-20261104t2200z\n',
+                            stdout=f'{lab.NAME}\nm1nervac0nsole-htb-20261104t2200z\n',
                             stderr='')
         with mock.patch.object(lab.subprocess, 'run', return_value=listing):
             self.assertEqual(lab.other_running_agentlab(), [])
@@ -225,14 +225,14 @@ class BuildFreshnessTests(unittest.TestCase):
 
     def test_missing_binary_is_stale(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertTrue(lab.guest_dist_stale(Path(tmp) / 'artex'))
+            self.assertTrue(lab.guest_dist_stale(Path(tmp) / 'm1nervac0nsole'))
 
     def check(self, source_time, binary_time):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / 'main.go'
             source.write_text('package main')
-            binary = root / 'artex'
+            binary = root / 'm1nervac0nsole'
             binary.write_bytes(b'bin')
             os.utime(source, (source_time, source_time))
             os.utime(binary, (binary_time, binary_time))

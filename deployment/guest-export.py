@@ -17,7 +17,7 @@ def main():
     started = time.time_ns()
     with tempfile.TemporaryDirectory(prefix='agentlab-export-') as tmp:
         with tarfile.open(fileobj=sys.stdout.buffer, mode='w|', dereference=False) as archive:
-            for root, prefix in [(Path('/state/artex'), 'application'),
+            for root, prefix in [(Path('/state/m1nervac0nsole'), 'application'),
                                  (Path('/state/captures'), 'captures')]:
                 for directory, dirs, files in os.walk(root, followlinks=False):
                     for name in list(dirs):

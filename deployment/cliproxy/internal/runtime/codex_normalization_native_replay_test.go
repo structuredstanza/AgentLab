@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/artex/cliproxyhost/internal/contract"
-	"github.com/artex/cliproxyhost/internal/privacy"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/privacy"
 )
 
 const codexReplayChildEnv = "CLIPROXY_CODEX_NATIVE_REPLAY_CHILD"

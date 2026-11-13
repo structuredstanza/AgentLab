@@ -26,8 +26,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/artex/cliproxyhost/internal/contract"
-	"github.com/artex/cliproxyhost/internal/privacy"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/privacy"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -362,10 +362,10 @@ func TestNativeHostRealExecutorsFixture(t *testing.T) {
 	for _, g := range grants {
 		model := models[g.provider]
 		before := proxy.countInference(g.provider)
-		canary := []byte(strings.Replace(string(nativeToolRequest(g.provider, model, false)), "fixture user prompt", "ARTEX outbound canary", 1))
+		canary := []byte(strings.Replace(string(nativeToolRequest(g.provider, model, false)), "fixture user prompt", "m1nervac0nsole outbound canary", 1))
 		status, _ := fixtureInference(t, api.Client(), api.URL, capability, g.provider, model, "blocked-canary", canary, nil)
 		if status == http.StatusOK || proxy.countInference(g.provider) != before {
-			t.Fatalf("%s ARTEX canary reached provider: status=%d calls=%d->%d", g.provider, status, before, proxy.countInference(g.provider))
+			t.Fatalf("%s m1nervac0nsole canary reached provider: status=%d calls=%d->%d", g.provider, status, before, proxy.countInference(g.provider))
 		}
 	}
 	foreign := []byte(`{"model":"` + models[contract.ProviderCodex] + `","input":[{"type":"message","role":"user","content":"fixture"},{"type":"reasoning","summary":[],"encrypted_content":"foreign-opaque-state"}]}`)
@@ -408,8 +408,8 @@ func TestNativeHostRealExecutorsFixture(t *testing.T) {
 		t.Fatal("incomplete upstream native response was not preserved in the private raw archive")
 	}
 	for _, request := range proxy.snapshot() {
-		if strings.Contains(strings.ToLower(string(request.body)), "artex") || strings.Contains(strings.ToLower(request.header.Get("user-agent")), "artex") {
-			t.Fatalf("ARTEX identity escaped in final provider request to %s%s", request.host, request.path)
+		if strings.Contains(strings.ToLower(string(request.body)), "m1nervac0nsole") || strings.Contains(strings.ToLower(request.header.Get("user-agent")), "m1nervac0nsole") {
+			t.Fatalf("m1nervac0nsole identity escaped in final provider request to %s%s", request.host, request.path)
 		}
 	}
 }

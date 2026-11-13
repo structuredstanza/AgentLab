@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run every test suite in one command. Pass an area to run just that one:
 #   tests/run.sh            all
-#   tests/run.sh go         artex-global Go tests
+#   tests/run.sh go         m1nervac0nsole Go tests
 #   tests/run.sh proxy      provider-proxy tests
 #   tests/run.sh python     deployment/lab tests
 #   tests/run.sh web        Next.js UI tests
@@ -33,14 +33,14 @@ run() {
 
 # The db and server suites need Postgres. Two server tests fail rather than skip
 # without it, so an unset DSN is called out here instead of leaving a bare FAIL.
-if [ -z "${ARTEX_PG_DSN:-}" ]; then
-	printf 'note: ARTEX_PG_DSN is unset. db/ and server/ need Postgres; expect failures there.\n'
+if [ -z "${M1NERVAC0NSOLE_PG_DSN:-}" ]; then
+	printf 'note: M1NERVAC0NSOLE_PG_DSN is unset. db/ and server/ need Postgres; expect failures there.\n'
 fi
 
 case "$AREA" in
 all | go)
-	run "go (artex-global)" bash -c \
-		'cd "$0/artex-global" && go vet ./... && go test -p 1 ./... -count=1 -timeout 2400s' "$ROOT"
+	run "go (m1nervac0nsole)" bash -c \
+		'cd "$0/m1nervac0nsole" && go vet ./... && go test -p 1 ./... -count=1 -timeout 2400s' "$ROOT"
 	;;
 esac
 
@@ -58,7 +58,7 @@ esac
 
 case "$AREA" in
 all | web)
-	run "web (next)" bash -c 'cd "$0/artex-global/web" && npx vitest run' "$ROOT"
+	run "web (next)" bash -c 'cd "$0/m1nervac0nsole/web" && npx vitest run' "$ROOT"
 	;;
 esac
 
@@ -67,7 +67,7 @@ esac
 # launching shell), and a failure must export nothing.
 case "$AREA" in
 all | dev)
-	run "dev launcher contract" "$ROOT/artex-global/scripts/test-dev-egress.sh"
+	run "dev launcher contract" "$ROOT/m1nervac0nsole/scripts/test-dev-egress.sh"
 	;;
 esac
 

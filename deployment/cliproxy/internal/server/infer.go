@@ -6,7 +6,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/artex/cliproxyhost/internal/contract"
+	"github.com/structuredstanza/cliproxyhost/internal/contract"
 )
 
 // Inferer runs one inference turn. The infer slice implements it; this package never

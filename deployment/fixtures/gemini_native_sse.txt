@@ -1,6 +1,0 @@
-data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Need to list the directory first.","thought":true,"thoughtSignature":"FIXTURE_SIG_THOUGHT"}]}}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":0,"thoughtsTokenCount":7}}}
-
-data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Listing the files.","thoughtSignature":"FIXTURE_SIG_TEXT"}]}}]}}
-
-data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"Bash","args":{"command":"ls"}},"thoughtSignature":"FIXTURE_SIG_CALL"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":9,"thoughtsTokenCount":7,"cachedContentTokenCount":0}}}
-

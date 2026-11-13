@@ -111,7 +111,7 @@ class SupervisorCleanupTests(unittest.TestCase):
              mock.patch.object(supervisor, 'log', side_effect=BrokenPipeError('fixture stdout closed')), \
              mock.patch.object(supervisor, 'pg_stop', return_value=(0, 'stopped')):
             supervisor.shutdown(self.session, app, tcpd, '/fixture/postgres')
-        self.assertIsNotNone(app.poll(), 'ARTEX group survived capture-storage failure')
+        self.assertIsNotNone(app.poll(), 'm1nervac0nsole group survived capture-storage failure')
         self.assertIsNotNone(tcpd.poll(), 'packet recorder survived capture-storage failure')
         self.assertEqual(self.session.m['postgres']['status'], 'stopped')
         self.assertEqual(self.session.m['exit_code'], 1)
@@ -124,7 +124,7 @@ class SupervisorCleanupTests(unittest.TestCase):
              mock.patch.object(supervisor, 'log', side_effect=BrokenPipeError('fixture stdout closed')):
             supervisor.stop_app(self.session, app)
         self.assertEqual(app.returncode, -signal.SIGKILL)
-        self.assertEqual(self.session.m['artex']['exit_code_normalized'], 137)
+        self.assertEqual(self.session.m['m1nervac0nsole']['exit_code_normalized'], 137)
 
     def test_post_spawn_metadata_failure_reaps_unreturned_child(self):
         real_popen = subprocess.Popen
@@ -302,7 +302,7 @@ class VpnSupervisionTests(unittest.TestCase):
             self.assertEqual(supervisor.vpn_address(), '', 'a host address must not count as a tunnel')
 
     def test_exited_tunnel_is_fatal_while_running(self):
-        """The kill switch: openvpn dying mid-run must stop ARTEX, not fail open."""
+        """The kill switch: openvpn dying mid-run must stop the app, not fail open."""
         app = mock.Mock()
         app.poll.return_value = None
         vpn = mock.Mock()
@@ -311,7 +311,7 @@ class VpnSupervisionTests(unittest.TestCase):
         tcpd = mock.Mock()
         tcpd.poll.return_value = None
         sess = mock.Mock()
-        sess.m = {'capture': {'status': 'running'}, 'artex': {}, 'postgres': {'status': 'not_started'},
+        sess.m = {'capture': {'status': 'running'}, 'm1nervac0nsole': {}, 'postgres': {'status': 'not_started'},
                   'egress': {'status': 'starting'}}
         with mock.patch.object(supervisor, 'start_vpn', return_value=vpn), \
              mock.patch.object(supervisor, 'start_egress', return_value=mock.Mock(**{'poll.return_value': None})), \
@@ -363,8 +363,8 @@ class AppEnvTests(unittest.TestCase):
 
     def test_scan_ceilings_reach_the_agent(self):
         env = supervisor.app_env('postgresql://fixture', 'pw')
-        for key in ('ARTEX_MAX_CONCURRENT_SCANS', 'ARTEX_MAX_SCANS_PER_TARGET',
-                    'ARTEX_MAX_REQUESTS_PER_MINUTE'):
+        for key in ('M1NERVAC0NSOLE_MAX_CONCURRENT_SCANS', 'M1NERVAC0NSOLE_MAX_SCANS_PER_TARGET',
+                    'M1NERVAC0NSOLE_MAX_REQUESTS_PER_MINUTE'):
             self.assertIn(key, env, f'{key} missing: the agent cannot be told the ceiling')
             self.assertTrue(env[key].isdigit(), f'{key}={env[key]!r} is not a number')
 

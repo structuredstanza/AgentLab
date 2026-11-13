@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	runtimehost "github.com/artex/cliproxyhost/internal/runtime"
+	runtimehost "github.com/structuredstanza/cliproxyhost/internal/runtime"
 )
 
 func main() {

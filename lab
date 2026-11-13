@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Control the local ARTEX VM and export its real recorded data."""
+"""Control the local m1nervac0nsole VM and export its real recorded data."""
 import argparse
 import base64
 import datetime as dt
@@ -21,7 +21,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 MSB = ROOT / '.venv/bin/msb'
-NAME = 'artex-agentlab-egress-20261104t0030z'
+NAME = 'm1nervac0nsole-agentlab-egress-20261104t0030z'
 URL = 'http://127.0.0.1:8787'
 PRIMARY_URL = 'http://host.microsandbox.internal:8080/v1'
 PRIMARY_NAME = 'AgentLab Bonsai Thinking'
@@ -29,7 +29,7 @@ PRIMARY_KEY = Path('/mnt/Research/Local_Stack/artifacts/api_key.txt')
 PROXY_BIN = ROOT / 'dist/provider-proxy'
 PROXY_STATE = ROOT / 'proxy-state'
 PROXY_TOKEN = ROOT / 'secrets/native-proxy-token'
-PROXY_UNIT = ROOT / 'deployment/artex-cliproxy.service'
+PROXY_UNIT = ROOT / 'deployment/m1nervac0nsole-cliproxy.service'
 os.environ['MSB_HOME'] = str(ROOT / 'microsandbox')
 os.umask(0o077)
 
@@ -57,7 +57,7 @@ def api(path, data=None, token=None, method=None):
 
 
 def login():
-    return api('/api/auth/login', {'username': 'ARTEX', 'password':
+    return api('/api/auth/login', {'username': 'minerva', 'password':
         (ROOT / 'secrets/admin-password').read_text().strip()})['token']
 
 
@@ -76,7 +76,7 @@ def start_provider_proxy():
             stream.write(secrets.token_urlsafe(48) + '\n')
     PROXY_TOKEN.chmod(0o600)
     unit = PROXY_UNIT
-    installed = Path.home() / '.config/systemd/user/artex-cliproxy.service'
+    installed = Path.home() / '.config/systemd/user/m1nervac0nsole-cliproxy.service'
     installed.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if installed.exists() or installed.is_symlink():
         if installed.resolve() != unit.resolve():
@@ -94,7 +94,7 @@ def start_provider_proxy():
         except (OSError, ValueError):
             pass
         if time.monotonic() >= deadline:
-            raise RuntimeError('native provider proxy did not become healthy; inspect artex-cliproxy.service')
+            raise RuntimeError('native provider proxy did not become healthy; inspect m1nervac0nsole-cliproxy.service')
         time.sleep(0.2)
 
 
@@ -143,14 +143,14 @@ def stage_vpn(profile):
     print(f'OpenVPN profile staged ({len(payload)} bytes, sha256 {local[:16]}…)')
 
 def other_running_agentlab():
-    """Running artex-agentlab-* sandboxes other than NAME, which share state/."""
+    """Running m1nervac0nsole-agentlab-* sandboxes other than NAME, which share state/."""
     listing = subprocess.run([str(MSB), 'list', '--running', '-q'],
                              capture_output=True, text=True)
     if listing.returncode:
         raise RuntimeError('Could not list running sandboxes: '
                            + listing.stderr.strip()[:300])
     return [name for name in listing.stdout.split()
-            if name.startswith('artex-agentlab-') and name != NAME]
+            if name.startswith('m1nervac0nsole-agentlab-') and name != NAME]
 
 
 STATE_DIR = ROOT / 'state'
@@ -246,10 +246,10 @@ def resize_state(gb, confirmed):
 
 
 GUEST_DIST = ROOT / 'deployment/guest-dist'
-ARTEX_SRC = ROOT / 'artex-global'
+M1NERVAC0NSOLE_SRC = ROOT / 'm1nervac0nsole'
 # Inputs of the guest build. Generated trees (out/, dist/, node_modules) are
 # skipped: a build rewrites them, so counting them would make every check stale.
-BUILD_INPUTS = [ARTEX_SRC / name for name in (
+BUILD_INPUTS = [M1NERVAC0NSOLE_SRC / name for name in (
     'cmd', 'agent', 'db', 'manifest', 'server', 'skills', 'web/src', 'web/messages',
     'go.mod', 'go.sum', 'build.sh', 'web/package.json', 'web/package-lock.json',
 )] + [ROOT / 'deployment/guest-start.py', ROOT / 'deployment/guest-export.py']
@@ -269,7 +269,7 @@ def newest_build_input():
     return newest
 
 
-def guest_dist_stale(binary=GUEST_DIST / 'artex'):
+def guest_dist_stale(binary=GUEST_DIST / 'm1nervac0nsole'):
     """True when the guest build is missing or older than any source it is built from."""
     try:
         built = os.path.getmtime(binary)
@@ -287,11 +287,11 @@ def build_guest_dist(force=False):
     if not force and not guest_dist_stale():
         return GUEST_DIST
     GUEST_DIST.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, ARTEX_COMPRESS='off', ARTEX_SKIP_NPM_CI='1',
-               ARTEX_OUTPUT=str(GUEST_DIST / 'artex'))
-    subprocess.run([str(ARTEX_SRC / 'build.sh')], env=env, check=True)
+    env = dict(os.environ, M1NERVAC0NSOLE_COMPRESS='off', M1NERVAC0NSOLE_SKIP_NPM_CI='1',
+               M1NERVAC0NSOLE_OUTPUT=str(GUEST_DIST / 'm1nervac0nsole'))
+    subprocess.run([str(M1NERVAC0NSOLE_SRC / 'build.sh')], env=env, check=True)
     shutil.rmtree(GUEST_DIST / 'skills', ignore_errors=True)
-    shutil.copytree(ARTEX_SRC / 'skills', GUEST_DIST / 'skills')
+    shutil.copytree(M1NERVAC0NSOLE_SRC / 'skills', GUEST_DIST / 'skills')
     for name in ('guest-start.py', 'guest-export.py'):
         shutil.copy2(ROOT / 'deployment' / name, GUEST_DIST / name)
     return GUEST_DIST
@@ -314,7 +314,7 @@ def start(vpn=None, quota_gb=None):
         create_sandbox(state_quota_mb(quota_gb))
     elif json.loads(result.stdout)['status'].lower() != 'running':
         msb('start', NAME)
-    if not guest_file('/dist/artex'):
+    if not guest_file('/dist/m1nervac0nsole'):
         raise RuntimeError(f'{NAME} predates the /dist mount that carries the current build; '
                            'recreate it with ./lab resize-state <GB> --yes (state/ is kept)')
     healthy = True
@@ -324,7 +324,7 @@ def start(vpn=None, quota_gb=None):
         healthy = False
     if healthy:
         if vpn is not None:
-            raise RuntimeError('ARTEX is already running without the requested VPN; run ./lab stop and start again with --vpn')
+            raise RuntimeError('m1nervac0nsole is already running without the requested VPN; run ./lab stop and start again with --vpn')
     else:
         stage_vpn(vpn)
         msb('exec', '-d', NAME, '--', 'python3', '/dist/guest-start.py')
@@ -335,15 +335,15 @@ def start(vpn=None, quota_gb=None):
                 break
             except Exception:
                 if time.monotonic() >= deadline:
-                    raise RuntimeError('ARTEX did not become healthy; inspect state/captures and msb logs')
+                    raise RuntimeError('m1nervac0nsole did not become healthy; inspect state/captures and msb logs')
                 time.sleep(1)
     token = login()
     settings = api('/api/settings', {'llm_record': True, 'traffic_capture': True,
                     'agent_traffic_binding': True, 'llm_refusal_fallback_enabled': True}, token, 'PUT')
     settings = api('/api/settings', token=token)
     if not all(settings.get(key) for key in ('llm_record', 'traffic_capture', 'agent_traffic_binding', 'llm_refusal_fallback_enabled')):
-        raise RuntimeError('ARTEX capture/refusal fallback settings are not enabled')
-    print(f'ARTEX ready: {URL}; user ARTEX; password: {ROOT}/secrets/admin-password')
+        raise RuntimeError('m1nervac0nsole capture/refusal fallback settings are not enabled')
+    print(f'm1nervac0nsole ready: {URL}; user minerva; password: {ROOT}/secrets/admin-password')
     active = next((p for p in api('/api/llm/profiles', token=token)['profiles'] if p['is_default']), None)
     if active and active.get('base_url') == PRIMARY_URL:
         start_primary_model()
@@ -568,7 +568,7 @@ def export():
                            'packet rotation overwrites old segments; inspect session manifest',
                            'TLS packet payloads are encrypted; application proxy records inspectable HTTP',
                            'reasoning exists only when explicitly exposed by the provider']}
-    psql = ['psql', '-h', '/run/postgresql', '-U', 'postgres', '-d', 'artex', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1']
+    psql = ['psql', '-h', '/run/postgresql', '-U', 'postgres', '-d', 'm1nervac0nsole', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1']
     tables = guest(*psql, '-c', "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename",
                    capture_output=True, text=True).stdout.splitlines()
     if not tables or any(not re.fullmatch('[a-z_][a-z_0-9]*', t) for t in tables):
@@ -600,7 +600,7 @@ def export():
         for handle in handles.values():
             handle.close()
     with (raw / 'postgres.dump').open('wb') as dump:
-        guest('pg_dump', '-h', '/run/postgresql', '-U', 'postgres', '-d', 'artex', '-Fc', stdout=dump)
+        guest('pg_dump', '-h', '/run/postgresql', '-U', 'postgres', '-d', 'm1nervac0nsole', '-Fc', stdout=dump)
     guest('sync')
     with (raw / 'capture-export.stderr').open('w') as errors:
         exporter = '/dist/guest-export.py' if guest_file('/dist/guest-export.py') else '/opt/agentlab/guest-export.py'

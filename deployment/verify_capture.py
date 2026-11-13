@@ -101,7 +101,7 @@ def main():
                for p in (session / 'strace').glob('strace.*')), 'No current-session process syscalls'
     resource = json.loads((session / 'resources.jsonl').read_text().splitlines()[-1])
     assert resource['memory_kib']['MemTotal'] > 0 and resource['cpu_ticks']
-    print(json.dumps({'verified': ['vm execution', 'stdout/stderr correlation', 'ARTEX HTTP recording',
+    print(json.dumps({'verified': ['vm execution', 'stdout/stderr correlation', 'm1nervac0nsole HTTP recording',
           'guest packet capture', 'application syscall capture', 'resource samples',
           'exported PostgreSQL backup', 'exported SQLite integrity and fixture', 'artifact checksums'],
           'fixture_nonce': nonce, 'export': str(output), 'fixture_packets': packets,

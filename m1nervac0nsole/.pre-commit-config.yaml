@@ -1,0 +1,27 @@
+# Example pre-commit configuration (see https://pre-commit.com)
+#
+# Runs the deterministic merge gate of the repository's CI locally at commit time, so a broken
+# change is caught before it is pushed. If an assertion fails, the script exits non-zero and the
+# commit stops.
+#
+# docs: checks that repository-internal links, images, and anchors (#headings) in tracked Markdown
+#    files point to existing targets (scripts/check-doc-links.py). This is the same check as CI
+#    (.github/workflows/docs.yml at the git root), which runs on every change without a paths filter,
+#    so the target set is not narrowed here either (always_run). Links break not only when a .md file
+#    changes but also when a file they point to (an image, LICENSE, etc.) is deleted or moved. It uses
+#    only the Python standard library and makes no network connections, so it finishes in tens of
+#    milliseconds without Docker.
+#
+# Install:     pip install pre-commit && pre-commit install
+# Manual run:  pre-commit run docs --all-files
+#
+# This is a minimal example with only one hook. To add Go or web linting, add your own hooks below.
+repos:
+  - repo: local
+    hooks:
+      - id: docs
+        name: Check internal document links, images, and anchor (#heading) integrity
+        entry: python3 -I m1nervac0nsole/scripts/check-doc-links.py
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -21,7 +21,7 @@ body:
     attributes:
       label: What problem or need does this start from
       description: Describe the situation you want to solve first. Understanding the problem matters more than the solution.
-      placeholder: "e.g. When I share detection results with my team, I want to export the report as a PDF."
+      placeholder: "e.g. When I share findings with my team, I want to export the report as a PDF."
     validations:
       required: true
   - type: textarea
@@ -46,7 +46,7 @@ body:
         - Agent (agent)
         - Web UI / server (web / server)
         - LLM provider integration
-        - Documentation / translation
+        - Documentation
         - Other
     validations:
       required: false
