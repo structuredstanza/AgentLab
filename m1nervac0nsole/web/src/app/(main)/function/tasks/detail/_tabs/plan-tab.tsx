@@ -75,7 +75,10 @@ function DrafterChat({ taskId }: { taskId: string }) {
     try {
       let target = conversation;
       if (!target) {
-        target = await api.createConversation(DRAFTER_AGENT);
+        // Bind the thread to this task: the drafter's tools then take the task
+        // from the conversation, so a wrong guess cannot store a draft against
+        // another engagement.
+        target = await api.createConversation(DRAFTER_AGENT, "", null, Number(taskId));
         setConversation(target);
       }
       // The drafter has no other way to know which engagement it is drafting

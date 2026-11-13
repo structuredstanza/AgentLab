@@ -1072,8 +1072,10 @@ export const api = {
 
   // ---- conversations (chat page) ----
   conversations: () => get<{ conversations: Conversation[] }>("/conversations").then((r) => arr(r.conversations)),
-  createConversation: (agent_key: string, title = "", llm_profile_id?: number | null) =>
-    post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null }),
+  // task_id binds the thread to one task; the drafter takes its task from the
+  // binding, so a proposal cannot be stored against another engagement.
+  createConversation: (agent_key: string, title = "", llm_profile_id?: number | null, task_id?: number) =>
+    post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null, task_id: task_id ?? 0 }),
   renameConversation: (id: number, title: string) => patch<Conversation>(`/conversations/${id}`, { title }),
   pinConversation: (id: number, pinned: boolean) => patch<Conversation>(`/conversations/${id}`, { pinned }),
   updateConversationProfile: (id: number, llm_profile_id: number | null) =>

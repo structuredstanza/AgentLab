@@ -244,3 +244,73 @@ func TestProposePlanStoresDraftAndFlagsInclude(t *testing.T) {
 		t.Fatalf("propose_plan wrote %d graph nodes; it must only store the draft", after-before)
 	}
 }
+
+// callPlanTool runs one drafter tool with a caller-supplied context, so a test
+// can carry the conversation's task binding.
+func callPlanTool(t *testing.T, tool actool.CoreTool, ctx context.Context, in string) (string, bool) {
+	t.Helper()
+	res, err := tool.Call(ctx, json.RawMessage(in), nil)
+	if err != nil {
+		t.Fatalf("%s returned a Go error: %v", tool.Name(), err)
+	}
+	var b strings.Builder
+	for _, c := range res.Content {
+		b.WriteString(c.Text)
+	}
+	return b.String(), res.IsError
+}
+
+// The plan tab binds the conversation to one task, and the tools must take the
+// task from that binding. A model that names another task is refused rather
+// than obeyed: the draft would otherwise land on an engagement the operator
+// never asked about, and applying it there is one click.
+func TestPlanToolsUseTheConversationTask(t *testing.T) {
+	m, s, _ := memoryTestServer(t)
+	ctx := context.Background()
+	bound, err := m.pg.CreateTask("bound plan", "gain admin on the bound host", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.pg.DeleteTask(bound.ID) })
+	other, err := m.pg.CreateTask("other plan", "gain admin on the other host", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.pg.DeleteTask(other.ID) })
+
+	boundCtx := withPlanTask(ctx, bound.ID)
+
+	// A different task id is refused, and the refusal names the bound task.
+	out, isErr := callPlanTool(t, drafterTool(t, s, "plan_context"), boundCtx, fmt.Sprintf(`{"task_id":%d}`, other.ID))
+	if !isErr || !strings.Contains(out, fmt.Sprintf("drafts for task %d", bound.ID)) {
+		t.Fatalf("plan_context accepted another task: isErr=%v out=%s", isErr, out)
+	}
+
+	// Omitting the id uses the binding.
+	out, isErr = callPlanTool(t, drafterTool(t, s, "plan_context"), boundCtx, `{}`)
+	if isErr || !strings.Contains(out, "gain admin on the bound host") {
+		t.Fatalf("plan_context did not use the binding: isErr=%v out=%s", isErr, out)
+	}
+
+	// propose_plan with no id stores against the bound task.
+	out, isErr = callPlanTool(t, drafterTool(t, s, "propose_plan"), boundCtx,
+		`{"proposal":{"summary":"bound draft","hints":[{"text":"stay quiet"}]}}`)
+	if isErr {
+		t.Fatalf("propose_plan refused a valid bound proposal: %s", out)
+	}
+	var draftTask int64
+	if err := m.pg.QueryRow(`SELECT task_id FROM plan_drafts WHERE summary='bound draft'`).Scan(&draftTask); err != nil {
+		t.Fatal(err)
+	}
+	if draftTask != bound.ID {
+		t.Fatalf("draft stored against task %d, want %d", draftTask, bound.ID)
+	}
+	if _, err := m.pg.Exec(`DELETE FROM plan_drafts WHERE summary='bound draft'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// An unbound conversation still requires the model to name the task.
+	if _, isErr := callPlanTool(t, drafterTool(t, s, "plan_context"), ctx, `{}`); !isErr {
+		t.Fatal("an unbound conversation accepted a call without a task id")
+	}
+}

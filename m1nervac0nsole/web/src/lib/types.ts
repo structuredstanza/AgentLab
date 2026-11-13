@@ -739,6 +739,9 @@ export interface Conversation {
   running?: boolean; // live server state, returned with the conversation list
   agent_key: string;
   title: string;
+  // Set when the thread is bound to one task (the plan drafter): its tools take
+  // the task from the binding rather than from the model.
+  task_id?: number;
   llm_profile_id?: number;
   pinned?: boolean;
   pinned_at?: string | null;

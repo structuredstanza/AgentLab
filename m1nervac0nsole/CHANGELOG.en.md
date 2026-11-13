@@ -56,6 +56,7 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - Validate before storing: refs unique across goals and intents, every intent on a goal, `depends_on` acyclic, asset ids that belong to the task, counts bounded, and scope kinds and effects the schema accepts. The model is handed every error at once and retries in one turn.
 - Apply in one transaction: goals, open seed intents anchored to their assets, active hints and scope rows are created together, the draft is marked applied with the ids it created, and a second apply is refused. Exclusions apply directly because they only narrow the engagement; inclusions need an explicit `allow_include`, because they widen what the guard allows.
 - One pending draft per task: a new proposal supersedes the previous one instead of piling up, and discarding is a status change, never a delete of what an applied draft created.
+- Bind the drafting conversation to its task. `plan_context` and `propose_plan` take the task from the thread rather than from the model, and an id that disagrees is refused with the bound task named - a model that guesses would otherwise store a draft against an engagement the operator never asked about, one click away from being applied. A conversation without a binding still requires the model to name the task.
 
 ### Console fixes
 

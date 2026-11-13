@@ -2718,6 +2718,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       id: mockConversations.reduce((max, item) => Math.max(max, item.id), 0) + 1,
       agent_key: String(b.agent_key ?? "mainagent"),
       title,
+      task_id: typeof b.task_id === "number" && b.task_id > 0 ? b.task_id : undefined,
       llm_profile_id: typeof b.llm_profile_id === "number" ? b.llm_profile_id : undefined,
       pinned: false,
       created_at: now,

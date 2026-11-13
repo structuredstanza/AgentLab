@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -67,20 +68,59 @@ const planContextAssetLimit = 200
 // planContextNodeLimit bounds each existing-node list for the same reason.
 const planContextNodeLimit = 200
 
+// planTaskKey carries the task a conversation is bound to into its tools.
+//
+// The plan tab opens a conversation bound to one task, so the drafter's tools
+// take the task from the thread instead of from the model: a model that names
+// another task would otherwise store a draft against a real engagement the
+// operator never asked about.
+type planTaskKey struct{}
+
+func withPlanTask(ctx context.Context, taskID int64) context.Context {
+	if taskID <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, planTaskKey{}, taskID)
+}
+
+func planTaskFrom(ctx context.Context) (int64, bool) {
+	id, ok := ctx.Value(planTaskKey{}).(int64)
+	return id, ok && id > 0
+}
+
+// planTaskID resolves the task a tool call may act on: the conversation binding
+// wins, and a model-supplied id that disagrees is refused rather than ignored,
+// so the model learns why instead of silently drafting for the wrong task.
+func planTaskID(ctx context.Context, asked int64) (int64, error) {
+	bound, ok := planTaskFrom(ctx)
+	if !ok {
+		if asked <= 0 {
+			return 0, errors.New("task_id is required: this conversation is not bound to a task")
+		}
+		return asked, nil
+	}
+	if asked > 0 && asked != bound {
+		return 0, fmt.Errorf("this conversation drafts for task %d; task %d is not it", bound, asked)
+	}
+	return bound, nil
+}
+
 func (s *Server) toolPlanContext() actool.CoreTool {
 	return roTool("plan_context",
 		"Read the engagement a plan is drafted for: its goal and description, its scope rows, up to 200 assets, and the goals, intents and hints it already has (id, text or summary, state). Read it before propose_plan so the draft builds on what exists instead of repeating it. Read-only.",
 		objSchema(map[string]any{
-			"task_id": map[string]any{"type": "integer", "description": "Task id the plan is for."},
-		}, "task_id"),
+			"task_id": map[string]any{"type": "integer", "description": "Task id the plan is for. Omit it when the conversation is bound to a task: the binding wins."},
+		}),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				TaskID int64 `json:"task_id"`
 			}
 			_ = json.Unmarshal(in, &a)
-			if a.TaskID <= 0 {
-				return actool.Errorf("task_id is required"), nil
+			taskID, err := planTaskID(ctx, a.TaskID)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
 			}
+			a.TaskID = taskID
 			t, err := s.m.PG().GetTask(a.TaskID)
 			if err != nil {
 				return actool.Errorf("read task: " + err.Error()), nil
@@ -168,13 +208,13 @@ func (s *Server) toolProposePlan() actool.CoreTool {
 			"A validation failure returns every problem at once; fix them all and call propose_plan once more. "+
 			"A scope inclusion widens the engagement and needs the operator's explicit approval (needs_include_approval=true in the reply); an exclusion only narrows it and does not.",
 		objSchema(map[string]any{
-			"task_id": map[string]any{"type": "integer", "description": "Task id the plan is for."},
+			"task_id": map[string]any{"type": "integer", "description": "Task id the plan is for. Omit it when the conversation is bound to a task: the binding wins."},
 			"proposal": map[string]any{
 				"type": "object",
 				"description": "summary (one sentence), goals[{ref,text,vulnclass}], intents[{ref,summary,goal,asset_ids,depends_on}], " +
 					"hints[{text,asset_ids,rule}], scope[{effect,kind,value,note}]. Refs are unique across goals and intents.",
 			},
-		}, "task_id", "proposal"),
+		}, "proposal"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				TaskID   int64           `json:"task_id"`
@@ -183,9 +223,11 @@ func (s *Server) toolProposePlan() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			if a.TaskID <= 0 {
-				return actool.Errorf("task_id is required"), nil
+			taskID, err := planTaskID(ctx, a.TaskID)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
 			}
+			a.TaskID = taskID
 			t, err := s.m.PG().GetTask(a.TaskID)
 			if err != nil {
 				return actool.Errorf("read task: " + err.Error()), nil

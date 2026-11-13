@@ -53,6 +53,7 @@ type Conversation struct {
 	ID           int64      `json:"id"`
 	AgentKey     string     `json:"agent_key"`
 	Title        string     `json:"title"`
+	TaskID       int64      `json:"task_id,omitempty"`
 	LLMProfileID *int64     `json:"llm_profile_id,omitempty"`
 	Pinned       bool       `json:"pinned"`
 	PinnedAt     *time.Time `json:"pinned_at,omitempty"`
@@ -66,12 +67,16 @@ type ConversationPatch struct {
 	Pinned *bool
 }
 
-const convCols = `id, agent_key, title, llm_profile_id, pinned_at, created_at, updated_at`
+const convCols = `id, agent_key, title, task_id, llm_profile_id, pinned_at, created_at, updated_at`
 
 func scanConv(row interface{ Scan(...any) error }) (Conversation, error) {
 	var c Conversation
 	var pinnedAt sql.NullTime
-	err := row.Scan(&c.ID, &c.AgentKey, &c.Title, &c.LLMProfileID, &pinnedAt, &c.CreatedAt, &c.UpdatedAt)
+	var taskID sql.NullInt64
+	err := row.Scan(&c.ID, &c.AgentKey, &c.Title, &taskID, &c.LLMProfileID, &pinnedAt, &c.CreatedAt, &c.UpdatedAt)
+	if taskID.Valid {
+		c.TaskID = taskID.Int64
+	}
 	if pinnedAt.Valid {
 		c.Pinned = true
 		c.PinnedAt = &pinnedAt.Time
@@ -82,6 +87,14 @@ func scanConv(row interface{ Scan(...any) error }) (Conversation, error) {
 // CreateConversation opens a new chat thread for agentKey with an initial title.
 // llmProfileID may be nil to use the globally active profile.
 func (d *DB) CreateConversation(agentKey, title string, llmProfileID *int64) (*Conversation, error) {
+	return d.CreateConversationForTask(agentKey, title, llmProfileID, 0)
+}
+
+// CreateConversationForTask opens a thread bound to one task. The plan drafter
+// uses the binding to take the task from the conversation rather than from the
+// model, so a proposal cannot be stored against another engagement. taskID 0
+// leaves the thread unbound.
+func (d *DB) CreateConversationForTask(agentKey, title string, llmProfileID *int64, taskID int64) (*Conversation, error) {
 	tx, err := d.Begin()
 	if err != nil {
 		return nil, err
@@ -92,8 +105,8 @@ func (d *DB) CreateConversation(agentKey, title string, llmProfileID *int64) (*C
 	// by this transaction before it takes a profile lock, matching DeleteProfile's
 	// child-row -> profile-row protocol.
 	c, err := scanConv(tx.QueryRow(`
-INSERT INTO conversations(agent_key, title, llm_profile_id) VALUES ($1, $2, NULL)
-RETURNING `+convCols, agentKey, title))
+INSERT INTO conversations(agent_key, title, task_id, llm_profile_id) VALUES ($1, $2, NULLIF($3,0), NULL)
+RETURNING `+convCols, agentKey, title, taskID))
 	if err != nil {
 		return nil, err
 	}

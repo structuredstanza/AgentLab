@@ -124,6 +124,7 @@ func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AgentKey     string `json:"agent_key"`
 		Title        string `json:"title"`
+		TaskID       int64  `json:"task_id"`
 		LLMProfileID *int64 `json:"llm_profile_id"`
 	}
 	if !decodeConversationRequest(w, r, &req) {
@@ -153,6 +154,20 @@ func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A bound conversation lets an agent take the task from the thread instead
+	// of from the model. The task must exist and be live, or the binding would
+	// point at nothing and the tools would fall back to guessing.
+	if req.TaskID != 0 {
+		t, err := pg.GetTask(req.TaskID)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if t == nil {
+			writeErr(w, 404, "task not found")
+			return
+		}
+	}
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		title = convDefaultTitle
@@ -161,7 +176,7 @@ func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Sprintf(convErrTitleTooLong, maxConversationTitleRunes))
 		return
 	}
-	c, err := pg.CreateConversation(req.AgentKey, title, req.LLMProfileID)
+	c, err := pg.CreateConversationForTask(req.AgentKey, title, req.LLMProfileID, req.TaskID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -613,6 +628,9 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	}
 	// On a manual stop ctx is cancelled; Chat already emits a clean "Manually stopped"
 	// step, so skip the raw-error entry — only surface genuine failures.
+	// A conversation bound to a task hands that task to its tools, so an agent
+	// that acts on a task cannot be talked into acting on another one.
+	ctx = withPlanTask(ctx, c.TaskID)
 	if _, err := ca.Chat(ctx, c.AgentKey, sessionID, msg, maxTurns, maxDuration, webSearch, emit); err != nil {
 		finishReason = err.Error()
 		if ctx.Err() == nil {
