@@ -299,6 +299,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedBuiltinSkillVisibility(); err != nil {
 		return fmt.Errorf("seed skill visibility: %w", err)
 	}
+	if err := d.seedBrowserMCPVisibility(); err != nil {
+		return fmt.Errorf("seed browser mcp visibility: %w", err)
+	}
 	if err := d.seedDefaultInterceptRules(); err != nil {
 		return fmt.Errorf("seed intercept rules: %w", err)
 	}
@@ -360,12 +363,39 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 // manifest tool, so binding the tool without the skill left the agents to
 // rediscover the ranking by hand — or skip it and reach for Bash.
 //
-// browser goes to those same agents: it declares `mcps: browser`, so the skill
-// gate is what connects the Playwright MCP to a worker that needs a real browser.
+// browser goes to those same agents as guidance: the MCP itself is bound
+// directly (see browserMCPAgents) because a skill-gated server was never
+// unlocked in practice.
 var builtinSkillVisibility = map[string][]string{
 	"api-recon":           {"auto", "pentest", "worker"},
 	"recon-orchestration": {"auto", "pentest", "worker", "planner"},
 	"browser":             {"auto", "pentest", "worker", "planner"},
+}
+
+// browserMCPAgents are the agents that see the Playwright MCP from session start.
+//
+// A server named by a visible skill's `mcps:` is deferred until the model loads
+// that skill. Two measured runs showed it never does: the browser tools were
+// listed in 14 of 15 worker prompts, the skill was visible, and the worker still
+// reached for curl. Binding the server directly puts its tools in the global
+// block, which is what makes the browser reachable in practice; the skill stays
+// as the how-to.
+var browserMCPAgents = []string{"auto", "pentest", "worker", "planner"}
+
+// seedBrowserMCPVisibility binds the seeded browser MCP to the executing agents.
+// Insert-if-absent, like the skill seed: a later toggle-off (enabled=false) is
+// never resurrected on restart.
+func (d *DB) seedBrowserMCPVisibility() error {
+	for _, key := range browserMCPAgents {
+		if _, err := d.Exec(`
+INSERT INTO agent_visibility(agent_id, resource_kind, resource_id, mcp_tool_name, enabled)
+SELECT a.id, 'mcp', m.id, '', true FROM agents a, mcp_servers m
+WHERE a.key=$1 AND m.name='browser'
+ON CONFLICT (agent_id, resource_kind, resource_id, mcp_tool_name) DO NOTHING`, key); err != nil {
+			return fmt.Errorf("browser mcp → agent %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default

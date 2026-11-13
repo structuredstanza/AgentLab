@@ -279,10 +279,11 @@ func TestMCPScopeGuardRefusesWhenCheckerIsNil(t *testing.T) {
 	}
 }
 
-// The skill gate only connects a server named in a visible skill's `mcps` field,
-// so the frontmatter is load-bearing: without it the browser tools never reach
-// the agents the visibility map binds the skill to.
-func TestBrowserSkillDeclaresBrowserMCP(t *testing.T) {
+// The browser MCP is bound directly, not through the skill: a skill-gated server
+// was listed in the prompt but never unlocked in two measured runs, so the worker
+// never used the browser. The skill is guidance only, and must not gate the
+// server again.
+func TestBrowserMCPIsBoundDirectlyNotSkillGated(t *testing.T) {
 	reg, err := skill.LoadDir(filepath.Join("..", "skills"))
 	if err != nil {
 		t.Fatalf("LoadDir on shipped skills: %v", err)
@@ -291,8 +292,8 @@ func TestBrowserSkillDeclaresBrowserMCP(t *testing.T) {
 		if filepath.Base(s.Dir) != "browser" {
 			continue
 		}
-		if len(s.MCPs) != 1 || s.MCPs[0] != "browser" {
-			t.Fatalf("browser skill declares mcps %v, want [browser]", s.MCPs)
+		if len(s.MCPs) != 0 {
+			t.Fatalf("browser skill declares mcps %v; the server must be bound directly", s.MCPs)
 		}
 		return
 	}

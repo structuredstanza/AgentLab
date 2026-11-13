@@ -1,16 +1,13 @@
 ---
 name: browser
-description: "Drive the real headless Chromium through the Playwright MCP server: open a URL, read the page as an accessibility snapshot, and click, type, select or wait on elements. Invoke when a target needs JavaScript to render, when a login or multi-step form must be completed, or when curl and raw HTTP show nothing useful. With traffic capture on, every request the browser makes is recorded by the proxy, so it is the tool to use when the traffic must become evidence."
-mcps: browser
+description: "Drive the real headless Chromium through the Playwright MCP server: open a URL, read the page as an accessibility snapshot, and click, type, select or wait on elements. Use it when a target needs JavaScript to render, when a login or multi-step form must be completed, or when curl and raw HTTP show nothing useful. With traffic capture on, every request the browser makes is recorded by the proxy, so it is the tool to use when the traffic must become evidence."
 ---
 
 # Browser
 
 The Playwright MCP server drives the Chromium already installed in the image. Its
-tools are named `mcp__browser__browser_*`. After this skill loads, their names
-appear as deferred tools: fetch a tool's schema with SearchExtraTools (for
-example `select:mcp__browser__browser_navigate`, or keywords like `browser
-click`), then invoke it with ExecuteExtraTool.
+tools are named `mcp__browser__browser_*` and are available directly: no skill
+load is needed to call them.
 
 Under an **authorized** engagement only.
 

@@ -124,9 +124,9 @@ func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
 	}
 }
 
-// The browser skill declares `mcps: browser`, so the skill gate is what connects
-// the Playwright MCP to the agents that need it. It must ship visible to the same
-// agents as recon-orchestration, and stay invisible to the human-interface agent.
+// The browser skill ships visible to the agents that execute work, and stays
+// invisible to the human-interface agent. The MCP itself is bound directly (see
+// the test below); the skill is the how-to.
 func TestBrowserSkillShipsVisibleToExecutingAgents(t *testing.T) {
 	for _, key := range []string{"auto", "pentest", "worker", "planner"} {
 		if !containsStr(builtinSkillVisibility["browser"], key) {
@@ -168,5 +168,55 @@ func TestBrowserSkillShipsVisibleToExecutingAgents(t *testing.T) {
 		if containsStr(got, "browser") {
 			t.Errorf("mainagent should not get the browser skill, has %v", got)
 		}
+	}
+}
+
+// The browser MCP is bound to the executing agents directly, so its tools are in
+// the global block from session start. A skill-gated server was listed in the
+// prompt but never unlocked in two measured runs.
+func TestBrowserMCPIsVisibleToExecutingAgents(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM agent_visibility WHERE resource_kind='mcp' AND resource_id IN (SELECT id FROM mcp_servers WHERE name='browser')`)
+	})
+	if _, err := d.Exec(`DELETE FROM agent_visibility WHERE resource_kind='mcp' AND resource_id IN (SELECT id FROM mcp_servers WHERE name='browser')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.seedBrowserMCPVisibility(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []string{"auto", "pentest", "worker", "planner"} {
+		ag, err := d.GetAgentByKey(key)
+		if err != nil || ag == nil {
+			t.Fatalf("agent %q missing: %v", key, err)
+		}
+		ids, err := d.AgentVisible(ag.ID, "mcp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) == 0 {
+			t.Errorf("%s cannot see the browser MCP (visible %v)", key, ids)
+		}
+	}
+
+	// A user toggle-off survives a restart: the seed is insert-if-absent.
+	if _, err := d.Exec(`UPDATE agent_visibility SET enabled=false WHERE resource_kind='mcp'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.seedBrowserMCPVisibility(); err != nil {
+		t.Fatal(err)
+	}
+	var enabled int
+	if err := d.QueryRow(`SELECT count(*) FROM agent_visibility WHERE resource_kind='mcp' AND enabled=true`).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 0 {
+		t.Fatalf("%d bindings were resurrected after a toggle-off", enabled)
 	}
 }
