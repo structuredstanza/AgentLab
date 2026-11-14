@@ -1,4 +1,4 @@
-<!-- Design record (2026-11-12). Shipped. -->
+<!-- Design record (2026-11-12). Every item is either shipped or deliberately not built; see the implementation plan for status. -->
 
 # Executioner -> m1nervac0nsole: what is worth pulling
 

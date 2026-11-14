@@ -1,8 +1,8 @@
-<!-- Design record (2026-11-13). Plan D shipped; Plan E pending. -->
+<!-- Design record (2026-11-13). Plans A, B, D and E shipped; Plan C closed by its gate. -->
 
 # Implementation plans: features pulled from Executioner
 
-Companion to `local://executioner-pull-plan.md` (what Executioner does and why each item is worth pulling). This file is the build plan. Nothing here is implemented. Paths are under `/mnt/Research/AgentLab/m1nervac0nsole` unless stated. Executioner source for reference: `/tmp/executioner` (re-clone `structuredstanza/executioner` at c21c844 if gone); MIT - keep the dbx0 copyright notice in a `NOTICE` entry for any ported file.
+Companion to `docs/design/executioner-pull-plan.md` (what Executioner does and why each item is worth pulling). This file is the build plan. Nothing here is implemented. Paths are under `/mnt/Research/AgentLab/m1nervac0nsole` unless stated. Executioner source for reference: re-clone `structuredstanza/executioner` at c21c844 (the `/tmp` copy is gone); MIT - keep the dbx0 copyright notice in a `NOTICE` entry for any ported file.
 
 Order: A -> B -> (decision gate) -> C -> D -> E. A and B are independent and can run in parallel.
 
@@ -12,7 +12,7 @@ Order: A -> B -> (decision gate) -> C -> D -> E. A and B are independent and can
 - **B: shipped** (commit ac90e6f). The browser MCP is seeded enabled with a one-shot migration that never resurrects a later toggle-off; `skills/browser/SKILL.md` teaches the snapshot-then-act loop and the operator hand-off, and is visible to auto/pentest/worker/planner; `server/mcp_scope.go` judges every `mcp__browser__navigate|open` against the task boundary and refuses out-of-scope hosts, non-http(s) schemes, non-ASCII hosts, non-canonical IPv4 spellings and backslash tricks, and refuses rather than guesses when no checker exists.
 - **D: shipped** (commit 5224fc9). `plan/` holds the proposal contract and a pure validator; `db/plan_drafts.go` holds one pending draft per task and the apply transaction (goals, open intents anchored to their assets, active hints, scope rows, created node ids, second apply refused; inclusions need `allow_include`). The `drafter` assistant has `plan_context` and `propose_plan` bound to it alone and reads the catalogue through the shared `list_tools`. Routes: `GET /api/tasks/{id}/plans`, `POST .../{draft}/apply`, `DELETE .../{draft}`. The task detail page has a **Plan** tab with the drafter chat and a proposal preview; every message names the task, because a wrong guess stores a draft against a real engagement. Measured on the running guest: apply created the nodes and both scope rows, a second apply returned 409, an inclusion was refused without the flag, and the drafter produced a valid draft through `propose_plan`.
 - **C, E: not started.** The decision gate after B is closed: the browser connects, navigates through the recorder and its snapshot is adequate, so Plan C is not justified.
-- Open limitation from B: `ask_operator` refuses an attached screenshot when provider credentials are configured (server/ask_operator.go:42-44), which is the normal deployment state, so the hand-off is text-only until that is revisited.
+- Closed limitation from B: `ask_operator` used to refuse an attached screenshot when provider credentials were configured. It now stages the file and names its path in the hand-off instead, so the operator can open it in the task workspace; the image never enters the conversation.
 
 
 ---
