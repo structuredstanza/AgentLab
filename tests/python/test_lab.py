@@ -255,6 +255,12 @@ class StateStorageTests(unittest.TestCase):
                 return line[2:].split('/state:')[0]
         raise AssertionError('no /state mount in the sandbox spec')
 
+    def relocated_spec(self, tmp):
+        """A copy of the checked-in spec whose mounts name tmp as the root."""
+        spec = Path(tmp) / 'sandbox.yaml'
+        spec.write_text(lab.SANDBOX_CONF.read_text().replace(self.spec_root() + '/', tmp + '/'))
+        return spec
+
     def conf_text(self, quota_mb):
         path, temporary = lab.sandbox_conf(quota_mb)
         try:
@@ -265,10 +271,14 @@ class StateStorageTests(unittest.TestCase):
 
     def test_default_keeps_the_checked_in_spec(self):
         # The spec is used as is only at the path its mounts name; a relocated
-        # checkout gets a rewritten copy (see the relocation test below).
-        with mock.patch.object(lab, 'ROOT', Path(self.spec_root())):
-            path, temporary = lab.sandbox_conf(None)
-        self.assertEqual((path, temporary), (lab.SANDBOX_CONF, False))
+        # checkout gets a rewritten copy (see the relocation test below). The
+        # spec is relocated too, so the test never needs the checked-in path to
+        # exist on the runner.
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = self.relocated_spec(tmp)
+            with mock.patch.object(lab, 'ROOT', Path(tmp)), mock.patch.object(lab, 'SANDBOX_CONF', spec):
+                path, temporary = lab.sandbox_conf(None)
+            self.assertEqual((path, temporary), (spec, False))
 
     def test_host_mounts_follow_a_relocated_checkout(self):
         # The spec mounts host paths under the repository root; a clone at
@@ -281,19 +291,21 @@ class StateStorageTests(unittest.TestCase):
                 text = path.read_text()
                 path.unlink()
         self.assertIn(tmp + '/state:/state', text)
-        self.assertNotIn('/mnt/Research/AgentLab/', text)
+        self.assertNotIn(self.spec_root() + '/', text)
 
     def test_quota_is_rewritten_only_on_the_state_mount(self):
-        with mock.patch.object(lab, 'ROOT', Path(self.spec_root())):
-            text, temporary = self.conf_text(409600)
-        self.assertTrue(temporary)
-        self.assertIn(':/state:quota=409600', text)
-        self.assertEqual(text.count('quota='), 1)
-        # Everything else in the spec is untouched.
-        base = lab.SANDBOX_CONF.read_text().replace(
-            ':/state:quota=' + lab.SANDBOX_CONF.read_text().split(':/state:quota=')[1].split()[0],
-            ':/state:quota=409600')
-        self.assertEqual(text, base)
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = self.relocated_spec(tmp)
+            with mock.patch.object(lab, 'ROOT', Path(tmp)), mock.patch.object(lab, 'SANDBOX_CONF', spec):
+                text, temporary = self.conf_text(409600)
+            self.assertTrue(temporary)
+            self.assertIn(':/state:quota=409600', text)
+            self.assertEqual(text.count('quota='), 1)
+            # Everything else in the spec is untouched.
+            base = spec.read_text().replace(
+                ':/state:quota=' + spec.read_text().split(':/state:quota=')[1].split()[0],
+                ':/state:quota=409600')
+            self.assertEqual(text, base)
 
     def test_zero_removes_the_quota(self):
         text, _ = self.conf_text(0)
