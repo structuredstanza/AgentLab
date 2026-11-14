@@ -247,6 +247,14 @@ class BuildFreshnessTests(unittest.TestCase):
 
 
 class StateStorageTests(unittest.TestCase):
+    def spec_root(self):
+        """The checkout root the checked-in spec's mount lines name."""
+        for line in lab.SANDBOX_CONF.read_text().splitlines():
+            line = line.strip()
+            if line.startswith('- ') and '/state:' in line:
+                return line[2:].split('/state:')[0]
+        raise AssertionError('no /state mount in the sandbox spec')
+
     def conf_text(self, quota_mb):
         path, temporary = lab.sandbox_conf(quota_mb)
         try:
@@ -256,7 +264,10 @@ class StateStorageTests(unittest.TestCase):
                 path.unlink()
 
     def test_default_keeps_the_checked_in_spec(self):
-        path, temporary = lab.sandbox_conf(None)
+        # The spec is used as is only at the path its mounts name; a relocated
+        # checkout gets a rewritten copy (see the relocation test below).
+        with mock.patch.object(lab, 'ROOT', Path(self.spec_root())):
+            path, temporary = lab.sandbox_conf(None)
         self.assertEqual((path, temporary), (lab.SANDBOX_CONF, False))
 
     def test_host_mounts_follow_a_relocated_checkout(self):
@@ -273,7 +284,8 @@ class StateStorageTests(unittest.TestCase):
         self.assertNotIn('/mnt/Research/AgentLab/', text)
 
     def test_quota_is_rewritten_only_on_the_state_mount(self):
-        text, temporary = self.conf_text(409600)
+        with mock.patch.object(lab, 'ROOT', Path(self.spec_root())):
+            text, temporary = self.conf_text(409600)
         self.assertTrue(temporary)
         self.assertIn(':/state:quota=409600', text)
         self.assertEqual(text.count('quota='), 1)
