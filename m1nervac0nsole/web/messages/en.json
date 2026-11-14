@@ -675,6 +675,17 @@
         },
         "companyFallback": "Company #{id}",
         "inherited": "Inherited",
+        "rulesTitle": "Rules",
+        "rulesHint": "A matching rule decides before the rows above, so an include can carve one host out of a broad exclusion.",
+        "effect": {
+          "include": "include",
+          "exclude": "exclude"
+        },
+        "effectLabel": "Effect",
+        "patternLabel": "Pattern",
+        "patternPlaceholder": "*.corp.example or 10.0.0.0/8",
+        "noteLabel": "Note",
+        "notePlaceholder": "why (optional)",
         "empty": "No test scope. Once added, it can serve as the denominator for asset coverage."
       },
       "heartbeat": {
@@ -2047,6 +2058,25 @@
     "statusOk": "ok {time}",
     "statusNotConnected": "not connected yet",
     "connectFailed": "connect failed"
+  },
+  "tokensPage": {
+    "title": "API tokens",
+    "subtitle": "Scoped read-only credentials for external agent harnesses. A token reaches one task's assets, findings and scope through POST /mcp, expires, and can be revoked here.",
+    "name": "Name",
+    "namePlaceholder": "claude-code lab",
+    "task": "Task",
+    "ttl": "TTL (hours)",
+    "mint": "Mint",
+    "mintFailed": "Could not mint the token",
+    "revokeFailed": "Could not revoke the token",
+    "mintedOnce": "Copy this now: the token is shown once and cannot be recovered.",
+    "copied": "Copied",
+    "empty": "No tokens yet.",
+    "active": "active",
+    "expired": "expired",
+    "revoked": "revoked",
+    "expires": "expires {when}",
+    "lastUsed": "last used {when}"
   },
   "toolboxPage": {
     "title": "Toolbox",

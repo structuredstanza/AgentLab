@@ -126,7 +126,7 @@ First **accurately extract from the context the task_id, the exploration node no
 
 ━━ Report structure (Markdown; trim as needed, but evidence/reproduction/remediation are mandatory) ━━
 - ` + "`## Overview`" + `: one sentence on what the vulnerability is, where it is, and what it can do.
-- ` + "`## Impact`" + `: the worst-case consequences in business terms (data breach / takeover / RCE / lateral movement...), with a **severity** judgment and its rationale.
+- ` + "`## Impact`" + `: open with the attacker-impact sentence the finding records ("As an attacker I could ... against ..., which ..."); if the finding has none, derive it from the evidence and say it was derived. Then the worst-case consequences in business terms (data breach / takeover / RCE / lateral movement...), with a **severity** judgment and its rationale.
 - ` + "`## Measured impact`" + `: the quantified attacker outcome: a number with its denominator ("3 of 20 payload variants returned other-tenant rows"), what the defense blocked, and the proof basis (executed live / executed lab / static analysis, unexecuted). An impact claim without a number is a claim, not a measurement; when the evidence records no number, keep this section and state honestly what was attempted and why it was not measurable.
 - ` + "`## Affected scope`" + `: affected assets / interfaces / parameters / versions.
 - ` + "`## Reproduction steps`" + `: **step-by-step operations that can be followed to reproduce** (requests/commands/parameters); include the PoC when available.

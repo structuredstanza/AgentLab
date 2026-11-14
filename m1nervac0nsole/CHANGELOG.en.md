@@ -51,6 +51,19 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - The browser is scope-judged on what it is told, not on what it does. `browser_navigate` passes the scope guard because it carries a URL; a click, a form submission or `browser_evaluate` can still reach a host the task excludes. The recorder captures that traffic and the browser skill forbids directing the browser outside the boundary, but the guard does not enforce it. Accepted because the browser is opt-in for an engagement; enforcing it belongs at the proxy, which sees every host before the page does.
 - Report why an MCP server failed to start. A stdio server that exits during the handshake reported only `connection closed`, with its stderr discarded; the child's last 4 KiB of stderr now rides in the error and on the MCP page.
 
+### Scope rules
+
+- Let the operator write rules over the boundary the hunt accumulates. A rule (`{effect, pattern, note}`, stored in `task_scope_rules`) decides for the hosts it matches before any `task_scope` row does, so "include api.corp.example" is obeyed even when a broad `root_domain` row excludes `corp.example`. Within the rule layer the `scope` package keeps its semantics: an exclusion beats an include, the longest include wins, and no match is `unknown`, which never blocks. Routes are `GET`/`POST`/`DELETE /api/tasks/{id}/scope/rules`, and the task overview has a Rules section beside the rows.
+
+### MCP server and API tokens
+
+- Give an external harness a credential that cannot do more than read one engagement. `POST /api/tokens` mints a token bound to one task, expiring (1-720 hours), revocable, stored as a sha256 hash and shown exactly once; `GET`/`DELETE /api/tokens` list and revoke. The new **API tokens** page mints and revokes them.
+- Serve the engagement over MCP. `POST /mcp` speaks JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`) with four read-only tools - `list_assets`, `get_asset`, `list_findings`, `list_scope` - and the allow-list is enforced in both `tools/list` and `tools/call`, so a caller cannot be told about a tool it may not use. Every accepted call writes one `mcp_audit` row. A JWT is refused: only an API token opens this endpoint. Asking for another task's id returns an empty result rather than an error, so a token cannot probe for engagements it does not hold. There is no write tool.
+
+### Findings
+
+- Ask for the attacker impact in one sentence. Every finding's evidence now opens with "As an attacker I could <outcome> against <asset>, which <business consequence>", and the report's Impact section opens with that sentence; a candidate that cannot fill it honestly is a hardening note, not a finding.
+- Fold a repeated finding into its row.
 ### Toolbox
 
 - Show the exact command before it runs. `POST /api/tools/{id}/preview` renders the argv the executor would build - same resolver, manifest defaults included - without running anything, and the new **Toolbox** page lists the shipped manifests with a schema-driven form and a live preview. A preview cannot drift from execution because both call `Effective` then `Resolve`; the executor only adds the scope check and the rate gate.

@@ -353,6 +353,17 @@ export interface WorkspaceFile {
 }
 
 // One entry in the task's test scope (the coverage denominator and the authorization boundary).
+// A rule is the operator's explicit layer over the accumulated scope rows: it
+// decides for the hosts it matches, and the rows decide only when no rule does.
+export interface TaskScopeRule {
+  id: number;
+  task_id: number;
+  effect: "include" | "exclude";
+  pattern: string;
+  note: string;
+  created_at: string;
+}
+
 export interface TaskScopeRow {
   id: number;
   task_id: number;
@@ -1254,6 +1265,21 @@ export interface MissingSkill {
   calls: number;
   agents: string[];
   last_used?: string;
+}
+
+// ---- API tokens (scoped read-only credentials for external harnesses) ----
+export interface APIToken {
+  id: number;
+  name: string;
+  task_id: number;
+  created_at: string;
+  expires_at: string;
+  revoked_at?: string;
+  last_used_at?: string;
+}
+
+export interface APITokenCreated extends APIToken {
+  token: string; // plaintext, returned once at mint time
 }
 
 // ---- Tool manifests (the shipped CLI toolbox) ----

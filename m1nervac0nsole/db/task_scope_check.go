@@ -38,6 +38,17 @@ func (c *TaskScopeChecker) Judge(asset string) (bool, string) {
 	if c == nil {
 		return false, ""
 	}
+	// Operator rules first. A rule is an explicit statement about one pattern;
+	// the rows below are the boundary the hunt accumulated. When a rule matches,
+	// it decides, so "include api.corp.example" is obeyed even though a broad
+	// root_domain row excludes corp.example. Within the rule layer the scope
+	// package holds its own semantics (an exclusion beats an include, the
+	// longest include wins, no match is unknown).
+	if rules, err := c.assets.ListTaskScopeRules(c.taskID); err == nil && len(rules) > 0 {
+		if v := scope.Evaluate(scope.ParseAsset(asset), rules); v.Status != scope.Unknown {
+			return v.Status == scope.Out, v.Reason
+		}
+	}
 	// WithSources, not ListTaskScope: an exclusion set on a parent task must
 	// bind its children, or a spawned worker can reach a host its parent
 	// explicitly ruled out.

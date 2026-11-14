@@ -12,6 +12,8 @@ import type {
   Agent,
   AgentDetail,
   AgentTrigger,
+  APIToken,
+  APITokenCreated,
   ArchiveBatchItem,
   Asset,
   AssetInterceptRule,
@@ -109,6 +111,7 @@ import type {
   TaskLLMResolutions,
   TaskNode,
   TaskScopeRow,
+  TaskScopeRule,
   TaskTemplate,
   TokenTotal,
   TokenUsage,
@@ -505,6 +508,11 @@ export const api = {
     post<TaskScopeRow>(`/tasks/${id}/scope`, { kind, value, reason }),
   // Delete one test scope from this task.
   deleteTaskScope: (id: string, scopeId: number) => del<{ ok: boolean }>(`/tasks/${id}/scope/${scopeId}`),
+  // Scope rules: the operator's explicit layer over the accumulated rows.
+  taskScopeRules: (id: string) => get<{ rules: TaskScopeRule[] }>(`/tasks/${id}/scope/rules`).then((r) => arr(r.rules)),
+  addTaskScopeRule: (id: string, effect: "include" | "exclude", pattern: string, note: string) =>
+    post<{ id: number }>(`/tasks/${id}/scope/rules`, { effect, pattern, note }),
+  deleteTaskScopeRule: (id: string, ruleId: number) => del<{ ok: boolean }>(`/tasks/${id}/scope/rules/${ruleId}`),
   // Intents / facts / findings associated with an asset in this task (used by the graph node drawer).
   taskAssetRefs: (id: string, assetId: number) => get<CoverageAssetRefs>(`/tasks/${id}/asset-refs?asset_id=${assetId}`),
 
@@ -1174,6 +1182,12 @@ export const api = {
   // previewTool renders the argv the executor would run; it never runs anything.
   previewTool: (key: string, target: string, params: Record<string, string>) =>
     post<ToolPreview>(`/tools/${key}/preview`, { target, params }),
+
+  // ---- api tokens (scoped read-only credentials) ----
+  apiTokens: () => get<{ items: APIToken[] }>("/tokens").then((r) => arr(r.items)),
+  createAPIToken: (name: string, task_id: string, ttl_hours: number) =>
+    post<APITokenCreated>("/tokens", { name, task_id: Number(task_id), ttl_hours }),
+  revokeAPIToken: (id: number) => del<{ ok: boolean }>(`/tokens/${id}`),
 
   // ---- mcp ----
   mcpServers: () => get<{ servers: MCPServer[] }>("/mcp").then((r) => arr(r.servers)),

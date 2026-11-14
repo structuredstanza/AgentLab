@@ -40,6 +40,7 @@ import type {
   TaskGoal,
   TaskNode,
   TaskScopeRow,
+  TaskScopeRule,
 } from "@/lib/types";
 
 // Display token counts concisely (12345 → 12.3k, 2000000 → 2M).
@@ -108,6 +109,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [scopeValueInput, setScopeValueInput] = React.useState("");
   const [scopeBusy, setScopeBusy] = React.useState(false);
   const [scopeErr, setScopeErr] = React.useState("");
+  // Rules are the explicit layer over the rows above; they decide first.
+  const [scopeRules, setScopeRules] = React.useState<TaskScopeRule[]>([]);
+  const [ruleEffect, setRuleEffect] = React.useState<"include" | "exclude">("exclude");
+  const [rulePattern, setRulePattern] = React.useState("");
+  const [ruleNote, setRuleNote] = React.useState("");
+  const [ruleBusy, setRuleBusy] = React.useState(false);
+  const [ruleErr, setRuleErr] = React.useState("");
   // Per-model token usage (taken from the always-on llm_usage metering ledger, so it is accurate per call).
   const [modelTokens, setModelTokens] = React.useState<ModelTokenStat[]>([]);
   // Goal management: goal list + add form + inline edit state.
@@ -138,6 +146,14 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     }
   }, [taskId]);
 
+  const loadScopeRules = React.useCallback(async () => {
+    try {
+      setScopeRules(await api.taskScopeRules(taskId));
+    } catch {
+      // Same as the rows: no asset store means an empty card, not an error.
+    }
+  }, [taskId]);
+
   const loadScope = React.useCallback(async () => {
     try {
       const resp = await api.taskScope(taskId);
@@ -146,6 +162,37 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       // Ignore: if there is no asset store, the API returns 503 and the scope card is naturally empty.
     }
   }, [taskId]);
+
+  // Rules load beside the rows; both come from the same boundary.
+  React.useEffect(() => {
+    void loadScopeRules();
+  }, [loadScopeRules]);
+
+  const addScopeRule = async () => {
+    const pattern = rulePattern.trim();
+    if (!pattern) return;
+    setRuleBusy(true);
+    setRuleErr("");
+    try {
+      await api.addTaskScopeRule(taskId, ruleEffect, pattern, ruleNote.trim());
+      setRulePattern("");
+      setRuleNote("");
+      await loadScopeRules();
+    } catch (e) {
+      setRuleErr(e instanceof Error ? e.message : t("addFailed"));
+    } finally {
+      setRuleBusy(false);
+    }
+  };
+
+  const removeScopeRule = async (id: number) => {
+    setScopeRules((prev) => prev.filter((r) => r.id !== id));
+    try {
+      await api.deleteTaskScopeRule(taskId, id);
+    } catch {
+      await loadScopeRules(); // Delete failed: re-fetch to restore.
+    }
+  };
 
   const loadGoals = React.useCallback(async () => {
     try {
@@ -874,6 +921,78 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           ) : (
             <p className="text-muted-foreground text-sm">{t("scope.empty")}</p>
           )}
+
+          {/* Rules: the operator's explicit layer. A matching rule decides before
+              any row above, so an include can carve one host out of a broad
+              exclusion. */}
+          <div className="mt-3 flex flex-col gap-1.5 border-border border-t pt-3">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-xs">{t("scope.rulesTitle")}</span>
+              <span className="text-muted-foreground text-xs">{t("scope.rulesHint")}</span>
+            </div>
+            {scopeRules.map((rule) => (
+              <div key={rule.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                <span
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
+                    rule.effect === "exclude" ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  {t(`scope.effect.${rule.effect}`)}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs">{rule.pattern}</span>
+                {rule.note && (
+                  <span className="shrink-0 max-w-[30%] truncate text-muted-foreground text-xs">{rule.note}</span>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 shrink-0 px-1.5"
+                  onClick={() => void removeScopeRule(rule.id)}
+                >
+                  <Trash2Icon className="size-3.5 text-destructive" />
+                </Button>
+              </div>
+            ))}
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label={t("scope.effectLabel")}
+                className="h-8 rounded-md border bg-transparent px-2 text-xs"
+                value={ruleEffect}
+                onChange={(e) => setRuleEffect(e.target.value as "include" | "exclude")}
+              >
+                <option value="exclude">{t("scope.effect.exclude")}</option>
+                <option value="include">{t("scope.effect.include")}</option>
+              </select>
+              <Input
+                aria-label={t("scope.patternLabel")}
+                className="h-8 w-56 font-mono text-xs"
+                placeholder={t("scope.patternPlaceholder")}
+                value={rulePattern}
+                onChange={(e) => setRulePattern(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void addScopeRule();
+                }}
+                disabled={ruleBusy}
+              />
+              <Input
+                aria-label={t("scope.noteLabel")}
+                className="h-8 w-48 text-xs"
+                placeholder={t("scope.notePlaceholder")}
+                value={ruleNote}
+                onChange={(e) => setRuleNote(e.target.value)}
+                disabled={ruleBusy}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={ruleBusy || !rulePattern.trim()}
+                onClick={() => void addScopeRule()}
+              >
+                <PlusIcon className="size-3.5" /> {t("add")}
+              </Button>
+              {ruleErr && <span className="text-destructive text-xs">{ruleErr}</span>}
+            </div>
+          </div>
         </div>
       </section>
       {/* Heartbeat */}

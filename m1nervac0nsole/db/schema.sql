@@ -1683,3 +1683,46 @@ CREATE INDEX IF NOT EXISTS idx_plan_drafts_task ON plan_drafts(task_id, created_
 -- assistant just proposed, not a pile of stale proposals.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_drafts_one_open
     ON plan_drafts(task_id) WHERE status = 'draft';
+
+-- ---------------------------------------------------------------------------
+-- Operator-written scope rules. They sit beside task_scope rows and take
+-- precedence for the hosts they match: a rule is an explicit statement, a row
+-- is the boundary the hunt accumulated. Within each layer the scope package's
+-- semantics hold (an exclusion beats an include, the longest include wins, no
+-- match is unknown, and unknown never blocks).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS task_scope_rules (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    effect     TEXT NOT NULL CHECK (effect IN ('include','exclude')),
+    pattern    TEXT NOT NULL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_scope_rules_task ON task_scope_rules(task_id);
+
+-- ---------------------------------------------------------------------------
+-- Scoped read-only API tokens for external agent harnesses, and the MCP call
+-- audit trail. A token is bound to one task, expires, and can be revoked; it is
+-- stored as a sha256 hash, and the plaintext is shown once at mint time.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    task_id      BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    token_hash   TEXT NOT NULL UNIQUE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,
+    revoked_at   TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_task ON api_tokens(task_id);
+
+CREATE TABLE IF NOT EXISTS mcp_audit (
+    id         BIGSERIAL PRIMARY KEY,
+    token_id   BIGINT NOT NULL REFERENCES api_tokens(id) ON DELETE CASCADE,
+    tool       TEXT NOT NULL,
+    args       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_token ON mcp_audit(token_id, created_at DESC);
