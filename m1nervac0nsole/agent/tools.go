@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -132,6 +134,10 @@ type ToolSet struct {
 	ts              *db.ExplorationStore
 	worker          string
 	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
+	// workDir is the data dir the task workspaces live under; report_finding
+	// resolves screenshot_paths against it. Empty = screenshots cannot be
+	// validated and are refused.
+	workDir string
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
 	// DB default (true). When true: graphOverviewData drops the coverage block, the
@@ -252,6 +258,10 @@ func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 // SetTaskID sets the PG task id on this ToolSet so that report_finding can
 // dual-write to the standalone findings table (which survives task deletion).
 func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
+
+// SetWorkDir sets the data dir that holds the task workspaces, so
+// report_finding can check the screenshot paths it records.
+func (t *ToolSet) SetWorkDir(dir string) { t.workDir = dir }
 
 // SetCoverageEnabled records whether this task has the asset-coverage feature on
 // (default enabled). Passing false makes graphOverviewData omit the coverage block
@@ -1414,11 +1424,12 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 // --- worker write tools ---
 
 func (t *ToolSet) addFinding() actool.CoreTool {
-	return writeTool("report_finding", "Record a confirmed vulnerability; provide verifiable evidence such as command output and logs in evidence. Pass the current intent_id in task context. The returned finding_id is the independent vulnerability record ID; finding_node_id is the exploration node ID (the first line keeps this node number).", obj(map[string]any{
+	return writeTool("report_finding", "Record a confirmed vulnerability; provide verifiable evidence such as command output and logs in evidence, and attach browser_screenshot paths in screenshot_paths so the UI renders them. Pass the current intent_id in task context. The returned finding_id is the independent vulnerability record ID; finding_node_id is the exploration node ID (the first line keeps this node number).", obj(map[string]any{
 		"vulnclass": str("Vulnerability class"), "name": str("Vulnerability name"), "severity": str("critical|high|medium|low"), "summary": str("Finding summary"),
 		"intent_id": idp("Intent id of the current task"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Affected asset ids"},
 		"evidence":         str("Evidence/PoC text"),
 		"evidence_hint_id": idp("Optional: id of the hint node in this task that corresponds to this vulnerability; its structured traffic_refs are carried over automatically. Cannot reference inherited hints or hints belonging to other vulnerabilities"),
+		"screenshot_paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional. Paths returned by browser_screenshot (tasks/<taskId>/screenshots/<name>.png), recorded as renderable evidence. Each must exist as a file of at most 10 MB; at most 10 paths. A bad path refuses the whole report."},
 		"traffic_refs": map[string]any{"type": "array", "description": "Optional. For HTTP/HTTPS vulnerabilities, first search and verify item by item that the requests/responses actually support the vulnerability conclusion, then fill in the real IDs in reproduction order. For non-HTTP vulnerabilities such as TCP, or when traffic was not captured or no exact record is found, omit this or pass [], which does not block reporting; explain the reason in evidence and provide other verifiable evidence. Do not guess IDs, infer associations from domain or time, or repeat probes merely to pad packets. Roles: baseline = normal control; proof = proof of vulnerability; verification = supplementary verification; supporting = auxiliary evidence.",
 			"items": obj(map[string]any{"traffic_id": str("Real traffic ID returned by traffic_search"), "role": map[string]any{"type": "string", "enum": []string{"baseline", "proof", "verification", "supporting"}}, "note": str("How this traffic supports the vulnerability conclusion")}, "traffic_id")},
 	}, "vulnclass", "severity", "summary"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
@@ -1428,6 +1439,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			AssetIDs                                     []json.RawMessage `json:"asset_ids"`
 			TrafficRefs                                  []db.TrafficRef   `json:"traffic_refs"`
 			EvidenceHintID                               json.RawMessage   `json:"evidence_hint_id"`
+			ScreenshotPaths                              []string          `json:"screenshot_paths"`
 		}
 		if err := json.Unmarshal(in, &a); err != nil {
 			return actool.Errorf(err.Error()), nil
@@ -1450,7 +1462,11 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs)}
+		shots, err := t.checkScreenshots(a.ScreenshotPaths)
+		if err != nil {
+			return actool.Errorf(err.Error()), nil
+		}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs), Screenshots: shots}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
@@ -1499,6 +1515,47 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}
 		return actool.Text(head + "\n" + string(raw)), nil
 	})
+}
+
+const (
+	maxFindingScreenshots     = 10
+	maxFindingScreenshotBytes = 10 << 20
+)
+
+// checkScreenshots validates the screenshot paths of one report before the row
+// is written: a bad path refuses the report instead of storing a link the UI
+// cannot render. Returns the paths unchanged.
+func (t *ToolSet) checkScreenshots(paths []string) ([]string, error) {
+	if len(paths) > maxFindingScreenshots {
+		return nil, fmt.Errorf("screenshot_paths: at most %d paths, got %d", maxFindingScreenshots, len(paths))
+	}
+	prefix := "tasks/" + strconv.FormatInt(t.taskID, 10) + "/screenshots/"
+	for _, p := range paths {
+		bad := func(why string) error { return fmt.Errorf("screenshot_paths: %q: %s", p, why) }
+		if !filepath.IsLocal(p) {
+			return nil, bad("must be a workspace-relative path")
+		}
+		if strings.Contains(strings.ReplaceAll(p, `\`, "/"), "..") {
+			return nil, bad("must not contain ..")
+		}
+		if !strings.HasPrefix(p, prefix) {
+			return nil, bad("must be under " + prefix)
+		}
+		if t.workDir == "" {
+			return nil, bad("screenshot storage is unavailable")
+		}
+		fi, err := os.Stat(filepath.Join(t.workDir, filepath.FromSlash(p)))
+		if err != nil {
+			return nil, bad("does not exist")
+		}
+		if !fi.Mode().IsRegular() {
+			return nil, bad("is not a regular file")
+		}
+		if fi.Size() > maxFindingScreenshotBytes {
+			return nil, bad("is larger than 10 MB")
+		}
+	}
+	return paths, nil
 }
 
 // recordFact writes a general exploration RESULT/conclusion (not a vuln, not a

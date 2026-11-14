@@ -2273,6 +2273,20 @@ func (s *Server) findingStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, st)
 }
 
+// withScreenshots resolves the recorded screenshot paths against the workspace
+// and carries each file's size, so the detail page can skip a thumbnail for a
+// large image.
+func (s *Server) withScreenshots(dto FindingDTO, paths []string) FindingDTO {
+	for _, p := range paths {
+		size := int64(0)
+		if fi, err := os.Stat(filepath.Join(s.m.dir, filepath.FromSlash(p))); err == nil && fi.Mode().IsRegular() {
+			size = fi.Size()
+		}
+		dto.Screenshots = append(dto.Screenshots, FindingScreenshotDTO{Path: p, Size: size})
+	}
+	return dto
+}
+
 // getFinding returns one finding by its standalone-table id (DTO finding_id),
 // with anchored assets resolved for display.
 func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
@@ -2291,7 +2305,7 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	assets := s.resolveAssetIDs(f.AssetIDs)
-	dto := findingFromDB(f, assets)
+	dto := s.withScreenshots(findingFromDB(f, assets), f.Screenshots)
 	if contextTaskID := strings.TrimSpace(r.URL.Query().Get("context_task")); contextTaskID != "" {
 		contextTask := s.m.ResolveTask(contextTaskID)
 		if contextTask == nil {
@@ -2560,7 +2574,7 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "finding not found")
 		return
 	}
-	writeJSON(w, 200, findingFromDB(f, s.resolveAssetIDs(f.AssetIDs)))
+	writeJSON(w, 200, s.withScreenshots(findingFromDB(f, s.resolveAssetIDs(f.AssetIDs)), f.Screenshots))
 }
 
 // deleteFinding removes a finding (findings row + originating exploration node).

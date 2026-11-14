@@ -350,6 +350,15 @@ type FindingDTO struct {
 	Inherited       bool              `json:"inherited,omitempty"`
 	Assets          []FindingAssetDTO `json:"assets,omitempty"`
 	TS              string            `json:"ts"`
+	// Screenshots are the images recorded with the finding, resolved against the
+	// workspace. Size lets the detail page skip a thumbnail for a large file.
+	Screenshots []FindingScreenshotDTO `json:"screenshots,omitempty"`
+}
+
+// FindingScreenshotDTO is one screenshot of a finding; Path is workspace-relative.
+type FindingScreenshotDTO struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
 }
 
 // FindingAssetDTO is one asset a finding is anchored to, pre-labelled for display.

@@ -449,7 +449,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	tsx := NewToolSet(ts, name)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
-	tsx.SetMemory(w.mem) // recall / knowledge_add / reflect (nil store = they refuse)
+	tsx.SetWorkDir(w.workDir) // report_finding resolves screenshot paths under it
+	tsx.SetMemory(w.mem)      // recall / knowledge_add / reflect (nil store = they refuse)
 	coverageEnabled := as == nil || as.CoverageEnabled(taskID)
 	tsx.SetCoverageEnabled(coverageEnabled)
 	if as != nil {

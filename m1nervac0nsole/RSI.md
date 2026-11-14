@@ -159,7 +159,10 @@ page so the owner is told without opening the page.
 `knowledge_usage` records which entries were read back - start-of-task block,
 per-round block, or an agent's `recall`, including a body pulled by id - so a
 dead entry is distinguishable from a load-bearing one; it is best-effort
-telemetry and never fails a prompt build. An agent can judge an earlier item
+telemetry and never fails a prompt build. Measured 2026-11-14: of 20 `recall`
+calls in the recorded tasks, 11 passed an id (a body pulled after a title in the
+block) and 9 ran a query, so the title-then-body path is real and not
+theoretical. An agent can judge an earlier item
 with `reflect(about=[...], verdict=confirmed|wrong|stale)`; the verdict renders
 next to its target and never hides it, so no agent can silence a warning. The
 `curator` assistant shares the chat stack and is propose-only: its

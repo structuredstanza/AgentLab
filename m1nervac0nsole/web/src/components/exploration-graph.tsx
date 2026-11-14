@@ -52,6 +52,21 @@ export const relColor: Record<string, string> = {
   proves: "#ef4444",
 };
 
+// Edge weight: a live target animates (the strongest signal and always wins);
+// otherwise an edge whose source intent is done is drawn as finished.
+export function edgeAccent(
+  sourceState: string | undefined,
+  liveTarget: boolean,
+): {
+  animated: boolean;
+  strokeWidth: number;
+  strokeOpacity: number;
+} {
+  if (liveTarget) return { animated: true, strokeWidth: 2, strokeOpacity: 0.9 };
+  if (sourceState === "done") return { animated: false, strokeWidth: 2.5, strokeOpacity: 1 };
+  return { animated: false, strokeWidth: 2, strokeOpacity: 0.55 };
+}
+
 type TypeMeta = {
   labelKey: string;
   icon: LucideIcon;
@@ -662,20 +677,21 @@ function ExplorationGraphInner({
     const liveTargets = new Set(
       viewNodes.filter((n) => !n.inherited && n.type === "intent" && n.state === "running").map((n) => n.id),
     );
+    const stateById = new Map(viewNodes.map((n) => [n.id, n.state]));
     setRfEdges(
       viewEdges.map((e, i) => {
         const color = relColor[e.rel] ?? "#94a3b8";
-        const animated = liveTargets.has(e.dst);
+        const accent = edgeAccent(stateById.get(e.src), liveTargets.has(e.dst));
         return {
           id: `e${i}-${e.src}-${e.dst}`,
           source: e.src,
           target: e.dst,
           label: relLabelKey[e.rel] ? t(relLabelKey[e.rel]) : e.rel,
           type: "default",
-          animated,
+          animated: accent.animated,
           labelShowBg: false,
           labelStyle: { fontSize: 10, fontWeight: 600, fill: color },
-          style: { stroke: color, strokeWidth: 2, strokeOpacity: animated ? 0.9 : 0.55 },
+          style: { stroke: color, strokeWidth: accent.strokeWidth, strokeOpacity: accent.strokeOpacity },
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies RFEdge;
       }),

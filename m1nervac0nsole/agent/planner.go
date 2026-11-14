@@ -416,7 +416,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		tsx.SetAssetStore(as, as.Companies())
 	}
 	tsx.SetTaskID(taskID)
-	tsx.SetMemory(p.mem) // recall / knowledge_add / reflect (nil store = they refuse)
+	tsx.SetWorkDir(p.workDir) // report_finding resolves screenshot paths under it
+	tsx.SetMemory(p.mem)      // recall / knowledge_add / reflect (nil store = they refuse)
 	tsx.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
 	tsx.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 	tsx.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)

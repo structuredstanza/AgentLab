@@ -7,6 +7,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Placeholders substituted by the scrubbers. They are ASCII, stable and short
@@ -279,7 +280,7 @@ func ScrubTargetIdentifiers(text string, identifiers []string) (string, int) {
 		if id == "" {
 			continue
 		}
-		re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(id) + `\b`)
+		re := targetIdentifierRE(id)
 		var n int
 		text, n = scrubEach(text, re, func([]string) string { return scrubTarget })
 		total += n
@@ -291,6 +292,31 @@ func ScrubTargetIdentifiers(text string, identifiers []string) (string, int) {
 	text, n = scrubEach(text, emailRE, func([]string) string { return scrubEmail })
 	total += n
 	return text, total
+}
+
+// targetIdentifierRESize bounds the compiled-regexp cache. The working set is
+// one task's identifiers, so the bound is generous; clearing rather than
+// evicting one key keeps the common case (the same identifiers for every field
+// of every candidate) a map hit.
+const targetIdentifierRESize = 4096
+
+// targetIdentifierRE compiles the whole-token, case-insensitive matcher for one
+// identifier, once. Promotion and generalisation run it over every field of
+// every candidate, so compiling per call was the hot path.
+var targetIdentifierREs sync.Map // map[string]*regexp.Regexp
+
+func targetIdentifierRE(id string) *regexp.Regexp {
+	if v, ok := targetIdentifierREs.Load(id); ok {
+		return v.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(id) + `\b`)
+	n := 0
+	targetIdentifierREs.Range(func(any, any) bool { n++; return n < targetIdentifierRESize })
+	if n >= targetIdentifierRESize {
+		targetIdentifierREs.Clear()
+	}
+	targetIdentifierREs.Store(id, re)
+	return re
 }
 
 // TaskScopeIdentifiers returns the target-identifying strings of one task: its

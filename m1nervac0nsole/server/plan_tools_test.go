@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/agent"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/plan"
 	actool "github.com/structuredstanza/norma/tool"
 )
 
@@ -51,7 +53,7 @@ func TestDrafterToolsBoundOnlyToDrafter(t *testing.T) {
 	if a.Role != "assistant" || !a.Enabled {
 		t.Errorf("drafter must be an enabled assistant, got role=%q enabled=%v", a.Role, a.Enabled)
 	}
-	for _, marker := range []string{"Plan drafter", "plan_context", "list_tools", "propose_plan", "inclusion"} {
+	for _, marker := range []string{"Plan drafter", "plan_context", "list_tools", "propose_plan", "propose_scope", "pasted policy", "inclusion"} {
 		if !strings.Contains(agent.BuiltinPromptSeeds()["drafter"], marker) {
 			t.Errorf("drafter code default prompt lost the %q contract marker", marker)
 		}
@@ -60,13 +62,13 @@ func TestDrafterToolsBoundOnlyToDrafter(t *testing.T) {
 	// SeedTool never rewrites an existing row's bindings (they are operator
 	// state), so re-seed from scratch: the assertion must read the bindings this
 	// code seeds, not whatever an earlier run or a peer left in the shared DB.
-	for _, key := range []string{"plan_context", "propose_plan"} {
+	for _, key := range []string{"plan_context", "propose_plan", "propose_scope"} {
 		if _, err := m.pg.Exec(`DELETE FROM tools WHERE key=$1`, key); err != nil {
 			t.Fatalf("clear %s: %v", key, err)
 		}
 	}
 	s.seedDrafterTools()
-	for _, key := range []string{"plan_context", "propose_plan"} {
+	for _, key := range []string{"plan_context", "propose_plan", "propose_scope"} {
 		row, err := m.pg.GetTool(key)
 		if err != nil || row == nil {
 			t.Fatalf("drafter tool %s has no tools row (a host tool with no row bypasses ToolResolve): %v", key, err)
@@ -97,7 +99,7 @@ func TestDrafterToolsBoundOnlyToDrafter(t *testing.T) {
 	}
 	for _, agentKey := range []string{"worker", "planner", "auto", "pentest", "mainagent", "curator"} {
 		got := toolNames(agent.ToolResolve(ctx, agentKey, base))
-		for _, key := range []string{"plan_context", "propose_plan"} {
+		for _, key := range []string{"plan_context", "propose_plan", "propose_scope"} {
 			if got[key] {
 				t.Errorf("%s can call %s: the tools-table binding is the only thing keeping plan drafting off other agents", agentKey, key)
 			}
@@ -312,5 +314,189 @@ func TestPlanToolsUseTheConversationTask(t *testing.T) {
 	// An unbound conversation still requires the model to name the task.
 	if _, isErr := callPlanTool(t, drafterTool(t, s, "plan_context"), ctx, `{}`); !isErr {
 		t.Fatal("an unbound conversation accepted a call without a task id")
+	}
+}
+
+// TestProposeScopeStoresScopeOnlyDraft proves the pasted-policy entry point
+// writes the same draft table as propose_plan with only the scope section
+// filled: no graph node is created, and the reply says what the operator will
+// review.
+func TestProposeScopeStoresScopeOnlyDraft(t *testing.T) {
+	m, s, _ := memoryTestServer(t)
+	ctx := context.Background()
+	task, err := m.pg.CreateTask("scope from policy", "test the vendor portal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.pg.DeleteTask(task.ID) })
+
+	var before int
+	if err := m.pg.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+
+	in := fmt.Sprintf(`{"task_id":%d,"summary":"Vendor portal program, 2026","rules":[
+		{"effect":"exclude","kind":"root_domain","value":"thirdparty.example","note":"out of scope: third-party SaaS"},
+		{"effect":"exclude","kind":"keyword","value":"social engineering","note":"no social engineering"}]}`, task.ID)
+	out, isErr := callCuratorTool(t, drafterTool(t, s, "propose_scope"), in)
+	if isErr {
+		t.Fatalf("a valid scope-only proposal was refused: %s", out)
+	}
+	var reply struct {
+		DraftID      int64  `json:"draft_id"`
+		Summary      string `json:"summary"`
+		Goals        int    `json:"goals"`
+		Intents      int    `json:"intents"`
+		Hints        int    `json:"hints"`
+		Scope        int    `json:"scope"`
+		NeedsInclude bool   `json:"needs_include_approval"`
+	}
+	if err := json.Unmarshal([]byte(out), &reply); err != nil {
+		t.Fatalf("reply is not JSON: %v (%s)", err, out)
+	}
+	if reply.DraftID <= 0 || reply.Summary != "Vendor portal program, 2026" || reply.Scope != 2 ||
+		reply.Goals != 0 || reply.Intents != 0 || reply.Hints != 0 {
+		t.Fatalf("reply = %+v", reply)
+	}
+	if reply.NeedsInclude {
+		t.Fatalf("exclusions alone set needs_include_approval: %s", out)
+	}
+	draft, err := m.pg.GetPlanDraft(ctx, reply.DraftID)
+	if err != nil || draft == nil {
+		t.Fatalf("draft %d was not stored: %v", reply.DraftID, err)
+	}
+	if draft.TaskID != task.ID || draft.Status != "draft" || draft.Summary != "Vendor portal program, 2026" {
+		t.Fatalf("stored draft = %+v", draft)
+	}
+	var p plan.Proposal
+	if err := json.Unmarshal(draft.Proposal, &p); err != nil {
+		t.Fatalf("stored proposal is not a plan: %v", err)
+	}
+	if len(p.Scope) != 2 || p.Scope[0].Value != "thirdparty.example" ||
+		len(p.Goals)+len(p.Intents)+len(p.Hints) != 0 {
+		t.Fatalf("stored proposal = %+v", p)
+	}
+	var after int
+	if err := m.pg.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("propose_scope wrote %d graph nodes; it must only store the draft", after-before)
+	}
+}
+
+// TestProposeScopeRejectsEveryProblemAtOnce proves propose_scope runs the same
+// validator as propose_plan: every bad rule comes back in one reply, so the
+// model corrects them in one retry, and nothing is stored.
+func TestProposeScopeRejectsEveryProblemAtOnce(t *testing.T) {
+	m, s, _ := memoryTestServer(t)
+	task, err := m.pg.CreateTask("scope from policy", "test the vendor portal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.pg.DeleteTask(task.ID) })
+
+	in := fmt.Sprintf(`{"task_id":%d,"summary":"","rules":[
+		{"effect":"maybe","kind":"nope","value":""},
+		{"effect":"exclude","kind":"root_domain","value":""}]}`, task.ID)
+	out, isErr := callCuratorTool(t, drafterTool(t, s, "propose_scope"), in)
+	if !isErr {
+		t.Fatalf("an invalid scope proposal was accepted: %s", out)
+	}
+	for _, want := range []string{
+		"summary is empty",
+		`scope[0].effect is "maybe"`,
+		`scope[0].kind is "nope"`,
+		"scope[0].value is empty",
+		"scope[1].value is empty",
+		"call propose_scope once more",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("validation reply lost %q: %s", want, out)
+		}
+	}
+	var n int
+	if err := m.pg.QueryRow(`SELECT count(*) FROM plan_drafts WHERE task_id=$1`, task.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("an invalid scope proposal stored %d drafts", n)
+	}
+}
+
+// TestProposeScopeDraftAppliesExactlyTheListedRows proves a scope-only draft
+// goes through the existing apply transaction unchanged: an inclusion is still
+// refused without allow_include, and applying writes exactly the listed rows
+// and no graph nodes.
+func TestProposeScopeDraftAppliesExactlyTheListedRows(t *testing.T) {
+	m, s, _ := memoryTestServer(t)
+	ctx := context.Background()
+	task, err := m.pg.CreateTask("scope from policy", "test the vendor portal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.pg.DeleteTask(task.ID) })
+
+	in := fmt.Sprintf(`{"task_id":%d,"summary":"Vendor portal program","rules":[
+		{"effect":"exclude","kind":"root_domain","value":"vendor.example"},
+		{"effect":"include","kind":"subdomain","value":"api.vendor.example","note":"the policy names this host as in scope"},
+		{"effect":"exclude","kind":"ip","value":"10.9.9.9"},
+		{"effect":"exclude","kind":"keyword","value":"social engineering"}]}`, task.ID)
+	out, isErr := callCuratorTool(t, drafterTool(t, s, "propose_scope"), in)
+	if isErr {
+		t.Fatalf("a valid scope-only proposal was refused: %s", out)
+	}
+	var reply struct {
+		DraftID      int64 `json:"draft_id"`
+		NeedsInclude bool  `json:"needs_include_approval"`
+	}
+	if err := json.Unmarshal([]byte(out), &reply); err != nil {
+		t.Fatalf("reply is not JSON: %v (%s)", err, out)
+	}
+	if !reply.NeedsInclude {
+		t.Fatalf("a scope inclusion did not set needs_include_approval: %s", out)
+	}
+
+	if _, err := m.pg.ApplyPlanDraft(ctx, reply.DraftID, false); !errors.Is(err, db.ErrPlanDraftInclude) {
+		t.Fatalf("apply without allow_include = %v, want ErrPlanDraftInclude", err)
+	}
+	applied, err := m.pg.ApplyPlanDraft(ctx, reply.DraftID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Status != "applied" || len(applied.CreatedNodeIDs) != 0 {
+		t.Fatalf("applied = %+v, want applied with no nodes", applied)
+	}
+
+	rows, err := m.pg.Query(`SELECT kind, effect, coalesce(domain,''), coalesce(net::text,''), coalesce(value,'')
+FROM task_scope WHERE task_id=$1`, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]bool{}
+	for rows.Next() {
+		var kind, effect, domain, netVal, value string
+		if err := rows.Scan(&kind, &effect, &domain, &netVal, &value); err != nil {
+			t.Fatal(err)
+		}
+		got[kind+"|"+effect+"|"+domain+netVal+value] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"root_domain|exclude|vendor.example",
+		"subdomain|include|api.vendor.example",
+		"ip|exclude|10.9.9.9/32",
+		"keyword|exclude|social engineering",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("applied %d scope rows, want %d: %v", len(got), len(want), got)
+	}
+	for _, row := range want {
+		if !got[row] {
+			t.Errorf("scope row %q is missing: %v", row, got)
+		}
 	}
 }

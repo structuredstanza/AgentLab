@@ -17,13 +17,15 @@ import (
 // operator's plain-language approach into a plan proposal the operator reviews
 // and applies.
 //
-// The slice is propose-only. plan_context and list_tools read; propose_plan
-// validates and stores a draft row, and nothing here writes to the graph. The
-// apply endpoint owns that, so a proposal the validator refuses never becomes
-// work, and a stored draft is still only a suggestion.
+// The slice is propose-only. plan_context and list_tools read; propose_plan and
+// propose_scope validate and store a draft row, and nothing here writes to the
+// graph. The apply endpoint owns that, so a proposal the validator refuses never
+// becomes work, and a stored draft is still only a suggestion. The two write
+// tools share one store path and one draft table: propose_scope is propose_plan
+// with the scope section filled from a pasted policy.
 //
-// Binding is the security boundary: plan_context and propose_plan are seeded
-// into the tools table bound to "drafter" alone (seedDrafterTools). A host tool
+// Binding is the security boundary: plan_context, propose_plan and propose_scope
+// are seeded into the tools table bound to "drafter" alone (seedDrafterTools). A host tool
 // with no row is unfiltered by ToolResolve and would reach every agent, so the
 // row must exist. list_tools is the shared manifest catalog the worker and the
 // planner already hold, so the drafter is added to that binding instead of
@@ -31,7 +33,7 @@ import (
 // agents that run them.
 
 // drafterToolKeys are the tools the drafter chat agent is bound to by default.
-var drafterToolKeys = []string{"plan_context", "list_tools", "propose_plan"}
+var drafterToolKeys = []string{"plan_context", "list_tools", "propose_plan", "propose_scope"}
 
 // drafterTools is the drafter's tool set.
 func (s *Server) drafterTools() []actool.CoreTool {
@@ -39,6 +41,7 @@ func (s *Server) drafterTools() []actool.CoreTool {
 		s.toolPlanContext(),
 		s.toolListManifests(),
 		s.toolProposePlan(),
+		s.toolProposeScope(),
 	}
 }
 
@@ -223,44 +226,98 @@ func (s *Server) toolProposePlan() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			taskID, err := planTaskID(ctx, a.TaskID)
-			if err != nil {
-				return actool.Errorf(err.Error()), nil
-			}
-			a.TaskID = taskID
-			t, err := s.m.PG().GetTask(a.TaskID)
-			if err != nil {
-				return actool.Errorf("read task: " + err.Error()), nil
-			}
-			if t == nil {
-				return actool.Errorf(fmt.Sprintf("task %d not found", a.TaskID)), nil
-			}
 			var p plan.Proposal
 			if err := json.Unmarshal(a.Proposal, &p); err != nil {
 				return actool.Errorf("proposal is not a plan object: " + err.Error()), nil
 			}
-			ids, err := s.taskAssetIDs(t.ID)
-			if err != nil {
-				return actool.Errorf("read assets: " + err.Error()), nil
-			}
-			if errs := plan.Validate(p, plan.Context{AssetIDs: ids}); len(errs) > 0 {
-				var b strings.Builder
-				fmt.Fprintf(&b, "the proposal has %d problem(s); fix them all and call propose_plan once more:\n", len(errs))
-				for _, e := range errs {
-					fmt.Fprintf(&b, "- %v\n", e)
-				}
-				return actool.Errorf(strings.TrimRight(b.String(), "\n")), nil
-			}
-			draft, err := s.m.PG().CreatePlanDraft(ctx, t.ID, p.Summary, a.Proposal)
-			if err != nil {
-				return actool.Errorf("store draft: " + err.Error()), nil
-			}
-			return jsonResult(map[string]any{
-				"draft_id": draft.ID, "summary": p.Summary,
-				"goals": len(p.Goals), "intents": len(p.Intents), "hints": len(p.Hints), "scope": len(p.Scope),
-				"needs_include_approval": plan.HasInclude(p),
-			})
+			return s.storePlanDraft(ctx, "propose_plan", a.TaskID, p, a.Proposal)
 		})
+}
+
+// toolProposeScope is the pasted-policy entry point: the operator hands over a
+// program policy instead of describing an approach, and the model turns its
+// boundary statements into the draft's scope section. It is propose_plan with
+// goals, intents and hints left empty, so there is one validator, one draft
+// table and one apply path.
+func (s *Server) toolProposeScope() actool.CoreTool {
+	return wrTool("propose_scope",
+		"Turn a pasted program policy into the task's scope rules: one rule per line of the policy, an exclusion for everything it puts out of scope, an inclusion only for a host it names as in scope. "+
+			"Validates and stores them as the task's one pending draft - the same draft propose_plan writes - so nothing reaches the boundary until the operator applies it. "+
+			"A validation failure returns every problem at once; fix them all and call propose_scope once more. "+
+			"An inclusion widens the engagement and needs the operator's explicit approval (needs_include_approval=true in the reply); an exclusion only narrows it and does not.",
+		objSchema(map[string]any{
+			"task_id": map[string]any{"type": "integer", "description": "Task id the rules are for. Omit it when the conversation is bound to a task: the binding wins."},
+			"summary": map[string]any{"type": "string", "description": "One sentence on what the policy covers."},
+			"rules": map[string]any{
+				"type":        "array",
+				"description": "One rule per line of the policy: effect include or exclude, kind, value, and a note quoting the policy line it came from.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"effect": map[string]any{"type": "string", "enum": []string{"include", "exclude"}},
+						"kind":   map[string]any{"type": "string", "enum": []string{"company", "root_domain", "subdomain", "ip", "cidr", "icp", "keyword"}},
+						"value":  map[string]any{"type": "string"},
+						"note":   map[string]any{"type": "string"},
+					},
+					"required": []string{"effect", "kind", "value"},
+				},
+			},
+		}, "summary", "rules"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				TaskID  int64        `json:"task_id"`
+				Summary string       `json:"summary"`
+				Rules   []plan.Scope `json:"rules"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("bad input: " + err.Error()), nil
+			}
+			p := plan.Proposal{Summary: a.Summary, Scope: a.Rules}
+			raw, err := json.Marshal(p)
+			if err != nil {
+				return actool.Errorf("encode proposal: " + err.Error()), nil
+			}
+			return s.storePlanDraft(ctx, "propose_scope", a.TaskID, p, raw)
+		})
+}
+
+// storePlanDraft is the one write path both propose tools use: resolve the task
+// (the conversation binding wins), validate, store the task's pending draft.
+// raw is what the draft table keeps, so the review screen renders the model's
+// own proposal rather than a re-encoding of it.
+func (s *Server) storePlanDraft(ctx context.Context, tool string, asked int64, p plan.Proposal, raw json.RawMessage) (actool.Result, error) {
+	taskID, err := planTaskID(ctx, asked)
+	if err != nil {
+		return actool.Errorf(err.Error()), nil
+	}
+	t, err := s.m.PG().GetTask(taskID)
+	if err != nil {
+		return actool.Errorf("read task: " + err.Error()), nil
+	}
+	if t == nil {
+		return actool.Errorf(fmt.Sprintf("task %d not found", taskID)), nil
+	}
+	ids, err := s.taskAssetIDs(t.ID)
+	if err != nil {
+		return actool.Errorf("read assets: " + err.Error()), nil
+	}
+	if errs := plan.Validate(p, plan.Context{AssetIDs: ids}); len(errs) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "the proposal has %d problem(s); fix them all and call %s once more:\n", len(errs), tool)
+		for _, e := range errs {
+			fmt.Fprintf(&b, "- %v\n", e)
+		}
+		return actool.Errorf(strings.TrimRight(b.String(), "\n")), nil
+	}
+	draft, err := s.m.PG().CreatePlanDraft(ctx, t.ID, p.Summary, raw)
+	if err != nil {
+		return actool.Errorf("store draft: " + err.Error()), nil
+	}
+	return jsonResult(map[string]any{
+		"draft_id": draft.ID, "summary": p.Summary,
+		"goals": len(p.Goals), "intents": len(p.Intents), "hints": len(p.Hints), "scope": len(p.Scope),
+		"needs_include_approval": plan.HasInclude(p),
+	})
 }
 
 // taskAssetIDs is the set plan.Validate checks asset_ids against, so a draft

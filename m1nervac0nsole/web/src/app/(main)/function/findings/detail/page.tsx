@@ -26,6 +26,7 @@ import { getDateLocale } from "@/i18n/datetime";
 import { api } from "@/lib/api";
 import type { Finding, FindingStatus, Severity } from "@/lib/types";
 
+import { FindingScreenshots } from "../_components/finding-screenshots";
 import { FindingLineageView } from "./lineage";
 
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
@@ -190,6 +191,9 @@ function FindingDetailInner() {
                   ) : (
                     <p className="text-muted-foreground text-sm">{t("detail.evidenceEmpty")}</p>
                   )}
+                  <div className="mt-3">
+                    <FindingScreenshots items={finding.screenshots} />
+                  </div>
                 </CardContent>
               </Card>
               <FindingTrafficPanel

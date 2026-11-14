@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { ArrowUpIcon, BotIcon, Loader2Icon, Square } from "lucide-react";
+import { ArrowUpIcon, BotIcon, FileTextIcon, Loader2Icon, Square } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
@@ -43,6 +43,7 @@ function DrafterChat({ taskId }: { taskId: string }) {
   const [stopping, setStopping] = React.useState(false);
   const { messages, running, loaded, setRunning } = useConversationTail(conversation?.id ?? null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const inputRef = React.useRef<HTMLTextAreaElement | null>(null);
 
   // Reuse the newest drafter conversation bound to THIS task, so the pane
   // survives a reload without two engagements sharing one thread; a fresh one
@@ -121,6 +122,13 @@ function DrafterChat({ taskId }: { taskId: string }) {
     void send();
   }
 
+  // The policy entry point: prefill the starter line and focus the composer so
+  // the operator can paste the policy under it. Text already typed is kept.
+  function startScopeDraft() {
+    setInput((prev) => (prev.trim() ? prev : t("scopeStarter")));
+    inputRef.current?.focus();
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-start gap-2 border-b px-3 py-2">
@@ -153,8 +161,15 @@ function DrafterChat({ taskId }: { taskId: string }) {
       </ScrollArea>
 
       <div className="shrink-0 border-t p-2">
+        <div className="mb-2 flex">
+          <Button size="xs" variant="outline" onClick={startScopeDraft} disabled={sending}>
+            <FileTextIcon />
+            {t("scopeEntry")}
+          </Button>
+        </div>
         <div className="flex items-end gap-2">
           <Textarea
+            ref={inputRef}
             className="max-h-32 min-h-9 flex-1 resize-none text-xs"
             rows={1}
             value={input}

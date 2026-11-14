@@ -153,4 +153,29 @@ describe("PlanProposalPreview", () => {
     expect(screen.getByText("only a summary")).toBeTruthy();
     expect(screen.getByRole("button", { name: /apply/i })).toBeTruthy();
   });
+
+  // A draft from the pasted-policy entry point carries only the scope section:
+  // the preview must list the rules and still gate Apply on the inclusion.
+  it("renders a scope-only draft", () => {
+    const scopeOnly: PlanDraft = {
+      ...pending,
+      summary: "Vendor portal program",
+      proposal: {
+        summary: "Vendor portal program",
+        scope: [
+          { effect: "exclude", kind: "root_domain", value: "thirdparty.example", note: "out of scope" },
+          { effect: "include", kind: "subdomain", value: "api.vendor.example" },
+        ],
+      },
+    };
+    render(<PlanProposalPreview taskId="t-acme-web" draft={scopeOnly} />);
+
+    expect(screen.getByTestId("plan-goals")).toHaveTextContent("None");
+    expect(screen.getByTestId("plan-intents")).toHaveTextContent("None");
+    expect(screen.getByTestId("plan-hints")).toHaveTextContent("None");
+    const scope = screen.getByTestId("plan-scope");
+    expect(scope).toHaveTextContent("thirdparty.example");
+    expect(scope).toHaveTextContent("api.vendor.example");
+    expect(screen.getByRole("button", { name: "Apply plan" })).toBeDisabled();
+  });
 });

@@ -8,6 +8,27 @@ the prompt-level duplicate discipline is enough.
 
 Paths are under `m1nervac0nsole/`. Nothing here is implemented.
 
+## Status (2026-11-14)
+
+- **S3 shipped.** `db/scrub.go` caches the compiled matcher per identifier
+  (`targetIdentifierRE`, bounded at 4096, cleared on overflow). Measured:
+  `BenchmarkScrubTargetIdentifiers` 10,621 ns/op before, 4,946 ns/op after.
+- **S4 shipped.** `edgeAccent(sourceState, liveTarget)` in
+  `web/src/components/exploration-graph.tsx`: a live target still animates, a
+  done source is drawn at width 2.5 / opacity 1. Four vitest cases.
+- **S5 answered.** Of 20 `recall` calls in the recorded tasks, 11 passed an id
+  and 9 ran a query, so workers do pull a body after a title. Recorded in
+  `RSI.md`.
+- **S1 shipped.** `propose_scope` is bound to `drafter` alone and shares
+  `storePlanDraft` with `propose_plan`, so one validator, one draft table and one
+  apply path. The Plan tab has a "Draft scope rules" chip that prefills the
+  starter line.
+- **S2 shipped.** `findings.screenshots JSONB` plus `report_finding`'s
+  `screenshot_paths`, validated against `tasks/<id>/screenshots/` (relative, no
+  `..`, exists, regular file, 10 MB, 10 paths). The detail page renders a link
+  and a thumbnail under 1 MiB; the single-finding report names them under
+  `## Evidence`.
+
 ## Status
 
 | # | Item | Source | Effort |

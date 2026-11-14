@@ -88,6 +88,7 @@ This document records the changes in this edition. The format follows [Keep a Ch
 ### Findings
 
 - Ask for the attacker impact in one sentence. Every finding's evidence now opens with "As an attacker I could <outcome> against <asset>, which <business consequence>", and the report's Impact section opens with that sentence; a candidate that cannot fill it honestly is a hardening note, not a finding.
+- Render a screenshot as evidence instead of a pasted path. `report_finding` takes optional `screenshot_paths` (the paths `browser_screenshot` returns); each must be a workspace-relative file under `tasks/<taskId>/screenshots/`, a regular file of at most 10 MB, and at most 10 per finding - a bad path refuses the whole report and names it. The finding detail page links every screenshot and shows a thumbnail under 1 MB, and the exported report lists them under `## Evidence`.
 - Fold a repeated finding into its row.
 ### Toolbox
 
@@ -105,6 +106,7 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - The churn trigger de-duplicates per asset in memory for the life of a task, so after a restart the same asset can be announced once more. Accepted: the trigger is advisory, and a repeated hint costs a planner round rather than a wrong action.
 - One pending draft per task: a new proposal supersedes the previous one instead of piling up, and discarding is a status change, never a delete of what an applied draft created.
 - Bind the drafting conversation to its task. `plan_context` and `propose_plan` take the task from the thread rather than from the model, and an id that disagrees is refused with the bound task named - a model that guesses would otherwise store a draft against an engagement the operator never asked about, one click away from being applied. A conversation without a binding still requires the model to name the task.
+- Draft scope rules from a pasted program policy. `propose_scope` takes a summary and a list of rules and runs the same validator, the same draft table and the same apply transaction as `propose_plan`, so a scope-only draft is reviewed and applied exactly like a full plan; an inclusion still needs `allow_include`. The drafter prompt reads a policy into one rule per line, excludes what the policy puts out of scope, includes only hosts it names, never invents a host, and says what it could not parse. The plan tab's composer gains a **Draft scope rules** button that prefills the starter line and focuses the input for the paste.
 
 ### Console fixes
 

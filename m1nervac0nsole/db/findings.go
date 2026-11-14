@@ -38,6 +38,10 @@ type DBFinding struct {
 	// evidence directory instead of being stored inline. The caller resolves it
 	// (evidence.Store.ReadFindingEvidence); the row alone does not carry the bytes.
 	EvidencePath string
+	// Screenshots are workspace-relative paths of images recorded with the
+	// finding (browser_screenshot output); the UI resolves them against the
+	// workspace, the row carries no bytes.
+	Screenshots []string
 }
 
 // Finding triage states (findings.status).
@@ -128,7 +132,8 @@ const findingSelectCols = `f.id, f.task_id, f.node_id, f.vulnclass, COALESCE(f.n
 	       f.evidence, f.worker, f.asset_ids, COALESCE(f.status, 'pending'), f.created_at,
 	       COALESCE(t.description, '') AS task_description, f.evidence_version, f.report_evidence_version,
        COALESCE(f.evidence_path, ''),
- (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id)`
+ (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id),
+       COALESCE(f.screenshots, '[]')`
 
 // scanFindings materializes rows selected via findingSelectCols.
 func scanFindings(rows interface {
@@ -139,13 +144,14 @@ func scanFindings(rows interface {
 	var out []*DBFinding
 	for rows.Next() {
 		f := &DBFinding{}
-		var aidsJSON string
+		var aidsJSON, shotsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt, &f.TaskDescription,
-			&f.EvidenceVersion, &f.ReportEvidenceVersion, &f.EvidencePath, &f.TrafficCount); err != nil {
+			&f.EvidenceVersion, &f.ReportEvidenceVersion, &f.EvidencePath, &f.TrafficCount, &shotsJSON); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
+		_ = json.Unmarshal([]byte(shotsJSON), &f.Screenshots)
 		out = append(out, f)
 	}
 	return out, rows.Err()
@@ -532,14 +538,15 @@ func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, 
 	var out []*DBFinding
 	for rows.Next() {
 		f := &DBFinding{}
-		var aidsJSON string
+		var aidsJSON, shotsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
 			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.EvidencePath,
-			&f.TrafficCount, &f.Report); err != nil {
+			&f.TrafficCount, &shotsJSON, &f.Report); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
+		_ = json.Unmarshal([]byte(shotsJSON), &f.Screenshots)
 		out = append(out, f)
 	}
 	return out, rows.Err()
@@ -657,7 +664,7 @@ func (d *DB) FindingStats() (*FindingStats, error) {
 // it also selects `report` — that column is only needed on the detail page.
 func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 	f := &DBFinding{}
-	var aidsJSON string
+	var aidsJSON, shotsJSON string
 	err := d.QueryRow(`SELECT `+findingSelectCols+`, COALESCE(f.report, '')
 		FROM findings f
 		LEFT JOIN tasks t ON f.task_id = t.id
@@ -665,7 +672,7 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 		&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 		&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
 		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.EvidencePath,
-		&f.TrafficCount, &f.Report)
+		&f.TrafficCount, &shotsJSON, &f.Report)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -673,6 +680,7 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 		return nil, err
 	}
 	_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
+	_ = json.Unmarshal([]byte(shotsJSON), &f.Screenshots)
 	return f, nil
 }
 

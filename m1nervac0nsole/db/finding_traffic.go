@@ -330,6 +330,9 @@ type RecordFindingInput struct {
 	TaskID, ExplorationID, IntentID                      int64
 	VulnClass, Name, Severity, Summary, Evidence, Worker string
 	AssetIDs                                             []int64
+	// Screenshots are workspace-relative paths already validated by the caller
+	// (agent report_finding); the db layer only records them.
+	Screenshots []string
 }
 
 type RecordedFinding struct {
@@ -377,6 +380,10 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 		assets = []int64{}
 	}
 	assetsJSON, _ := json.Marshal(assets)
+	shotsJSON, _ := json.Marshal(in.Screenshots)
+	if in.Screenshots == nil {
+		shotsJSON = []byte("[]")
+	}
 
 	// A repeat of the same finding folds into the row that already exists. The
 	// planner and the workers converge on one vulnerability from different
@@ -403,7 +410,7 @@ WHERE task_id=$1 AND lower(name)=lower($2) AND asset_ids=$3::jsonb ORDER BY id L
 		// Refreshing the text must not touch it, or an unbound finding would
 		// pass a gate that exists to stop exactly that.
 		if _, err := tx.Exec(`UPDATE findings SET vulnclass=$2, severity=$3, summary=$4, evidence=$5, worker=$6,
-asset_ids=$7 WHERE id=$1`, existingID, in.VulnClass, in.Severity, in.Summary, in.Evidence, in.Worker, string(assetsJSON)); err != nil {
+asset_ids=$7, screenshots=$8 WHERE id=$1`, existingID, in.VulnClass, in.Severity, in.Summary, in.Evidence, in.Worker, string(assetsJSON), string(shotsJSON)); err != nil {
 			return nil, err
 		}
 		out.FindingID, out.NodeID = existingID, existingNode
@@ -448,8 +455,8 @@ VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string
 		}
 	}
 	out.Created = true
-	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids)
-VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(assetsJSON)).Scan(&out.FindingID); err != nil {
+	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,screenshots)
+VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(assetsJSON), string(shotsJSON)).Scan(&out.FindingID); err != nil {
 		return nil, err
 	}
 	// Register a push event within the **same transaction**: once committed, it guarantees that the vulnerability record is persisted and the push task exists.

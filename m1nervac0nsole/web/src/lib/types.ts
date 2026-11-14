@@ -501,6 +501,13 @@ export interface FindingAsset {
   label: string;
 }
 
+// FindingScreenshot is an image recorded with a finding; path is workspace-relative and
+// size is the file's byte length (0 when the file is gone).
+export interface FindingScreenshot {
+  path: string;
+  size: number;
+}
+
 export interface Finding {
   traffic_count?: number;
   evidence_version?: number;
@@ -522,6 +529,7 @@ export interface Finding {
   source_task_id?: string;
   inherited?: boolean;
   assets?: FindingAsset[];
+  screenshots?: FindingScreenshot[]; // Images recorded with the finding; detail endpoint only
   ts: string;
 }
 

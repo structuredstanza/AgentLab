@@ -109,8 +109,17 @@ func SingleFindingMarkdown(f *db.DBFinding, generatedAt time.Time) string {
 	if s := strings.TrimSpace(f.Summary); s != "" {
 		fmt.Fprintf(&b, "## Overview\n\n%s\n\n", s)
 	}
-	if e := strings.TrimSpace(f.Evidence); e != "" {
-		fmt.Fprintf(&b, "## Evidence\n\n```\n%s\n```\n\n", e)
+	if e := strings.TrimSpace(f.Evidence); e != "" || len(f.Screenshots) > 0 {
+		b.WriteString("## Evidence\n\n")
+		if e != "" {
+			fmt.Fprintf(&b, "```\n%s\n```\n\n", e)
+		}
+		for _, p := range f.Screenshots {
+			fmt.Fprintf(&b, "- Screenshot: `%s`\n", p)
+		}
+		if len(f.Screenshots) > 0 {
+			b.WriteString("\n")
+		}
 	}
 	if rep := strings.TrimSpace(f.Report); rep != "" {
 		b.WriteString("## Detailed report\n\n")
