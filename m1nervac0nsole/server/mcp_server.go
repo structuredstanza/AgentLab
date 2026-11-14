@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 )
@@ -111,6 +113,37 @@ func mcpToolAllowed(name string) bool {
 // by a scoped API token only. It is mounted outside requireAuth on purpose: a
 // JWT is not accepted here (AuthenticateAPIToken cannot resolve one), so an
 // external harness can never hold the admin session.
+
+// mcpRateLimit bounds one token to this many calls a minute. The row caps bound
+// a single response; without this a harness can call in a loop and pull the same
+// 200 findings sixty times a second.
+const mcpRateLimit = 120
+
+var mcpLimiter = struct {
+	sync.Mutex
+	hits map[int64][]time.Time
+}{hits: map[int64][]time.Time{}}
+
+// mcpAllow records one call and reports whether it is inside the window.
+func mcpAllow(tokenID int64) bool {
+	now := time.Now()
+	cutoff := now.Add(-time.Minute)
+	mcpLimiter.Lock()
+	defer mcpLimiter.Unlock()
+	kept := mcpLimiter.hits[tokenID][:0]
+	for _, t := range mcpLimiter.hits[tokenID] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= mcpRateLimit {
+		mcpLimiter.hits[tokenID] = kept
+		return false
+	}
+	mcpLimiter.hits[tokenID] = append(kept, now)
+	return true
+}
+
 func (s *Server) mcpRPC(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "POST only")
@@ -135,6 +168,11 @@ func (s *Server) mcpRPC(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, mcpResponse{JSONRPC: "2.0", Error: &mcpError{rpcInternalError, "internal error"}})
+		return
+	}
+	if !mcpAllow(token.ID) {
+		writeJSON(w, http.StatusTooManyRequests, mcpResponse{JSONRPC: "2.0",
+			Error: &mcpError{rpcInternalError, "rate limited: 120 calls a minute per token"}})
 		return
 	}
 	var req mcpRequest

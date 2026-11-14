@@ -335,3 +335,20 @@ func mcpAuditCount(t *testing.T, rig *mcpRig, tokenID int64) int {
 	}
 	return n
 }
+
+// The limiter is per token and per minute: the 121st call inside the window is
+// refused, and another token is unaffected.
+func TestMCPRateLimiter(t *testing.T) {
+	const a, b = int64(-901), int64(-902)
+	for i := 0; i < mcpRateLimit; i++ {
+		if !mcpAllow(a) {
+			t.Fatalf("call %d was refused inside the window", i+1)
+		}
+	}
+	if mcpAllow(a) {
+		t.Fatal("the call past the limit was allowed")
+	}
+	if !mcpAllow(b) {
+		t.Fatal("another token was refused because of the first")
+	}
+}

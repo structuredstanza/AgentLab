@@ -696,6 +696,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tokens", s.createAPIToken)
 	mux.HandleFunc("GET /api/tokens", s.listAPITokens)
 	mux.HandleFunc("DELETE /api/tokens/{id}", s.deleteAPIToken)
+	mux.HandleFunc("GET /api/tokens/audit", s.listMCPAudit)
 
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/stats", s.stats)
@@ -789,6 +790,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/scope/rules", s.taskScopeRuleList)
 	mux.HandleFunc("POST /api/tasks/{id}/scope/rules", s.taskScopeRuleAdd)
 	mux.HandleFunc("DELETE /api/tasks/{id}/scope/rules/{rid}", s.taskScopeRuleDelete)
+	mux.HandleFunc("PUT /api/tasks/{id}/scope/rules/{rid}", s.taskScopeRuleUpdate)
 	mux.HandleFunc("GET /api/tasks/{id}/goals", s.listGoals)                       // Target management: list all targets for this task
 	mux.HandleFunc("POST /api/tasks/{id}/goals", s.addGoal)                        // Goal management: manually add a goal (revive task)
 	mux.HandleFunc("PATCH /api/tasks/{id}/goals/{gid}", s.editGoal)                // Goal management: modify a goal (revive task)

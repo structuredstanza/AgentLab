@@ -137,3 +137,40 @@ func TestTaskScopeRuleValidation(t *testing.T) {
 		t.Fatal("deleting a missing rule succeeded")
 	}
 }
+
+// A rule written on a parent engagement binds the child it spawned, exactly as
+// an inherited scope row does: otherwise a worker on the child can reach a host
+// the parent explicitly ruled out.
+func TestTaskScopeRulesAreInheritedFromSourceTasks(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	parent, err := d.CreateTask("scope rules parent", "parent engagement", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(parent.ID) })
+	child, err := d.CreateTask("scope rules child", "child engagement", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(child.ID) })
+	if _, err := d.Exec(`INSERT INTO task_relations(task_id, source_task_id) VALUES ($1,$2)`, child.ID, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	assets := d.Assets()
+	if _, err := assets.AddTaskScopeRule(parent.ID, "exclude", "parent-blocked.invalid", "parent ruled it out"); err != nil {
+		t.Fatal(err)
+	}
+	checker := NewTaskScopeChecker(assets, child.ID)
+	if out, _ := checker.Judge("parent-blocked.invalid"); !out {
+		t.Fatal("the child did not inherit the parent's rule")
+	}
+	if out, _ := checker.Judge("unrelated.invalid"); out {
+		t.Fatal("an unrelated host was blocked")
+	}
+}

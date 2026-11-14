@@ -82,3 +82,36 @@ func (s *Server) taskScopeRuleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
+
+func (s *Server) taskScopeRuleUpdate(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	as := s.m.Assets()
+	if as == nil {
+		writeErr(w, 503, errAssetStoreDisabled)
+		return
+	}
+	var body struct {
+		Effect  string `json:"effect"`
+		Pattern string `json:"pattern"`
+		Note    string `json:"note"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, 400, "invalid JSON")
+		return
+	}
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	ruleID, err := strconv.ParseInt(r.PathValue("rid"), 10, 64)
+	if err != nil {
+		writeErr(w, 400, "invalid rule id")
+		return
+	}
+	if err := as.UpdateTaskScopeRule(taskID, ruleID, body.Effect, body.Pattern, body.Note); err != nil {
+		writeErr(w, 404, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}

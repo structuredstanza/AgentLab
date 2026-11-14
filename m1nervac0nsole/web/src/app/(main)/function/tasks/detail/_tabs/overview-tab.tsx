@@ -116,6 +116,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [ruleNote, setRuleNote] = React.useState("");
   const [ruleBusy, setRuleBusy] = React.useState(false);
   const [ruleErr, setRuleErr] = React.useState("");
+  const [editingRuleId, setEditingRuleId] = React.useState<number | null>(null);
   // Per-model token usage (taken from the always-on llm_usage metering ledger, so it is accurate per call).
   const [modelTokens, setModelTokens] = React.useState<ModelTokenStat[]>([]);
   // Goal management: goal list + add form + inline edit state.
@@ -174,7 +175,12 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     setRuleBusy(true);
     setRuleErr("");
     try {
-      await api.addTaskScopeRule(taskId, ruleEffect, pattern, ruleNote.trim());
+      if (editingRuleId !== null) {
+        await api.updateTaskScopeRule(taskId, editingRuleId, ruleEffect, pattern, ruleNote.trim());
+      } else {
+        await api.addTaskScopeRule(taskId, ruleEffect, pattern, ruleNote.trim());
+      }
+      setEditingRuleId(null);
       setRulePattern("");
       setRuleNote("");
       await loadScopeRules();
@@ -183,6 +189,19 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     } finally {
       setRuleBusy(false);
     }
+  };
+
+  const startEditRule = (rule: TaskScopeRule) => {
+    setEditingRuleId(rule.id);
+    setRuleEffect(rule.effect);
+    setRulePattern(rule.pattern);
+    setRuleNote(rule.note);
+  };
+
+  const cancelEditRule = () => {
+    setEditingRuleId(null);
+    setRulePattern("");
+    setRuleNote("");
   };
 
   const removeScopeRule = async (id: number) => {
@@ -988,8 +1007,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 disabled={ruleBusy || !rulePattern.trim()}
                 onClick={() => void addScopeRule()}
               >
-                <PlusIcon className="size-3.5" /> {t("add")}
+                <PlusIcon className="size-3.5" /> {editingRuleId !== null ? t("save") : t("add")}
               </Button>
+              {editingRuleId !== null && (
+                <Button size="sm" variant="ghost" onClick={cancelEditRule}>
+                  {t("cancel")}
+                </Button>
+              )}
               {ruleErr && <span className="text-destructive text-xs">{ruleErr}</span>}
             </div>
           </div>

@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
-import type { APIToken, Task } from "@/lib/types";
+import type { APIToken, MCPAuditRow, Task } from "@/lib/types";
 
 // A token is the only credential an external harness gets: read-only, scoped to
 // one task, expiring, revocable. The plaintext is shown once, at mint time.
@@ -23,6 +23,7 @@ export default function TokensPage() {
   const [ttlHours, setTtlHours] = React.useState(24);
   const [busy, setBusy] = React.useState(false);
   const [minted, setMinted] = React.useState<string>("");
+  const [audit, setAudit] = React.useState<MCPAuditRow[]>([]);
 
   const load = React.useCallback(() => {
     api
@@ -33,6 +34,10 @@ export default function TokensPage() {
 
   React.useEffect(() => {
     load();
+    api
+      .mcpAudit()
+      .then(setAudit)
+      .catch(() => setAudit([]));
     api
       .tasks()
       .then((resp) => {
@@ -174,6 +179,22 @@ export default function TokensPage() {
             </div>
           );
         })}
+      </div>
+
+      <div className="flex min-h-0 flex-col gap-2">
+        <h2 className="font-medium text-sm">{t("auditTitle")}</h2>
+        <p className="text-muted-foreground text-xs">{t("auditHint")}</p>
+        <div className="flex flex-col divide-y rounded-md border">
+          {audit.length === 0 && <p className="p-3 text-muted-foreground text-sm">{t("auditEmpty")}</p>}
+          {audit.map((row) => (
+            <div key={row.id} className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs">
+              <code className="font-mono">{row.tool}</code>
+              <span className="text-muted-foreground">{row.token_name || `#${row.token_id}`}</span>
+              <span className="text-muted-foreground">task #{row.task_id}</span>
+              <span className="ml-auto text-muted-foreground">{new Date(row.created_at).toLocaleString()}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

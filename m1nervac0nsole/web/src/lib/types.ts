@@ -1278,6 +1278,17 @@ export interface APIToken {
   last_used_at?: string;
 }
 
+// One recorded MCP tool call: who called what, when.
+export interface MCPAuditRow {
+  id: number;
+  token_id: number;
+  token_name: string;
+  task_id: number;
+  tool: string;
+  args: string;
+  created_at: string;
+}
+
 export interface APITokenCreated extends APIToken {
   token: string; // plaintext, returned once at mint time
 }

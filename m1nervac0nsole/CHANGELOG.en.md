@@ -58,6 +58,9 @@ This document records the changes in this edition. The format follows [Keep a Ch
 ### MCP server and API tokens
 
 - Give an external harness a credential that cannot do more than read one engagement. `POST /api/tokens` mints a token bound to one task, expiring (1-720 hours), revocable, stored as a sha256 hash and shown exactly once; `GET`/`DELETE /api/tokens` list and revoke. The new **API tokens** page mints and revokes them.
+- Inherit rules the way rows are inherited: a rule written on a parent engagement binds the child it spawned, so a worker on the child cannot reach a host the parent ruled out.
+- Bound and expose the audit trail: `GET /api/tokens/audit` lists the newest calls with the token's name and task, rows older than 30 days are pruned when a token is minted, and `/mcp` is limited to 120 calls a minute per token, because the row caps bound one response, not a loop.
+- Edit a rule in place (`PUT /api/tasks/{id}/scope/rules/{rid}`, and a pencil in the overview) instead of deleting and re-adding it.
 - Serve the engagement over MCP. `POST /mcp` speaks JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`) with four read-only tools - `list_assets`, `get_asset`, `list_findings`, `list_scope` - and the allow-list is enforced in both `tools/list` and `tools/call`, so a caller cannot be told about a tool it may not use. Every accepted call writes one `mcp_audit` row. A JWT is refused: only an API token opens this endpoint. Asking for another task's id returns an empty result rather than an error, so a token cannot probe for engagements it does not hold. There is no write tool.
 
 ### Findings

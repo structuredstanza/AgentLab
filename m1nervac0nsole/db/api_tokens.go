@@ -56,6 +56,8 @@ VALUES ($1,$2,$3,$4) RETURNING id, created_at`, name, taskID, hashAPIToken(plain
 	if err != nil {
 		return "", nil, fmt.Errorf("create api token: %w", err)
 	}
+	// Minting is rare and the audit table grows per call, so bound it here.
+	_, _ = d.PruneMCPAudit(ctx, 30*24*time.Hour)
 	return plaintext, row, nil
 }
 
@@ -116,4 +118,53 @@ FROM api_tokens WHERE token_hash=$1`, hashAPIToken(plaintext)).
 	now := time.Now()
 	t.LastUsedAt = &now
 	return &t, nil
+}
+
+// MCPAuditRow is one recorded tool call: who called what, when.
+type MCPAuditRow struct {
+	ID        int64     `json:"id"`
+	TokenID   int64     `json:"token_id"`
+	TokenName string    `json:"token_name"`
+	TaskID    int64     `json:"task_id"`
+	Tool      string    `json:"tool"`
+	Args      string    `json:"args"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ListMCPAudit returns the newest calls across every token, joined with the
+// token's name and task so the operator can read the trail without a second
+// lookup.
+func (d *DB) ListMCPAudit(ctx context.Context, limit int) ([]MCPAuditRow, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := d.QueryContext(ctx, `
+SELECT a.id, a.token_id, COALESCE(t.name,''), COALESCE(t.task_id,0), a.tool, a.args::text, a.created_at
+FROM mcp_audit a LEFT JOIN api_tokens t ON t.id=a.token_id
+ORDER BY a.created_at DESC, a.id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list mcp audit: %w", err)
+	}
+	defer rows.Close()
+	out := []MCPAuditRow{}
+	for rows.Next() {
+		var r MCPAuditRow
+		if err := rows.Scan(&r.ID, &r.TokenID, &r.TokenName, &r.TaskID, &r.Tool, &r.Args, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("list mcp audit: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// PruneMCPAudit drops audit rows older than the retention window. The table
+// grows per call, so minting a token is a natural, rare moment to bound it.
+func (d *DB) PruneMCPAudit(ctx context.Context, olderThan time.Duration) (int64, error) {
+	res, err := d.ExecContext(ctx, `DELETE FROM mcp_audit WHERE created_at < now() - $1::interval`,
+		fmt.Sprintf("%d seconds", int64(olderThan.Seconds())))
+	if err != nil {
+		return 0, fmt.Errorf("prune mcp audit: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }

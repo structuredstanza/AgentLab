@@ -686,6 +686,8 @@
         "patternPlaceholder": "*.corp.example or 10.0.0.0/8",
         "noteLabel": "Note",
         "notePlaceholder": "why (optional)",
+        "save": "Save",
+        "cancel": "Cancel",
         "empty": "No test scope. Once added, it can serve as the denominator for asset coverage."
       },
       "heartbeat": {
@@ -2076,7 +2078,10 @@
     "expired": "expired",
     "revoked": "revoked",
     "expires": "expires {when}",
-    "lastUsed": "last used {when}"
+    "lastUsed": "last used {when}",
+    "auditTitle": "Recent MCP calls",
+    "auditHint": "One row per accepted tools/call, newest first. Rejected calls and rate-limited ones are not recorded.",
+    "auditEmpty": "No calls yet."
   },
   "toolboxPage": {
     "title": "Toolbox",

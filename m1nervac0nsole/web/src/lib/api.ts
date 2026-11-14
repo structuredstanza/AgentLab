@@ -78,6 +78,7 @@ import type {
   LLMRetryPolicy,
   LLMTask,
   LLMUsageResponse,
+  MCPAuditRow,
   MCPServer,
   MCPTool,
   MemoryPreview,
@@ -513,6 +514,8 @@ export const api = {
   addTaskScopeRule: (id: string, effect: "include" | "exclude", pattern: string, note: string) =>
     post<{ id: number }>(`/tasks/${id}/scope/rules`, { effect, pattern, note }),
   deleteTaskScopeRule: (id: string, ruleId: number) => del<{ ok: boolean }>(`/tasks/${id}/scope/rules/${ruleId}`),
+  updateTaskScopeRule: (id: string, ruleId: number, effect: "include" | "exclude", pattern: string, note: string) =>
+    put<{ ok: boolean }>(`/tasks/${id}/scope/rules/${ruleId}`, { effect, pattern, note }),
   // Intents / facts / findings associated with an asset in this task (used by the graph node drawer).
   taskAssetRefs: (id: string, assetId: number) => get<CoverageAssetRefs>(`/tasks/${id}/asset-refs?asset_id=${assetId}`),
 
@@ -1188,6 +1191,7 @@ export const api = {
   createAPIToken: (name: string, task_id: string, ttl_hours: number) =>
     post<APITokenCreated>("/tokens", { name, task_id: Number(task_id), ttl_hours }),
   revokeAPIToken: (id: number) => del<{ ok: boolean }>(`/tokens/${id}`),
+  mcpAudit: (limit = 100) => get<{ items: MCPAuditRow[] }>(`/tokens/audit?limit=${limit}`).then((r) => arr(r.items)),
 
   // ---- mcp ----
   mcpServers: () => get<{ servers: MCPServer[] }>("/mcp").then((r) => arr(r.servers)),
