@@ -7,6 +7,16 @@ against the plan's own promises. Nothing here is implemented.
 Paths are under `m1nervac0nsole/`. Every item names the file it changes, the test
 that proves it, and what an operator would observe.
 
+## Status (2026-11-14): H1-H8, H10-H12 shipped; H9 and H13 documented
+
+- H1 uses the per-task inflight counter rather than `e.work`: that map is keyed by
+  intent and carries no task id, and widening it was outside the slice.
+- H5 blocks with `Fetch.failRequest {errorReason: "BlockedByClient"}` and caches
+  the host verdict for a minute; `data:`, `blob:` and `about:` are allowed because
+  they never reach the network.
+- H9 (iframes) is not built: the skill states the limit instead.
+- H13 is a skill note, not code.
+
 ## Status
 
 | # | Issue | Severity | Effort |

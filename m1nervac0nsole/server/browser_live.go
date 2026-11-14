@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,13 +17,43 @@ import (
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 )
 
-// The live view shows the task's browser at a fixed emulated size. 1280x800 is
-// the size the screencast sets, so one frame pixel is one CSS pixel and a click
-// needs no scale factor beyond the rendered image.
+// The live view shows the task's browser at the viewer's size. The screencast
+// sets the emulated viewport to that size, so one frame pixel is one CSS pixel
+// and a click needs no scale factor beyond the rendered image. The bounds keep
+// a hostile or broken client from asking for a viewport the page cannot render.
 const (
-	liveViewportWidth  = 1280
-	liveViewportHeight = 800
+	liveViewportWidth   = 1280
+	liveViewportHeight  = 800
+	liveViewportQuality = 60
+
+	liveViewportMinWidth   = 320
+	liveViewportMaxWidth   = 1920
+	liveViewportMinHeight  = 240
+	liveViewportMaxHeight  = 1200
+	liveViewportMinQuality = 20
+	liveViewportMaxQuality = 90
 )
+
+// liveViewportSize reads the viewer's requested geometry. An absent or
+// unparseable value takes the default; a parsed one is clamped, so the size the
+// stream reports is always the size it uses.
+func liveViewportSize(r *http.Request) (width, height, quality int) {
+	q := r.URL.Query()
+	return clampQueryInt(q.Get("width"), liveViewportWidth, liveViewportMinWidth, liveViewportMaxWidth),
+		clampQueryInt(q.Get("height"), liveViewportHeight, liveViewportMinHeight, liveViewportMaxHeight),
+		clampQueryInt(q.Get("quality"), liveViewportQuality, liveViewportMinQuality, liveViewportMaxQuality)
+}
+
+func clampQueryInt(raw string, def, lo, hi int) int {
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	return min(max(n, lo), hi)
+}
 
 // liveDriver is the driver surface the live view uses. It is an interface so
 // the handlers can be exercised without Chromium.
@@ -31,6 +62,7 @@ type liveDriver interface {
 	StopScreencast(ctx context.Context) error
 	Send(ctx context.Context, method string, params any) (json.RawMessage, error)
 	URL() string
+	Title() string
 	PendingDialog() (browser.Dialog, bool)
 	AnswerDialog(ctx context.Context, accept bool, promptText string) error
 	Closed() bool
@@ -146,8 +178,9 @@ func newOperatorToken() string {
 }
 
 // browserStream is the operator's live view: an SSE stream of JPEG frames plus
-// the viewport and any parked dialog. Opening it claims the task's single
-// operator slot; releasing it (DELETE, or disconnect) frees the slot.
+// the viewport, the page it shows, and any parked dialog. Opening it claims the
+// task's single operator slot; releasing it (DELETE, or disconnect) frees the
+// slot.
 func (s *Server) browserStream(w http.ResponseWriter, r *http.Request) {
 	task, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
@@ -179,9 +212,11 @@ func (s *Server) browserStream(w http.ResponseWriter, r *http.Request) {
 	defer liveRelease(task.ID, token)
 
 	frames := make(chan browserLiveFrame, 1)
+	width, height, quality := liveViewportSize(r)
 	if err := drv.StartScreencast(ctx, browser.ScreencastOptions{
-		Width:  liveViewportWidth,
-		Height: liveViewportHeight,
+		Width:   width,
+		Height:  height,
+		Quality: quality,
 	}, func(seq int, jpeg []byte) {
 		select {
 		case frames <- browserLiveFrame{Seq: seq, Data: base64.StdEncoding.EncodeToString(jpeg)}:
@@ -212,10 +247,25 @@ func (s *Server) browserStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 	send("viewport", map[string]any{
-		"width":  liveViewportWidth,
-		"height": liveViewportHeight,
+		"width":  width,
+		"height": height,
 		"token":  token,
 	})
+
+	// The page event names the page the operator is looking at. It is emitted
+	// once on start and whenever the URL or title changes, so the tab labels
+	// the frame without a second request. Polling rides the existing tick.
+	var pageKey string
+	emitPage := func() {
+		url, title := drv.URL(), drv.Title()
+		key := url + "\x00" + title
+		if key == pageKey {
+			return
+		}
+		pageKey = key
+		send("page", browserLivePageEvent{URL: url, Title: title})
+	}
+	emitPage()
 
 	// A dialog is parked for the operator, not the agent, so the view reports
 	// it whenever it appears or is answered. Polling is enough: a dialog blocks
@@ -256,6 +306,7 @@ func (s *Server) browserStream(w http.ResponseWriter, r *http.Request) {
 			// Watching is a use of the session: keep the idle reaper from
 			// closing a browser the operator is looking at.
 			s.touchBrowser(task.ID)
+			emitPage()
 			emitDialog()
 			fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
@@ -268,6 +319,12 @@ func (s *Server) browserStream(w http.ResponseWriter, r *http.Request) {
 type browserLiveFrame struct {
 	Seq  int    `json:"seq"`
 	Data string `json:"data"`
+}
+
+// browserLivePageEvent names the page the operator is looking at.
+type browserLivePageEvent struct {
+	URL   string `json:"url"`
+	Title string `json:"title"`
 }
 
 // browserLiveDialogEvent reports a parked dialog, or its answer when Open is
@@ -330,11 +387,42 @@ func (s *Server) browserInput(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, refusal)
 		return
 	}
+	pageURL := drv.URL()
 	if _, err := drv.Send(r.Context(), method, params); err != nil {
 		writeErr(w, http.StatusBadGateway, "the browser did not accept the input: "+err.Error())
 		return
 	}
+	s.auditOperatorInput(task, in.Kind, pageURL)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// liveInputAuditEvery is the window in which a task's operator input is one
+// activity row. A drag or a typed word is a burst of CDP commands; the feed
+// wants the action, not every event.
+const liveInputAuditEvery = 2 * time.Second
+
+// liveInputAudit throttles operator-input rows per task. A package-level table
+// keeps the audit out of Server, which this feature only touches to add routes.
+var liveInputAudit = struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}{last: map[string]time.Time{}}
+
+// auditOperatorInput writes the task feed row for an operator input burst. The
+// row names the kind and the page, never the text or key: the URL is enough to
+// reconstruct what was driven, and a typed password must not land in the feed.
+func (s *Server) auditOperatorInput(task *Task, kind, pageURL string) {
+	now := time.Now()
+	liveInputAudit.mu.Lock()
+	last := liveInputAudit.last[task.ID]
+	if !last.IsZero() && now.Sub(last) < liveInputAuditEvery {
+		liveInputAudit.mu.Unlock()
+		return
+	}
+	liveInputAudit.last[task.ID] = now
+	liveInputAudit.mu.Unlock()
+	s.engine.emitActivity(task, db.Activity{Kind: "text", Worker: "operator",
+		Summary: "operator " + kind + " on " + pageURL})
 }
 
 // browserDialog answers the parked dialog. It needs the operator slot for the

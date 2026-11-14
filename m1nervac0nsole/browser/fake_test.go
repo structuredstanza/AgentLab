@@ -34,6 +34,7 @@ type fakeEvent struct {
 func newFakeConn() *fakeConn {
 	return &fakeConn{
 		replies: map[string]any{
+			"Runtime.enable": map[string]any{},
 			"Page.getNavigationHistory": map[string]any{
 				"currentIndex": 0,
 				"entries": []any{

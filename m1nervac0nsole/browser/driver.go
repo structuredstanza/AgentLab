@@ -46,6 +46,12 @@ type Options struct {
 	// ProxyServer is the recording proxy URL. When set, certificate errors are
 	// ignored because the proxy presents its own CA.
 	ProxyServer string
+	// AllowRequest judges every request before the browser sends it. Nil
+	// allows everything, which keeps the package usable without a scope. An
+	// error blocks the request and its host is reported by BlockedRequests.
+	AllowRequest func(rawURL string) error
+	// DownloadDir is where downloads land. Empty leaves the browser's default.
+	DownloadDir string
 }
 
 // Driver is one browser process and the page it is attached to.
@@ -66,6 +72,17 @@ type Driver struct {
 	lastAction time.Time
 	closed     bool
 
+	allowRequest func(string) error
+	blocked      []string
+	blockedSeen  map[string]bool
+
+	console    []ConsoleEntry
+	consoleSeq int64
+
+	downloadDir string
+	downloads   map[string]string
+	downloaded  []string
+
 	recoverMu sync.Mutex
 }
 
@@ -80,6 +97,10 @@ func Launch(ctx context.Context, opts Options) (*Driver, error) {
 	d := newDriver(nil, func(ctx context.Context) (conn, error) {
 		return startPipe(ctx, opts)
 	})
+	d.mu.Lock()
+	d.allowRequest = opts.AllowRequest
+	d.downloadDir = absPath(opts.DownloadDir)
+	d.mu.Unlock()
 	c, err := d.launch(ctx)
 	if err != nil {
 		return nil, err
@@ -96,7 +117,23 @@ func Launch(ctx context.Context, opts Options) (*Driver, error) {
 		closeConn(c)
 		return nil, fmt.Errorf("browser: launch: %w", err)
 	}
+	if err := d.enableCapabilities(ctx, c); err != nil {
+		closeConn(c)
+		return nil, fmt.Errorf("browser: launch: %w", err)
+	}
 	return d, nil
+}
+
+// enableCapabilities turns on the per-driver event surfaces after every
+// (re)launch: console capture always, interception and downloads when asked.
+func (d *Driver) enableCapabilities(ctx context.Context, c conn) error {
+	if _, err := c.Send(ctx, "Runtime.enable", nil); err != nil {
+		return err
+	}
+	if err := d.enableFetch(ctx, c); err != nil {
+		return err
+	}
+	return d.enableDownloads(ctx, c)
 }
 
 // newDriver wires the driver's own event handling. Tests call it directly with
@@ -281,6 +318,16 @@ func (d *Driver) handleEvent(method string, params json.RawMessage) {
 		d.dialogOpening(params)
 	case "Page.javascriptDialogClosed":
 		d.dialogClosed()
+	case "Fetch.requestPaused":
+		d.requestPaused(params)
+	case "Runtime.consoleAPICalled":
+		d.consoleAPICalled(params)
+	case "Runtime.exceptionThrown":
+		d.exceptionThrown(params)
+	case "Browser.downloadWillBegin":
+		d.downloadWillBegin(params)
+	case "Browser.downloadProgress":
+		d.downloadProgress(params)
 	}
 }
 
@@ -329,6 +376,10 @@ func (d *Driver) recover(ctx context.Context, failed conn) error {
 		return fmt.Errorf("browser: relaunch: %w", err)
 	}
 	if _, err := nc.Send(ctx, "DOM.enable", nil); err != nil {
+		closeConn(nc)
+		return fmt.Errorf("browser: relaunch: %w", err)
+	}
+	if err := d.enableCapabilities(ctx, nc); err != nil {
 		closeConn(nc)
 		return fmt.Errorf("browser: relaunch: %w", err)
 	}
@@ -413,6 +464,24 @@ func newPipeConn(out io.WriteCloser, in io.ReadCloser, stderr *tailBuffer) *pipe
 // Send speaks CDP on the attached page session.
 func (p *pipeConn) Send(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	return p.send(ctx, method, params, p.sessionID())
+}
+
+// SendBrowser speaks CDP on the browser target, where Browser.* lives.
+func (p *pipeConn) SendBrowser(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	return p.send(ctx, method, params, "")
+}
+
+// browserSender is a conn that can address the browser target. The fake used
+// by tests does not need it: sendBrowser falls back to the page session.
+type browserSender interface {
+	SendBrowser(ctx context.Context, method string, params any) (json.RawMessage, error)
+}
+
+func sendBrowser(ctx context.Context, c conn, method string, params any) (json.RawMessage, error) {
+	if b, ok := c.(browserSender); ok {
+		return b.SendBrowser(ctx, method, params)
+	}
+	return c.Send(ctx, method, params)
 }
 
 // On registers an event handler. Each event runs in its own goroutine so a

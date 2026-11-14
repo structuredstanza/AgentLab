@@ -10,7 +10,8 @@ one with the `browser_driver` setting:
 
 - `native` (the built-in driver): tools named `browser_open`, `browser_navigate`,
   `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`,
-  `browser_select`, `browser_wait`, `browser_screenshot`, `browser_upload`.
+  `browser_select`, `browser_wait`, `browser_screenshot`, `browser_upload`,
+  `browser_log` (console and JS errors, with a cursor) and `browser_close`.
 - `mcp` (the Playwright server): tools named `mcp__browser__browser_*`.
 
 Both are available directly - no skill load is needed to call them - and both
@@ -37,6 +38,16 @@ Obscura is the alternative for stealth fetches, but it bypasses the recording
 proxy and its CA. When the traffic has to become evidence, use this browser, not
 Obscura.
 
+## Limits of the native driver
+
+- `browser_select` drives a native `<select>` element. A custom dropdown (a div
+  that opens a list) needs a click on the trigger and a click on the option,
+  each followed by a new snapshot.
+- The snapshot covers the top-level document. Content inside an iframe is not
+  listed, so a login rendered in one cannot be driven; say so in a fact rather
+  than guessing at refs that are not there.
+- There is no `browser_eval`. Use Bash for anything that needs a script.
+
 ## The snapshot-then-act loop
 
 The browser is driven by element references from a snapshot, not by selectors.
@@ -44,17 +55,19 @@ The browser is driven by element references from a snapshot, not by selectors.
 1. `browser_navigate` to the URL. The result reports the page URL and title.
 2. `browser_snapshot` to read the page as an accessibility tree. Each element
    carries a `ref` such as `e12`.
-3. Act on exactly one element: `browser_click`, `browser_type`,
-   `browser_select_option`, `browser_hover` or `browser_press_key`, passing the
-   `ref` (and the element description the snapshot showed).
+3. Act on exactly one element, passing the `ref` (and the element description
+   the snapshot showed). Native: `browser_click`, `browser_type`,
+   `browser_select`, `browser_press`. MCP: `browser_click`, `browser_type`,
+   `browser_select_option`, `browser_hover`, `browser_press_key`.
 4. Take a **new snapshot before the next action**. A navigation, a click that
    rerenders the page, or any DOM change invalidates the old refs; reusing one
    fails or, worse, acts on the wrong element. Never batch several actions
    against refs from a single snapshot.
 5. Use `browser_wait_for` when the page needs time (text to appear, an element
    to go away), then snapshot again.
-6. `browser_take_screenshot` when a visual state matters; `browser_tabs` to
-   inspect or close extra tabs; `browser_close` when the flow is finished.
+6. `browser_take_screenshot` (native: `browser_screenshot`) when a visual state
+   matters, and `browser_close` when the flow is finished: the session otherwise
+   lives until the idle reaper, holding a browser process.
 
 Record what the page showed as facts as you go: the URL, the form fields, the
 responses that matter. A browser session leaves no useful trace for the next

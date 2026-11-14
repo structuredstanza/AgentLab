@@ -19,13 +19,21 @@ func TestIntegrationRealChromium(t *testing.T) {
 	if os.Getenv("M1NERVAC0NSOLE_BROWSER_INTEGRATION") != "1" {
 		t.Skip("set M1NERVAC0NSOLE_BROWSER_INTEGRATION=1 to drive a real Chromium")
 	}
-	exe := "/opt/ms-playwright/current/chrome"
+	// CI installs a browser and names it here; the image's stable link and the
+	// guest's own binary are the local fallbacks.
+	exe := os.Getenv("M1NERVAC0NSOLE_CHROMIUM")
+	if exe == "" {
+		exe = "/opt/ms-playwright/current/chrome"
+	}
 	if _, err := os.Stat(exe); err != nil {
 		found, err := exec.LookPath("chromium")
-		if err != nil {
+		if err == nil {
+			exe = found
+		} else if found, err = exec.LookPath("google-chrome"); err == nil {
+			exe = found
+		} else {
 			t.Skip("no Chromium binary")
 		}
-		exe = found
 	}
 
 	page := `<!doctype html><html><head><title>Smoke</title></head><body>

@@ -26,6 +26,8 @@ import (
 type fakeLiveDriver struct {
 	mu      sync.Mutex
 	url     string
+	title   string
+	opts    browser.ScreencastOptions
 	sent    []fakeLiveCall
 	onFrame func(int, []byte)
 	stopped bool
@@ -44,10 +46,11 @@ type fakeLiveAnswer struct {
 	text   string
 }
 
-func (f *fakeLiveDriver) StartScreencast(_ context.Context, _ browser.ScreencastOptions, onFrame func(int, []byte)) error {
+func (f *fakeLiveDriver) StartScreencast(_ context.Context, opts browser.ScreencastOptions, onFrame func(int, []byte)) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = false
+	f.opts = opts
 	f.onFrame = onFrame
 	return nil
 }
@@ -71,6 +74,18 @@ func (f *fakeLiveDriver) URL() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.url
+}
+
+func (f *fakeLiveDriver) Title() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.title
+}
+
+func (f *fakeLiveDriver) lastOpts() browser.ScreencastOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opts
 }
 
 func (f *fakeLiveDriver) PendingDialog() (browser.Dialog, bool) {
@@ -163,6 +178,17 @@ func (r *sseReader) next(t *testing.T) sseEvent {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for an SSE event")
 		return sseEvent{}
+	}
+}
+
+// nextWithin reports whether an event arrived inside d. A test uses it to prove
+// the stream stays quiet, which a blocking read cannot express.
+func (r *sseReader) nextWithin(d time.Duration) (sseEvent, bool) {
+	select {
+	case ev := <-r.events:
+		return ev, true
+	case <-time.After(d):
+		return sseEvent{}, false
 	}
 }
 
@@ -273,6 +299,17 @@ func TestBrowserLiveStreamAndOwnershipPG(t *testing.T) {
 		if viewport.Width != liveViewportWidth || viewport.Height != liveViewportHeight || viewport.Token != "op-a" {
 			t.Fatalf("viewport = %+v", viewport)
 		}
+		ev = rd.next(t)
+		if ev.name != "page" {
+			t.Fatalf("second event = %q, want page", ev.name)
+		}
+		var page browserLivePageEvent
+		if err := json.Unmarshal([]byte(ev.data), &page); err != nil {
+			t.Fatalf("decode page: %v", err)
+		}
+		if page.URL != "https://in.example/" {
+			t.Fatalf("page = %+v", page)
+		}
 
 		jpeg := []byte{0xff, 0xd8, 0xff, 0x00}
 		fake.frame(7, jpeg)
@@ -347,6 +384,9 @@ func TestBrowserLiveStreamAndOwnershipPG(t *testing.T) {
 		rd := newSSEReader(resp.Body)
 		if ev := rd.next(t); ev.name != "viewport" {
 			t.Fatalf("first event = %q, want viewport", ev.name)
+		}
+		if ev := rd.next(t); ev.name != "page" {
+			t.Fatalf("second event = %q, want page", ev.name)
 		}
 		ev := rd.next(t)
 		if ev.name != "dialog" {
@@ -434,6 +474,215 @@ func TestBrowserLiveInputScopePG(t *testing.T) {
 	missing.Body.Close()
 	if missing.StatusCode != http.StatusConflict {
 		t.Fatalf("input without a session status = %d, want 409", missing.StatusCode)
+	}
+}
+
+// Operator input is an audited action: the task feed must show what the
+// operator did, one row per burst, and never the text they typed.
+func TestBrowserLiveInputAuditPG(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	s := newFixtureServer(t, m)
+	task := newLiveTestTask(t, m)
+	ts, tok := newLiveTestServer(t, s)
+
+	fake := &fakeLiveDriver{url: "https://in.example/login"}
+	old := browserLiveFor
+	browserLiveFor = func(*Server, string) liveDriver { return fake }
+	t.Cleanup(func() { browserLiveFor = old })
+	if !liveClaim(task.ID, "op-a", func() {}, nil) {
+		t.Fatal("could not claim the operator slot")
+	}
+	t.Cleanup(func() { liveRelease(task.ID, "op-a") })
+
+	inputPath := "/api/tasks/" + task.ID + "/browser/input"
+	operatorRows := func() []db.Activity {
+		rows, _, err := task.Store.ActivityList(nil, 0, 200)
+		if err != nil {
+			t.Fatalf("read activity: %v", err)
+		}
+		var out []db.Activity
+		for _, row := range rows {
+			if row.Worker == "operator" {
+				out = append(out, row)
+			}
+		}
+		return out
+	}
+
+	// One burst: a click, a keystroke and a typed word inside the window are one
+	// operator action in the feed.
+	for _, in := range []map[string]any{
+		{"kind": "mouse", "type": "mousePressed", "x": 10, "y": 20, "button": "left", "click_count": 1},
+		{"kind": "key", "type": "keyDown", "key": "a"},
+		{"kind": "text", "text": "hunter2"},
+	} {
+		resp := liveDo(t, ts, tok, http.MethodPost, inputPath, in, "op-a")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("input status = %d, want 200", resp.StatusCode)
+		}
+	}
+	rows := operatorRows()
+	if len(rows) != 1 {
+		t.Fatalf("operator rows after one burst = %d, want 1: %+v", len(rows), rows)
+	}
+	if want := "operator mouse on https://in.example/login"; rows[0].Summary != want {
+		t.Fatalf("summary = %q, want %q", rows[0].Summary, want)
+	}
+	if rows[0].Kind != "text" {
+		t.Fatalf("kind = %q, want text", rows[0].Kind)
+	}
+	if strings.Contains(rows[0].Summary, "hunter2") {
+		t.Fatalf("the row carries typed text: %+v", rows[0])
+	}
+
+	// A burst after the window writes its own row.
+	time.Sleep(3 * time.Second)
+	resp := liveDo(t, ts, tok, http.MethodPost, inputPath,
+		map[string]any{"kind": "scroll", "x": 5, "y": 6, "delta_x": 0, "delta_y": 120}, "op-a")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second burst status = %d, want 200", resp.StatusCode)
+	}
+	rows = operatorRows()
+	if len(rows) != 2 {
+		t.Fatalf("operator rows after two bursts = %d, want 2", len(rows))
+	}
+	if want := "operator scroll on https://in.example/login"; rows[1].Summary != want {
+		t.Fatalf("second summary = %q, want %q", rows[1].Summary, want)
+	}
+}
+
+// The live view names the page it shows, once on start and once per change.
+func TestBrowserLivePageEventPG(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	s := newFixtureServer(t, m)
+	task := newLiveTestTask(t, m)
+	ts, tok := newLiveTestServer(t, s)
+
+	fake := &fakeLiveDriver{url: "https://in.example/login", title: "Sign in"}
+	old := browserLiveFor
+	browserLiveFor = func(*Server, string) liveDriver { return fake }
+	t.Cleanup(func() { browserLiveFor = old })
+	t.Cleanup(func() { liveRelease(task.ID, "op-a") })
+
+	streamPath := "/api/tasks/" + task.ID + "/browser/stream"
+	resp := liveDo(t, ts, tok, http.MethodGet, streamPath+"?op=op-a", nil, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	rd := newSSEReader(resp.Body)
+	if ev := rd.next(t); ev.name != "viewport" {
+		t.Fatalf("first event = %q, want viewport", ev.name)
+	}
+	ev := rd.next(t)
+	if ev.name != "page" {
+		t.Fatalf("second event = %q, want page", ev.name)
+	}
+	var page browserLivePageEvent
+	if err := json.Unmarshal([]byte(ev.data), &page); err != nil {
+		t.Fatalf("decode page: %v", err)
+	}
+	if page.URL != "https://in.example/login" || page.Title != "Sign in" {
+		t.Fatalf("page = %+v", page)
+	}
+
+	// An unchanged page emits nothing on the tick.
+	if ev, ok := rd.nextWithin(3 * time.Second); ok {
+		t.Fatalf("idle tick emitted %q", ev.name)
+	}
+
+	// A change is one event, and the next idle tick is silent again.
+	fake.mu.Lock()
+	fake.url = "https://in.example/admin"
+	fake.title = "Admin"
+	fake.mu.Unlock()
+	ev = rd.next(t)
+	if ev.name != "page" {
+		t.Fatalf("event = %q, want page", ev.name)
+	}
+	if err := json.Unmarshal([]byte(ev.data), &page); err != nil {
+		t.Fatalf("decode page: %v", err)
+	}
+	if page.URL != "https://in.example/admin" || page.Title != "Admin" {
+		t.Fatalf("changed page = %+v", page)
+	}
+	if ev, ok := rd.nextWithin(3 * time.Second); ok {
+		t.Fatalf("unchanged page re-emitted %q", ev.name)
+	}
+}
+
+// The viewer's geometry is clamped to what the page can render, and the
+// viewport event reports the size actually used.
+func TestBrowserLiveViewportClampPG(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	s := newFixtureServer(t, m)
+	task := newLiveTestTask(t, m)
+	ts, tok := newLiveTestServer(t, s)
+
+	fake := &fakeLiveDriver{url: "https://in.example/"}
+	old := browserLiveFor
+	browserLiveFor = func(*Server, string) liveDriver { return fake }
+	t.Cleanup(func() { browserLiveFor = old })
+	t.Cleanup(func() { liveRelease(task.ID, "op-a") })
+
+	streamPath := "/api/tasks/" + task.ID + "/browser/stream?op=op-a"
+	cases := []struct {
+		query   string
+		width   int
+		height  int
+		quality int
+	}{
+		{"", liveViewportWidth, liveViewportHeight, liveViewportQuality},
+		{"&width=960&height=600&quality=40", 960, 600, 40},
+		{"&width=100&height=9999&quality=1", liveViewportMinWidth, liveViewportMaxHeight, liveViewportMinQuality},
+		{"&width=99999&height=10&quality=1000", liveViewportMaxWidth, liveViewportMinHeight, liveViewportMaxQuality},
+		{"&width=abc&height=&quality=-5", liveViewportWidth, liveViewportHeight, liveViewportMinQuality},
+	}
+	for _, tc := range cases {
+		resp := liveDo(t, ts, tok, http.MethodGet, streamPath+tc.query, nil, "")
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("stream %q status = %d (%s)", tc.query, resp.StatusCode, body)
+		}
+		rd := newSSEReader(resp.Body)
+		ev := rd.next(t)
+		if ev.name != "viewport" {
+			resp.Body.Close()
+			t.Fatalf("stream %q first event = %q, want viewport", tc.query, ev.name)
+		}
+		var viewport struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		}
+		if err := json.Unmarshal([]byte(ev.data), &viewport); err != nil {
+			resp.Body.Close()
+			t.Fatalf("decode viewport: %v", err)
+		}
+		if viewport.Width != tc.width || viewport.Height != tc.height {
+			resp.Body.Close()
+			t.Fatalf("stream %q viewport = %+v, want %dx%d", tc.query, viewport, tc.width, tc.height)
+		}
+		if opts := fake.lastOpts(); opts.Width != tc.width || opts.Height != tc.height || opts.Quality != tc.quality {
+			resp.Body.Close()
+			t.Fatalf("stream %q screencast opts = %+v, want %dx%d q%d", tc.query, opts, tc.width, tc.height, tc.quality)
+		}
+		resp.Body.Close()
+		waitFor(t, "the operator slot to be released", func() bool { return liveHolder(task.ID) == "" })
 	}
 }
 

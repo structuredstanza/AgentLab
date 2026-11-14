@@ -10,7 +10,13 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { api, sseUrl } from "@/lib/api";
 import { type LiveEvent, type LiveState, mapPointerToViewport, nextLiveState } from "@/lib/browser-live";
-import type { BrowserInput, BrowserLiveDialog, BrowserLiveFrame, BrowserLiveViewport } from "@/lib/types";
+import type {
+  BrowserInput,
+  BrowserLiveDialog,
+  BrowserLiveFrame,
+  BrowserLivePage,
+  BrowserLiveViewport,
+} from "@/lib/types";
 
 // CDP modifier bits: Alt=1, Ctrl=2, Meta=4, Shift=8.
 function modifiers(event: React.KeyboardEvent): number {
@@ -53,6 +59,7 @@ export function BrowserTab({ taskId }: { taskId: string }) {
   const [state, setState] = React.useState<LiveState>("idle");
   const [viewport, setViewport] = React.useState<BrowserLiveViewport | null>(null);
   const [frame, setFrame] = React.useState("");
+  const [page, setPage] = React.useState<BrowserLivePage | null>(null);
   const [dialog, setDialog] = React.useState<BrowserLiveDialog | null>(null);
   const [promptText, setPromptText] = React.useState("");
   const [error, setError] = React.useState("");
@@ -72,6 +79,7 @@ export function BrowserTab({ taskId }: { taskId: string }) {
     tokenRef.current = "";
     setViewport(null);
     setFrame("");
+    setPage(null);
     setDialog(null);
     setError("");
     transition("release");
@@ -94,15 +102,27 @@ export function BrowserTab({ taskId }: { taskId: string }) {
     tokenRef.current = token;
     setError("");
     setFrame("");
+    setPage(null);
     setDialog(null);
     transition("connect");
+    // The panel's own size is the viewport: a small panel must not stream
+    // 1280x800. The server clamps whatever arrives, so an unlaid-out panel
+    // (zero size) simply gets the default.
+    const rect = surfaceRef.current?.getBoundingClientRect();
+    const size =
+      rect && rect.width >= 1 && rect.height >= 1
+        ? `&width=${Math.round(rect.width)}&height=${Math.round(rect.height)}`
+        : "";
     const source = new EventSource(
-      sseUrl(`/api/tasks/${encodeURIComponent(taskId)}/browser/stream?op=${encodeURIComponent(token)}`),
+      sseUrl(`/api/tasks/${encodeURIComponent(taskId)}/browser/stream?op=${encodeURIComponent(token)}${size}`),
     );
     sourceRef.current = source;
     source.addEventListener("viewport", (event) => {
       setViewport(JSON.parse((event as MessageEvent).data) as BrowserLiveViewport);
       transition("open");
+    });
+    source.addEventListener("page", (event) => {
+      setPage(JSON.parse((event as MessageEvent).data) as BrowserLivePage);
     });
     source.addEventListener("frame", (event) => {
       const next = JSON.parse((event as MessageEvent).data) as BrowserLiveFrame;
@@ -277,6 +297,13 @@ export function BrowserTab({ taskId }: { taskId: string }) {
               {t("dismiss")}
             </Button>
           </div>
+        </div>
+      ) : null}
+
+      {page && (page.title || page.url) ? (
+        <div className="flex min-w-0 items-baseline gap-2 text-xs" title={page.url}>
+          <span className="min-w-0 truncate font-medium">{page.title || page.url}</span>
+          {page.title ? <span className="min-w-0 truncate text-muted-foreground">{page.url}</span> : null}
         </div>
       ) : null}
 

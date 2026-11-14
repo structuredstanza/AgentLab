@@ -13,6 +13,9 @@ import (
 // narrowed by acting on a ref, not by dumping the whole tree.
 const maxSnapshotLines = 2000
 
+// maxSubtreeLines is the most a caller may ask of one subtree.
+const maxSubtreeLines = 4000
+
 // errStaleRef is the exact text the tool layer surfaces: the model has to
 // snapshot again rather than guess what a ref now points at.
 var errStaleRef = errors.New("stale reference, take a new snapshot")
@@ -25,9 +28,12 @@ type Snapshot struct {
 }
 
 // Ref is one rendered node. Only the backend node id is needed to resolve
-// geometry later; the rest of the AX node is already in Tree.
+// geometry later; the rest of the AX node is already in Tree. NodeID is the
+// accessibility node the ref came from, which a subtree snapshot needs because
+// some rendered nodes carry no backend id.
 type Ref struct {
 	BackendNodeID int64
+	NodeID        string
 }
 
 // Snapshot renders the page's accessibility tree with refs for the current
@@ -58,6 +64,110 @@ func (d *Driver) Snapshot(ctx context.Context) (*Snapshot, error) {
 	d.mu.Unlock()
 
 	return &Snapshot{Tree: tree, Refs: refs, Truncated: truncated}, nil
+}
+
+// SnapshotSubtree renders only the accessibility subtree under ref, so a form
+// buried in a large page costs its own size instead of the whole document.
+// The returned refs are numbered from 1 like any other snapshot and replace
+// the driver's ref table, so a caller acts on the refs it just received.
+func (d *Driver) SnapshotSubtree(ctx context.Context, ref string, maxLines int) (Snapshot, error) {
+	r, err := d.resolve(ref)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if maxLines <= 0 {
+		maxLines = maxSnapshotLines
+	}
+	if maxLines > maxSubtreeLines {
+		maxLines = maxSubtreeLines
+	}
+
+	raw, err := d.Send(ctx, "Accessibility.getFullAXTree", nil)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	var result struct {
+		Nodes []axNode `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return Snapshot{}, fmt.Errorf("browser: decode accessibility tree: %w", err)
+	}
+
+	node := findAXNode(result.Nodes, r)
+	if node == nil {
+		return Snapshot{}, errStaleRef
+	}
+
+	d.mu.Lock()
+	gen := d.gen
+	d.mu.Unlock()
+
+	tree, refs, truncated := renderAXLimit(subtreeNodes(result.Nodes, node.NodeID), gen, maxLines)
+
+	d.mu.Lock()
+	if d.gen == gen {
+		d.refs = refs
+	}
+	d.mu.Unlock()
+
+	return Snapshot{Tree: tree, Refs: refs, Truncated: truncated}, nil
+}
+
+// findAXNode locates the AX node a ref points at. The node id is the exact
+// key; the backend id is the fallback for refs taken before it was kept.
+func findAXNode(nodes []axNode, r Ref) *axNode {
+	if r.NodeID != "" {
+		for i := range nodes {
+			if nodes[i].NodeID == r.NodeID && !nodes[i].Ignored {
+				return &nodes[i]
+			}
+		}
+	}
+	if r.BackendNodeID != 0 {
+		for i := range nodes {
+			if nodes[i].BackendDOMNodeID == r.BackendNodeID && !nodes[i].Ignored {
+				return &nodes[i]
+			}
+		}
+	}
+	return nil
+}
+
+// subtreeNodes returns root and its descendants in document order. Child
+// lists are rebuilt from parentId, so a tree that only carries parents still
+// renders, and a malformed cycle cannot spin the walk.
+func subtreeNodes(nodes []axNode, root string) []axNode {
+	byID := make(map[string]*axNode, len(nodes))
+	children := make(map[string][]string, len(nodes))
+	for i := range nodes {
+		byID[nodes[i].NodeID] = &nodes[i]
+		children[nodes[i].ParentID] = append(children[nodes[i].ParentID], nodes[i].NodeID)
+	}
+	n, ok := byID[root]
+	if !ok {
+		return nil
+	}
+
+	out := make([]axNode, 0, len(nodes))
+	first := *n
+	first.ChildIDs = append([]string(nil), children[root]...)
+	out = append(out, first)
+	seen := map[string]bool{root: true}
+	var walk func(id string)
+	walk = func(id string) {
+		for _, child := range children[id] {
+			if seen[child] {
+				continue
+			}
+			seen[child] = true
+			node := *byID[child]
+			node.ChildIDs = append([]string(nil), children[child]...)
+			out = append(out, node)
+			walk(child)
+		}
+	}
+	walk(root)
+	return out
 }
 
 // bumpGeneration invalidates every ref. Called on top-level navigation and on
@@ -105,6 +215,13 @@ type axProperty struct {
 // renderAX flattens the AX tree into indented lines. Ignored nodes are walked
 // but not rendered, so their children keep their visible depth.
 func renderAX(nodes []axNode, gen int) (string, map[string]Ref, bool) {
+	return renderAXLimit(nodes, gen, maxSnapshotLines)
+}
+
+// renderAXLimit is renderAX with the caller's line budget. A tree over the
+// budget loses its last line to the truncation marker, so the result never
+// exceeds maxLines.
+func renderAXLimit(nodes []axNode, gen int, maxLines int) (string, map[string]Ref, bool) {
 	byID := make(map[string]*axNode, len(nodes))
 	for i := range nodes {
 		byID[nodes[i].NodeID] = &nodes[i]
@@ -123,10 +240,10 @@ func renderAX(nodes []axNode, gen int) (string, map[string]Ref, bool) {
 			total++
 		}
 	}
-	truncated := total > maxSnapshotLines
-	limit := maxSnapshotLines
+	truncated := total > maxLines
+	limit := maxLines
 	if truncated {
-		limit = maxSnapshotLines - 1
+		limit = maxLines - 1
 	}
 
 	var b strings.Builder
@@ -172,7 +289,7 @@ func renderAX(nodes []axNode, gen int) (string, map[string]Ref, bool) {
 			}
 			b.WriteString("\n")
 
-			refs[ref] = Ref{BackendNodeID: n.BackendDOMNodeID}
+			refs[ref] = Ref{BackendNodeID: n.BackendDOMNodeID, NodeID: n.NodeID}
 			rendered++
 			childDepth = depth + 1
 		}
@@ -186,7 +303,7 @@ func renderAX(nodes []axNode, gen int) (string, map[string]Ref, bool) {
 		walk(root, 0)
 	}
 	if truncated {
-		b.WriteString("- (truncated at 2000 lines)\n")
+		fmt.Fprintf(&b, "- (truncated at %d lines)\n", maxLines)
 	}
 	return strings.TrimSuffix(b.String(), "\n"), refs, truncated
 }

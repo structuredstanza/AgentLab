@@ -1432,6 +1432,12 @@ export type BrowserLiveFrame = {
   data: string; // base64 JPEG
 };
 
+// The page the operator is looking at, emitted on stream start and on change.
+export type BrowserLivePage = {
+  url: string;
+  title: string;
+};
+
 export type BrowserLiveDialog = {
   open: boolean;
   type?: string;

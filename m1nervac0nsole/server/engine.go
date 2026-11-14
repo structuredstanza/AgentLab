@@ -423,6 +423,16 @@ func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc) {
 	e.workMu.Unlock()
 }
 
+// HasRunningWork reports whether the task has a planner or worker call in
+// flight, so the browser reaper does not close a page under a running intent.
+// e.work is keyed by intent, not task, so the per-task in-flight counter is the
+// signal: it wraps exactly the planner.Plan / worker.Execute window that
+// registers the work entry.
+func (e *Engine) HasRunningWork(taskID string) bool {
+	v, ok := e.inflight.Load(taskID)
+	return ok && atomic.LoadInt64(v.(*int64)) > 0
+}
+
 // detachWork removes the live control handle once Execute has returned. complete
 // must be called after the final intent state write so a waiting cancel handler can
 // safely delete the worker's blackboard output without racing a late write.

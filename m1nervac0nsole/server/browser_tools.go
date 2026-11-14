@@ -21,7 +21,7 @@ import (
 var browserToolKeys = []string{
 	"browser_open", "browser_navigate", "browser_snapshot", "browser_click",
 	"browser_type", "browser_press", "browser_select", "browser_wait",
-	"browser_screenshot", "browser_upload",
+	"browser_screenshot", "browser_upload", "browser_log", "browser_close",
 }
 
 // browserToolAgents are the agents that drive a browser: the executor roles, not
@@ -42,6 +42,8 @@ func (s *Server) browserTools() []actool.CoreTool {
 		s.browserWaitTool(),
 		s.browserScreenshotTool(),
 		s.browserUploadTool(),
+		s.browserLogTool(),
+		s.browserCloseTool(),
 	}
 }
 
@@ -64,6 +66,68 @@ func pageLine(url, title string) string {
 	return fmt.Sprintf("- Page URL: %s\n- Page Title: %s\nsnapshot again before the next action", url, title)
 }
 
+// operatorHolds is the refusal while an operator drives the live view. The
+// agent's click would race theirs, so the call stops before it reaches CDP.
+const operatorHolds = "the operator has the page: they are driving it from the live view; wait or ask them to release it"
+
+// browserToolDriver is the driver surface the tools use. It is an interface so
+// the tool layer can be exercised without Chromium.
+type browserToolDriver interface {
+	Navigate(ctx context.Context, url string) (browser.PageState, error)
+	Snapshot(ctx context.Context) (*browser.Snapshot, error)
+	SnapshotSubtree(ctx context.Context, ref string, maxLines int) (browser.Snapshot, error)
+	Click(ctx context.Context, ref string) (browser.PageState, error)
+	Type(ctx context.Context, ref, text string) (browser.PageState, error)
+	Press(ctx context.Context, key string) (browser.PageState, error)
+	Select(ctx context.Context, ref string, values ...string) (browser.PageState, error)
+	Wait(ctx context.Context, text string, timeout time.Duration) error
+	Screenshot(ctx context.Context, fullPage bool) ([]byte, error)
+	Upload(ctx context.Context, ref string, paths []string) (browser.PageState, error)
+	URL() string
+	Title() string
+	BlockedRequests() []string
+	Downloads() []string
+	Console(since int64, limit int) []browser.ConsoleEntry
+	ConsoleSeq() int64
+}
+
+// browserToolFor returns the task's browser for a tool call, launching it when
+// there is none. It is a package variable so tests can substitute a driver;
+// production reads the registry.
+var browserToolFor = func(s *Server, ctx context.Context, taskID string) (browserToolDriver, error) {
+	return s.browserFor(ctx, taskID)
+}
+
+// browserToolExisting returns the task's running browser without launching one:
+// polling the log must not start Chromium.
+var browserToolExisting = func(s *Server, taskID string) browserToolDriver {
+	s.browsers.mu.Lock()
+	defer s.browsers.mu.Unlock()
+	sess := s.browsers.byID[taskID]
+	if sess == nil {
+		return nil
+	}
+	sess.lastUsed = time.Now()
+	return sess.drv
+}
+
+// browserText is the result every tool that touched the driver returns: the
+// tool's own text plus what the driver collected since the previous call. Both
+// lists drain on read, so a blocked host or a finished download is reported
+// exactly once, by whichever tool call notices it.
+func browserText(d browserToolDriver, text string) actool.Result {
+	if d == nil {
+		return actool.Text(text)
+	}
+	if hosts := d.BlockedRequests(); len(hosts) > 0 {
+		text += fmt.Sprintf("\nblocked %d out-of-scope requests: %s", len(hosts), strings.Join(hosts, ", "))
+	}
+	for _, path := range d.Downloads() {
+		text += "\ndownloaded: " + path
+	}
+	return actool.Text(text)
+}
+
 func (s *Server) browserOpenTool() actool.CoreTool {
 	return wrTool("browser_open",
 		"Open an http(s) URL in this task's browser and return the page as an accessibility snapshot. The URL must be inside the task's scope. Use this first; use browser_snapshot to re-read the page after an action.",
@@ -76,7 +140,10 @@ func (s *Server) browserOpenTool() actool.CoreTool {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
 			taskID, _ := browserTaskID(ctx)
-			drv, err := s.browserFor(ctx, taskID)
+			if liveHolder(taskID) != "" {
+				return actool.Errorf("Error: " + operatorHolds), nil
+			}
+			drv, err := browserToolFor(s, ctx, taskID)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -88,13 +155,13 @@ func (s *Server) browserOpenTool() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			return actool.Text(pageLine(state.URL, state.Title) + "\n\n" + snap.Tree), nil
+			return browserText(drv, pageLine(state.URL, state.Title)+"\n\n"+snap.Tree), nil
 		})
 }
 
 func (s *Server) browserNavigateTool() actool.CoreTool {
 	return wrTool("browser_navigate",
-		"Navigate the current page to another http(s) URL inside the task's scope. Returns the new URL and title; take a snapshot before acting.",
+		"Navigate the current page to another http(s) URL inside the task's scope. Returns the page as an accessibility snapshot; refs from before the navigation are stale.",
 		objSchema(map[string]any{"url": strParam("absolute http(s) URL")}, "url"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -104,7 +171,10 @@ func (s *Server) browserNavigateTool() actool.CoreTool {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
 			taskID, _ := browserTaskID(ctx)
-			drv, err := s.browserFor(ctx, taskID)
+			if liveHolder(taskID) != "" {
+				return actool.Errorf("Error: " + operatorHolds), nil
+			}
+			drv, err := browserToolFor(s, ctx, taskID)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -112,38 +182,63 @@ func (s *Server) browserNavigateTool() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			return actool.Text(pageLine(state.URL, state.Title)), nil
+			snap, err := drv.Snapshot(ctx)
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
+			return browserText(drv, pageLine(state.URL, state.Title)+"\n\n"+snap.Tree), nil
 		})
 }
 
 func (s *Server) browserSnapshotTool() actool.CoreTool {
 	return roTool("browser_snapshot",
-		"Read the current page as an accessibility tree: one line per element, `- role \"name\" [ref=gNeM]`, with value, checked and disabled when present. Refs are only valid until the next top-level navigation; a stale ref fails with \"stale reference, take a new snapshot\".",
-		objSchema(map[string]any{}),
-		func(ctx context.Context, _ json.RawMessage) (actool.Result, error) {
+		"Read the current page as an accessibility tree: one line per element, `- role \"name\" [ref=gNeM]`, with value, checked and disabled when present. Pass ref to read only that element's subtree, and max_lines to bound it (default 2000, cap 4000). Refs are only valid until the next top-level navigation; a stale ref fails with \"stale reference, take a new snapshot\".",
+		objSchema(map[string]any{
+			"ref":       strParam("ref from the last snapshot; only its subtree is returned"),
+			"max_lines": map[string]any{"type": "integer", "description": "line budget for a ref snapshot (default 2000, cap 4000)"},
+		}),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Ref      string `json:"ref"`
+				MaxLines int    `json:"max_lines"`
+			}
+			_ = json.Unmarshal(in, &a)
 			taskID, err := browserTaskID(ctx)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			drv, err := s.browserFor(ctx, taskID)
+			drv, err := browserToolFor(s, ctx, taskID)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			snap, err := drv.Snapshot(ctx)
-			if err != nil {
-				return actool.Errorf("Error: " + err.Error()), nil
+			var tree string
+			if a.Ref != "" {
+				sub, err := drv.SnapshotSubtree(ctx, a.Ref, a.MaxLines)
+				if err != nil {
+					return actool.Errorf("Error: " + err.Error()), nil
+				}
+				tree = sub.Tree
+			} else {
+				snap, err := drv.Snapshot(ctx)
+				if err != nil {
+					return actool.Errorf("Error: " + err.Error()), nil
+				}
+				tree = snap.Tree
 			}
-			return actool.Text(pageLine(drv.URL(), drv.Title()) + "\n\n" + snap.Tree), nil
+			return browserText(drv, pageLine(drv.URL(), drv.Title())+"\n\n"+tree), nil
 		})
 }
 
 // browserRefAction is the shape every ref-driven tool shares.
-func (s *Server) browserRefAction(ctx context.Context, act func(context.Context, *browser.Driver) (browser.PageState, error)) (actool.Result, error) {
+func (s *Server) browserRefAction(ctx context.Context, act func(context.Context, browserToolDriver) (browser.PageState, error)) (actool.Result, error) {
 	taskID, err := browserTaskID(ctx)
 	if err != nil {
 		return actool.Errorf("Error: " + err.Error()), nil
 	}
-	drv, err := s.browserFor(ctx, taskID)
+	if liveHolder(taskID) != "" {
+		return actool.Errorf("Error: " + operatorHolds), nil
+	}
+	drv, err := browserToolFor(s, ctx, taskID)
 	if err != nil {
 		return actool.Errorf("Error: " + err.Error()), nil
 	}
@@ -151,7 +246,7 @@ func (s *Server) browserRefAction(ctx context.Context, act func(context.Context,
 	if err != nil {
 		return actool.Errorf("Error: " + err.Error()), nil
 	}
-	return actool.Text(pageLine(state.URL, state.Title)), nil
+	return browserText(drv, pageLine(state.URL, state.Title)), nil
 }
 
 func (s *Server) browserClickTool() actool.CoreTool {
@@ -165,7 +260,7 @@ func (s *Server) browserClickTool() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			return s.browserRefAction(ctx, func(ctx context.Context, d *browser.Driver) (browser.PageState, error) {
+			return s.browserRefAction(ctx, func(ctx context.Context, d browserToolDriver) (browser.PageState, error) {
 				return d.Click(ctx, a.Ref)
 			})
 		})
@@ -188,7 +283,7 @@ func (s *Server) browserTypeTool() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			return s.browserRefAction(ctx, func(ctx context.Context, d *browser.Driver) (browser.PageState, error) {
+			return s.browserRefAction(ctx, func(ctx context.Context, d browserToolDriver) (browser.PageState, error) {
 				state, err := d.Type(ctx, a.Ref, a.Text)
 				if err != nil || !a.Submit {
 					return state, err
@@ -209,7 +304,7 @@ func (s *Server) browserPressTool() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			return s.browserRefAction(ctx, func(ctx context.Context, d *browser.Driver) (browser.PageState, error) {
+			return s.browserRefAction(ctx, func(ctx context.Context, d browserToolDriver) (browser.PageState, error) {
 				return d.Press(ctx, a.Key)
 			})
 		})
@@ -230,7 +325,7 @@ func (s *Server) browserSelectTool() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			return s.browserRefAction(ctx, func(ctx context.Context, d *browser.Driver) (browser.PageState, error) {
+			return s.browserRefAction(ctx, func(ctx context.Context, d browserToolDriver) (browser.PageState, error) {
 				return d.Select(ctx, a.Ref, a.Values...)
 			})
 		})
@@ -262,14 +357,14 @@ func (s *Server) browserWaitTool() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			drv, err := s.browserFor(ctx, taskID)
+			drv, err := browserToolFor(s, ctx, taskID)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
 			if err := drv.Wait(ctx, a.Text, timeout); err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			return actool.Text(fmt.Sprintf("found %q after waiting", a.Text)), nil
+			return browserText(drv, fmt.Sprintf("found %q after waiting", a.Text)), nil
 		})
 }
 
@@ -288,7 +383,7 @@ func (s *Server) browserScreenshotTool() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			drv, err := s.browserFor(ctx, taskID)
+			drv, err := browserToolFor(s, ctx, taskID)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -306,7 +401,7 @@ func (s *Server) browserScreenshotTool() actool.CoreTool {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
 			rel := filepath.Join("tasks", taskID, "screenshots", name)
-			return actool.Text(fmt.Sprintf("screenshot saved: %s (%d bytes)", rel, len(png))), nil
+			return browserText(drv, fmt.Sprintf("screenshot saved: %s (%d bytes)", rel, len(png))), nil
 		})
 }
 
@@ -337,7 +432,7 @@ func (s *Server) browserUploadTool() actool.CoreTool {
 				}
 				abs = append(abs, filepath.Join(s.m.dir, clean))
 			}
-			drv, err := s.browserFor(ctx, taskID)
+			drv, err := browserToolFor(s, ctx, taskID)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -345,6 +440,75 @@ func (s *Server) browserUploadTool() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			return actool.Text(pageLine(state.URL, state.Title)), nil
+			return browserText(drv, pageLine(state.URL, state.Title)), nil
+		})
+}
+
+// consoleLine is one browser_log entry with the short keys a model reads.
+type consoleLine struct {
+	Seq   int64  `json:"seq"`
+	Level string `json:"level"`
+	Text  string `json:"text"`
+	URL   string `json:"url"`
+	Line  int    `json:"line"`
+}
+
+func consoleLines(entries []browser.ConsoleEntry) []consoleLine {
+	out := make([]consoleLine, len(entries))
+	for i, e := range entries {
+		out[i] = consoleLine{e.Seq, e.Level, e.Text, e.URL, e.Line}
+	}
+	return out
+}
+
+func (s *Server) browserLogTool() actool.CoreTool {
+	return roTool("browser_log",
+		"Read console messages and uncaught JS errors since a cursor. Pass next from the previous result as since; next is the cursor for the following call. A page that renders empty usually says why here.",
+		objSchema(map[string]any{
+			"since": map[string]any{"type": "integer", "description": "cursor from the previous result's next (default 0)"},
+			"limit": map[string]any{"type": "integer", "description": "maximum entries (default 50, cap 200)"},
+		}),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Since int64 `json:"since"`
+				Limit int   `json:"limit"`
+			}
+			_ = json.Unmarshal(in, &a)
+			taskID, err := browserTaskID(ctx)
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
+			drv := browserToolExisting(s, taskID)
+			if drv == nil {
+				return actool.Text(`{"entries":[],"next":0}`), nil
+			}
+			out, err := json.Marshal(struct {
+				Entries []consoleLine `json:"entries"`
+				Next    int64         `json:"next"`
+			}{consoleLines(drv.Console(a.Since, a.Limit)), drv.ConsoleSeq()})
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
+			return browserText(drv, string(out)), nil
+		})
+}
+
+func (s *Server) browserCloseTool() actool.CoreTool {
+	return wrTool("browser_close",
+		"Close this task's browser. Cookies stay in the task's profile, so a later browser_open is still signed in; the next browser tool starts a fresh tab. Idempotent.",
+		objSchema(map[string]any{}),
+		func(ctx context.Context, _ json.RawMessage) (actool.Result, error) {
+			taskID, err := browserTaskID(ctx)
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
+			s.browsers.mu.Lock()
+			open := s.browsers.byID[taskID] != nil
+			s.browsers.mu.Unlock()
+			if !open {
+				return actool.Text("no session"), nil
+			}
+			s.closeBrowser(taskID)
+			return actool.Text("closed"), nil
 		})
 }
