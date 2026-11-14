@@ -1415,6 +1415,54 @@ export type TaskCredential = TaskCredentialInput & {
   updated_at: string;
 };
 
+// Live browser view: the operator watches the task's own Chromium and, while
+// holding the one operator slot, forwards input to it. The token is not an
+// authentication credential; it arbitrates between two operators of one task.
+export type BrowserLiveViewport = {
+  width: number;
+  height: number;
+  token: string;
+};
+
+export type BrowserLiveFrame = {
+  seq: number;
+  data: string; // base64 JPEG
+};
+
+export type BrowserLiveDialog = {
+  open: boolean;
+  type?: string;
+  message?: string;
+  default_prompt?: string;
+  url?: string;
+};
+
+export type BrowserInput =
+  | {
+      kind: "mouse";
+      type: "mousePressed" | "mouseReleased" | "mouseMoved";
+      x: number;
+      y: number;
+      button?: string;
+      click_count?: number;
+    }
+  | { kind: "scroll"; x: number; y: number; delta_x: number; delta_y: number }
+  | {
+      kind: "key";
+      type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
+      key: string;
+      code?: string;
+      text?: string;
+      modifiers?: number;
+      windows_virtual_key_code?: number;
+    }
+  | { kind: "text"; text: string };
+
+export type BrowserDialogAnswer = {
+  accept: boolean;
+  prompt_text?: string;
+};
+
 export interface AssetInterceptRule {
   id: number;
   enabled: boolean;

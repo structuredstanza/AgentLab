@@ -896,6 +896,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/chat/status", s.taskChatStatus)
 	mux.HandleFunc("POST /api/tasks/{id}/chat/stop", s.stopChat)
 
+	// Live browser view: the operator watches the task's browser and can take
+	// over its input. One operator session per task (see browser_live.go).
+	mux.HandleFunc("GET /api/tasks/{id}/browser/stream", s.browserStream)
+	mux.HandleFunc("DELETE /api/tasks/{id}/browser/stream", s.browserStreamRelease)
+	mux.HandleFunc("POST /api/tasks/{id}/browser/input", s.browserInput)
+	mux.HandleFunc("POST /api/tasks/{id}/browser/dialog", s.browserDialog)
+
 	// --- Admin backend API (PostgreSQL data source; new database and admin backend scheme) ---
 	mux.HandleFunc("DELETE /api/tasks/{id}", s.pgDeleteTask)
 	// Agents

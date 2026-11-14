@@ -20,6 +20,8 @@ import type {
   AssetInterceptRuleInput,
   BatchCategoryItem,
   BatchControlItem,
+  BrowserDialogAnswer,
+  BrowserInput,
   BulkKnowledgeAction,
   BulkKnowledgeResult,
   ChatAttachment,
@@ -356,6 +358,26 @@ export const api = {
   addTaskCredential: (id: string, input: TaskCredentialInput) =>
     post<TaskCredential>(`/tasks/${id}/credentials`, input),
   deleteTaskCredential: (id: string, cid: number) => del(`/tasks/${id}/credentials/${cid}`),
+  // Live browser view. The stream is opened with EventSource (sseUrl), so the
+  // operator token travels in that query string; these calls carry it in a
+  // header. The token arbitrates between two operators, it is not auth.
+  browserInput: (id: string, token: string, input: BrowserInput) =>
+    http<{ ok: boolean }>(`/tasks/${id}/browser/input`, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "X-Operator-Token": token },
+    }),
+  browserDialog: (id: string, token: string, answer: BrowserDialogAnswer) =>
+    http<{ ok: boolean }>(`/tasks/${id}/browser/dialog`, {
+      method: "POST",
+      body: JSON.stringify(answer),
+      headers: { "X-Operator-Token": token },
+    }),
+  browserRelease: (id: string, token: string) =>
+    http<void>(`/tasks/${id}/browser/stream`, {
+      method: "DELETE",
+      headers: { "X-Operator-Token": token },
+    }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),

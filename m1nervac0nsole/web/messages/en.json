@@ -326,7 +326,25 @@
       "coverage": "Asset coverage graph",
       "intercept": "Intercept approval",
       "report": "Report",
-      "credentials": "Credentials"
+      "credentials": "Credentials",
+      "browser": "Browser"
+    },
+    "browser": {
+      "takeControl": "Take control",
+      "note": "This is the agent's own browser, not a new one. Taking control claims the task's single operator slot; clicks, keys and scrolls go to the page the agent is driving, and every action is checked against the task scope.",
+      "canvasLabel": "Live browser view. Click or type to control the page.",
+      "idle": "Take control to watch the agent's browser.",
+      "errorHint": "No live stream. The agent may not have opened a browser yet, or another operator may hold it.",
+      "retry": "Retry",
+      "promptPlaceholder": "Value for the prompt",
+      "accept": "Accept",
+      "dismiss": "Dismiss",
+      "state": {
+        "idle": "Not connected",
+        "connecting": "Connecting",
+        "controlling": "Controlling",
+        "error": "Disconnected"
+      }
     },
     "plan": {
       "title": "Plan drafting",

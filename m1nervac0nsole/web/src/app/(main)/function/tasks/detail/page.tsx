@@ -33,6 +33,7 @@ import type { LLMProfile, Task } from "@/lib/types";
 
 import { AssetsTab } from "./_tabs/assets-tab";
 import { BroadcastTab } from "./_tabs/broadcast-tab";
+import { BrowserTab } from "./_tabs/browser-tab";
 import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
 import { CredentialsTab } from "./_tabs/credentials-tab";
 import { FindingsTab } from "./_tabs/findings-tab";
@@ -46,6 +47,7 @@ import { SessionsTab } from "./_tabs/sessions-tab";
 
 const TAB_VALUES = [
   "sessions",
+  "browser",
   "overview",
   "plan",
   "graph",
@@ -430,6 +432,9 @@ function TaskDetailInner() {
       <div className="flex-1 p-4 lg:p-6">
         <TabsContent value="sessions" className="mt-0">
           <SessionsTab taskId={id} taskPaused={task?.status === "paused" || Boolean(task?.paused)} />
+        </TabsContent>
+        <TabsContent value="browser" className="mt-0">
+          <BrowserTab taskId={id} />
         </TabsContent>
         <TabsContent value="overview" className="mt-0">
           <OverviewTab taskId={id} />
