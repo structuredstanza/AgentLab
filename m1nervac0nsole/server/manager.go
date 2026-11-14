@@ -526,8 +526,26 @@ func (m *Manager) TrafficEnabled() bool {
 // BrowserDriverNative reports whether the built-in driver replaces the
 // Playwright MCP for this process. Read per assembly, so it is cheap.
 func (m *Manager) BrowserDriverNative() bool {
+	return m.BrowserDriver() == "native"
+}
+
+// BrowserDriver returns the selected browser surface, defaulting to the
+// Playwright MCP so an unset row keeps the older behaviour.
+func (m *Manager) BrowserDriver() string {
 	v, _, _ := m.pg.GetSetting(settingBrowserDriver)
-	return v == "native"
+	if v == "native" {
+		return "native"
+	}
+	return "mcp"
+}
+
+// SetBrowserDriver persists the browser surface. It applies to the next run:
+// tool assembly reads it per run and disables the MCP row when native is on.
+func (m *Manager) SetBrowserDriver(v string) error {
+	if v != "native" && v != "mcp" {
+		return fmt.Errorf("browser driver: want native or mcp, got %q", v)
+	}
+	return m.pg.SetSetting(settingBrowserDriver, v)
 }
 
 func (m *Manager) SetTrafficEnabled(on bool) error {

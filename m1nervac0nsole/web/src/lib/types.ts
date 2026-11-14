@@ -936,6 +936,9 @@ export interface Settings {
   // worker/main agent/conversation) has noa take over context compaction, replacing the built-in compaction; read once per run, for
   // Takes effect for the run started after this.
   noa_compaction?: boolean;
+  // Browser surface: "mcp" (the Playwright server) or "native" (the built-in
+  // driver). Read at tool assembly, so a change applies to the next run.
+  browser_driver?: "mcp" | "native";
   // ---- Vulnerability IM push (channels are independent resources, see /api/notify/*; here are only the three global settings) ----
   notify_enabled?: boolean; // Master push switch, on by default; allows push notifications to be stopped with one action during maintenance
   notify_public_base_url?: string; // External access address for the link back to vulnerability details; empty = messages carry no link back

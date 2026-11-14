@@ -3271,6 +3271,13 @@
       "desc": "These features are still under validation and default to off. They may change agent behavior or affect stability, so turn them on only after you understand the impact.<br></br><b>noa context compression</b>: the model compresses long conversation history directly (norma v0.4.0). When on, the four kinds of agents connected to the platform (<b>planner / worker / main agent / conversation</b>) hand off context to noa instead of using the built-in compression, and the raw compression output is kept in the task's working directory for easy review. Changes apply immediately (to runs started afterward) with no need to regenerate the agents. Turning it off restores the built-in compression immediately.",
       "noaLabel": "noa context compression"
     },
+    "browser": {
+      "title": "Browser",
+      "desc": "Which surface the agents drive. <b>Native</b> is the built-in CDP driver: no MCP server, the same snapshot/ref contract, and the live view on the task page. <b>Playwright MCP</b> is the external server. Two surfaces in one prompt is how a model ends up driving two browsers, so only the selected one is offered. Applies to the next run.",
+      "driverLabel": "Driver",
+      "driverNative": "Native (built-in)",
+      "driverMcp": "Playwright MCP"
+    },
     "webSearch": {
       "title": "Web Search",
       "desc": "The <b>master switch + source settings</b> for web search. Only when it is on can you choose <b>web_search</b> usage individually in <b>each agent's settings</b> (it returns only the title/link/summary and does not fetch the body; body collection is handled by WebFetch). Web search <b>does not go through</b> the recording proxy and is independent of Traffic Capture.<br></br>For the source, you can choose among <b>DuckDuckGo (ddgs)</b> (no Key needed), <b>Brave (free tier)</b> (requires a Brave API Key), <b>Tavily</b> (requires a Tavily API Key), and <b>DeepSeek</b> (reuses the current LLM settings). When the master switch is off, each agent's web search switch is unavailable.",

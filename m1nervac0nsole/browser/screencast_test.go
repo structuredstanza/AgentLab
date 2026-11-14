@@ -205,3 +205,33 @@ func TestScreencastRequiresPositiveSize(t *testing.T) {
 		t.Fatalf("start calls = %d, want 0", len(calls))
 	}
 }
+
+// The viewport is global to the session: a live view must not leave the agent
+// pinned to the viewer's geometry after the operator leaves.
+func TestScreencastRestoresTheAgentsViewport(t *testing.T) {
+	f := newScreencastFake()
+	f.replies["Page.getLayoutMetrics"] = map[string]any{
+		"cssLayoutViewport": map[string]any{"clientWidth": 1024, "clientHeight": 768},
+	}
+	d := newTestDriver(t, f, nil)
+	if err := d.StartScreencast(context.Background(), ScreencastOptions{Width: 1280, Height: 800}, func(int, []byte) {}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := d.StopScreencast(context.Background()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	calls := f.callsOf("Emulation.setDeviceMetricsOverride")
+	if len(calls) != 2 {
+		t.Fatalf("viewport calls = %d, want 2 (set and restore)", len(calls))
+	}
+	var restored struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	}
+	if err := json.Unmarshal(calls[1].Params, &restored); err != nil {
+		t.Fatalf("decode restore: %v", err)
+	}
+	if restored.Width != 1024 || restored.Height != 768 {
+		t.Fatalf("restored viewport = %dx%d, want 1024x768", restored.Width, restored.Height)
+	}
+}

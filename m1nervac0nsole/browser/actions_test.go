@@ -80,6 +80,7 @@ func TestStaleRefAfterNavigation(t *testing.T) {
 func TestClickUsesBoxModelCentre(t *testing.T) {
 	f := newFakeConn()
 	f.replies["Accessibility.getFullAXTree"] = json.RawMessage(axButtonFixture)
+	f.replies["DOM.scrollIntoViewIfNeeded"] = map[string]any{}
 	f.replies["DOM.getBoxModel"] = map[string]any{
 		"model": map[string]any{"content": []float64{10, 20, 110, 20, 110, 60, 10, 60}},
 	}
@@ -103,6 +104,11 @@ func TestClickUsesBoxModelCentre(t *testing.T) {
 		t.Fatalf("state = %+v, want the history entry", state)
 	}
 
+	// The element is scrolled into view before its coordinates are read, so a
+	// ref below the fold does not click whatever sits at its old position.
+	if scrolled := f.callsOf("DOM.scrollIntoViewIfNeeded"); len(scrolled) != 1 {
+		t.Fatalf("scroll calls = %d, want 1", len(scrolled))
+	}
 	calls := f.callsOf("Input.dispatchMouseEvent")
 	if len(calls) != 2 {
 		t.Fatalf("mouse events = %d, want pressed and released", len(calls))
@@ -128,6 +134,7 @@ func TestClickUsesBoxModelCentre(t *testing.T) {
 func TestTypeFocusesAndInsertsText(t *testing.T) {
 	f := newFakeConn()
 	f.replies["Accessibility.getFullAXTree"] = json.RawMessage(axTextboxFixture)
+	f.replies["DOM.scrollIntoViewIfNeeded"] = map[string]any{}
 	f.replies["DOM.getBoxModel"] = map[string]any{
 		"model": map[string]any{"content": []float64{0, 0, 100, 0, 100, 20, 0, 20}},
 	}

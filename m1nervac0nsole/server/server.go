@@ -3532,6 +3532,10 @@ func (s *Server) settingsPayload() map[string]any {
 		// Experimental feature: noa model-driven context compression (default off). When enabled, the four agent types integrated with the platform are handled by noa
 		// taking over context compression, replacing built-in compaction; read once per run, affecting runs started afterward.
 		"noa_compaction": s.m.NoaCompactionEnabled(),
+		// Browser surface: "mcp" (the Playwright server) or "native" (the
+		// built-in driver). Read at tool assembly, so a change applies to the
+		// next run.
+		"browser_driver": s.m.BrowserDriver(),
 		// Global items for vulnerability IM push. Channels are independent resources, managed via /api/notify/*;
 		// only the three items that apply to all channels are kept here.
 		"notify_enabled":             s.m.pg.GetBool(settingNotifyEnabled, true),
@@ -3605,6 +3609,8 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ConstraintsInjectWorker  *bool `json:"constraints_inject_worker"`
 		// Experimental feature: noa context compression switch (off by default); read per run, takes effect for runs started afterward, no need to rebuild the agent.
 		NoaCompaction *bool `json:"noa_compaction"`
+		// Browser surface: "mcp" or "native". Applies to the next run.
+		BrowserDriver *string `json:"browser_driver"`
 		// Global settings for vulnerability IM push. All three are read once per round by the delivery engine, so changes take effect immediately.
 		// No need to rebuild the agent or restart.
 		NotifyEnabled    *bool   `json:"notify_enabled"`
@@ -3624,6 +3630,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if req.ConstraintsInjectWorker != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectWorker, *req.ConstraintsInjectWorker); err != nil {
 			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.BrowserDriver != nil {
+		if err := s.m.SetBrowserDriver(*req.BrowserDriver); err != nil {
+			writeErr(w, 400, err.Error())
 			return
 		}
 	}

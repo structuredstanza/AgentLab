@@ -38,6 +38,9 @@ type screencastFrame struct {
 // frame: a consumer slower than the browser loses frames instead of blocking
 // the CDP read loop, which would stall every command the agent sends.
 type screencast struct {
+	// prev is the viewport the cast replaced, restored when it stops.
+	prev *Viewport
+
 	frames chan screencastFrame
 	stop   chan struct{}
 	done   chan struct{}
@@ -74,6 +77,9 @@ func (d *Driver) StartScreencast(ctx context.Context, opts ScreencastOptions, on
 	if _, loaded := screencasts.Load(d); loaded {
 		return fmt.Errorf("browser: screencast: already running")
 	}
+	// The viewport is global to the session: remember what the agent was
+	// looking at so the last viewer leaving puts it back.
+	prev := d.layoutViewport(ctx)
 	if err := d.SetViewport(ctx, Viewport{Width: opts.Width, Height: opts.Height}); err != nil {
 		return err
 	}
@@ -81,6 +87,7 @@ func (d *Driver) StartScreencast(ctx context.Context, opts ScreencastOptions, on
 		frames: make(chan screencastFrame, 1),
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
+		prev:   prev,
 	}
 	screencasts.Store(d, st)
 	if _, loaded := screencastHandlers.LoadOrStore(d, struct{}{}); !loaded {
@@ -97,6 +104,11 @@ func (d *Driver) StartScreencast(ctx context.Context, opts ScreencastOptions, on
 		screencasts.Delete(d)
 		st.haltNow()
 		<-st.done
+		if prev != nil && !d.Closed() {
+			// The cast never started, so the agent keeps the viewport the
+			// failed attempt already changed.
+			_ = d.SetViewport(ctx, *prev)
+		}
 		if d.Closed() {
 			screencastHandlers.Delete(d)
 		}
@@ -123,7 +135,35 @@ func (d *Driver) StopScreencast(ctx context.Context) error {
 		err = fmt.Errorf("browser: stop screencast: %w", serr)
 	}
 	<-st.done
+	if st.prev != nil && !d.Closed() {
+		if rerr := d.SetViewport(ctx, *st.prev); rerr != nil && err == nil {
+			err = fmt.Errorf("browser: restore viewport: %w", rerr)
+		}
+	}
 	return err
+}
+
+// layoutViewport reads the viewport the page is laid out in. It is the size the
+// agent's screenshots and clicks use, so restoring it after a live view leaves
+// the agent exactly where it was.
+func (d *Driver) layoutViewport(ctx context.Context) *Viewport {
+	raw, err := d.Send(ctx, "Page.getLayoutMetrics", nil)
+	if err != nil {
+		return nil
+	}
+	var m struct {
+		CSSLayoutViewport struct {
+			ClientWidth  int `json:"clientWidth"`
+			ClientHeight int `json:"clientHeight"`
+		} `json:"cssLayoutViewport"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	if m.CSSLayoutViewport.ClientWidth <= 0 || m.CSSLayoutViewport.ClientHeight <= 0 {
+		return nil
+	}
+	return &Viewport{Width: m.CSSLayoutViewport.ClientWidth, Height: m.CSSLayoutViewport.ClientHeight}
 }
 
 // Closed reports whether Close has run. The live view uses it to end its stream

@@ -268,11 +268,16 @@ func (d *Driver) Upload(ctx context.Context, ref string, paths []string) (PageSt
 }
 
 // clickRef resolves a ref to the centre of its content box and dispatches a
-// left click. There is no scroll-into-view: a ref outside the viewport can
-// miss, which is visible in the returned state and the next snapshot.
+// left click. The element is scrolled into view first: a ref outside the
+// viewport would otherwise click whatever happens to sit at its coordinates.
 func (d *Driver) clickRef(ctx context.Context, ref string) error {
 	r, err := d.resolve(ref)
 	if err != nil {
+		return err
+	}
+	if _, err := d.Send(ctx, "DOM.scrollIntoViewIfNeeded", map[string]any{
+		"backendNodeId": r.BackendNodeID,
+	}); err != nil {
 		return err
 	}
 	x, y, err := d.boxCentre(ctx, r.BackendNodeID)
