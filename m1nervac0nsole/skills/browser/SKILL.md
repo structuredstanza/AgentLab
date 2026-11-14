@@ -5,9 +5,18 @@ description: "Drive the real headless Chromium through the Playwright MCP server
 
 # Browser
 
-The Playwright MCP server drives the Chromium already installed in the image. Its
-tools are named `mcp__browser__browser_*` and are available directly: no skill
-load is needed to call them.
+Two surfaces drive the Chromium installed in the image, and the operator selects
+one with the `browser_driver` setting:
+
+- `native` (the built-in driver): tools named `browser_open`, `browser_navigate`,
+  `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`,
+  `browser_select`, `browser_wait`, `browser_screenshot`, `browser_upload`.
+- `mcp` (the Playwright server): tools named `mcp__browser__browser_*`.
+
+Both are available directly - no skill load is needed to call them - and both
+speak the same snapshot/ref contract and go through the same scope guard, so the
+guidance below applies to either. When the driver is `native`, the MCP row is
+disabled, so you will see exactly one set.
 
 Under an **authorized** engagement only.
 
