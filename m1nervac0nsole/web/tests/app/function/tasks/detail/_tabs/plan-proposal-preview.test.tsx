@@ -146,4 +146,11 @@ describe("PlanProposalPreview", () => {
     await waitFor(() => expect(mocks.discardPlanDraft).toHaveBeenCalledWith("t-acme-web", 7));
     expect(mocks.applyPlanDraft).not.toHaveBeenCalled();
   });
+
+  // A proposal from the model may omit any section; rendering must not throw.
+  it("renders a proposal that omits every optional section", () => {
+    render(<PlanProposalPreview taskId="t-acme-web" draft={{ ...pending, proposal: { summary: "only a summary" } }} />);
+    expect(screen.getByText("only a summary")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /apply/i })).toBeTruthy();
+  });
 });

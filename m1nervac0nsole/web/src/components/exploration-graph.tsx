@@ -229,7 +229,9 @@ function pushMap(m: Map<string, string[]>, k: string, v: string) {
 
 // computeLayout auto-layers nodes by longest path along edges (cycle-safe DFS
 // break + barycenter ordering), so origin → … → finding reads left-to-right.
-function computeLayout(nodes: TaskNode[], edges: Edge[]): Map<string, { x: number; y: number }> {
+// Exported so the plan preview's test can prove its synthetic graph is laid out
+// by this same function instead of stacking every node at the origin.
+export function computeLayout(nodes: TaskNode[], edges: Edge[]): Map<string, { x: number; y: number }> {
   const order = nodes.map((n) => n.id);
   const idset = new Set(order);
   const valid = edges.filter((e) => idset.has(e.src) && idset.has(e.dst));
@@ -610,6 +612,7 @@ function ExplorationGraphInner({
   taskId,
   live,
   activeIds,
+  readOnly,
 }: {
   nodes: TaskNode[];
   edges: Edge[];
@@ -617,6 +620,7 @@ function ExplorationGraphInner({
   taskId?: string;
   live?: LiveState;
   activeIds: ReadonlySet<string>;
+  readOnly: boolean;
 }) {
   const t = useTranslations("explorationGraph");
   const hint = emptyHint ?? t("emptyHint");
@@ -685,8 +689,10 @@ function ExplorationGraphInner({
         edges={rfEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onNodeClick={(_, node) => setSelected(node.data.node)}
+        onNodeClick={readOnly ? undefined : (_, node) => setSelected(node.data.node)}
         nodeTypes={nodeTypes}
+        nodesDraggable={!readOnly}
+        elementsSelectable={!readOnly}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         proOptions={{ hideAttribution: true }}
@@ -700,59 +706,67 @@ function ExplorationGraphInner({
           size={1}
           className="text-neutral-400/50 dark:text-neutral-700/60"
         />
-        <Controls
-          showInteractive={false}
-          className="!rounded-lg !border !shadow-sm [&>button]:!border-border [&>button]:!bg-card [&>button:hover]:!bg-accent [&_svg]:!fill-foreground"
-        />
-        <MiniMap
-          pannable
-          zoomable
-          className="!bg-card !rounded-lg !border !shadow-sm"
-          maskColor="rgb(148 163 184 / 0.18)"
-          nodeColor={(node) => {
-            const data = node.data as ExploreNodeData | undefined;
-            const k = data?.node ? viewKind(data.node) : "intent";
-            return typeMeta[k]?.hex ?? "#94a3b8";
-          }}
-          nodeStrokeWidth={0}
-          nodeBorderRadius={4}
-        />
-        <Panel position="top-left">
-          <div className="flex flex-col gap-2.5 rounded-lg border bg-card/95 p-3 text-xs shadow-sm backdrop-blur">
-            {isEmpty && <span className="text-muted-foreground">{hint}</span>}
-            <div className="flex flex-wrap gap-x-3 gap-y-1.5">
-              {(["begin", "goal", "intent", "fact", "finding", "hint", "digest"] as ExploreKind[]).map((k) => {
-                const m = typeMeta[k];
-                const Icon = m.icon;
-                return (
-                  <span key={k} className="inline-flex items-center gap-1.5 text-foreground">
-                    <span className={cn("flex size-4 items-center justify-center rounded", m.iconBg)}>
-                      <Icon className="size-2.5 text-white" />
+        {!readOnly && (
+          <Controls
+            showInteractive={false}
+            className="!rounded-lg !border !shadow-sm [&>button]:!border-border [&>button]:!bg-card [&>button:hover]:!bg-accent [&_svg]:!fill-foreground"
+          />
+        )}
+        {!readOnly && (
+          <MiniMap
+            pannable
+            zoomable
+            className="!bg-card !rounded-lg !border !shadow-sm"
+            maskColor="rgb(148 163 184 / 0.18)"
+            nodeColor={(node) => {
+              const data = node.data as ExploreNodeData | undefined;
+              const k = data?.node ? viewKind(data.node) : "intent";
+              return typeMeta[k]?.hex ?? "#94a3b8";
+            }}
+            nodeStrokeWidth={0}
+            nodeBorderRadius={4}
+          />
+        )}
+        {!readOnly && (
+          <Panel position="top-left">
+            <div className="flex flex-col gap-2.5 rounded-lg border bg-card/95 p-3 text-xs shadow-sm backdrop-blur">
+              {isEmpty && <span className="text-muted-foreground">{hint}</span>}
+              <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+                {(["begin", "goal", "intent", "fact", "finding", "hint", "digest"] as ExploreKind[]).map((k) => {
+                  const m = typeMeta[k];
+                  const Icon = m.icon;
+                  return (
+                    <span key={k} className="inline-flex items-center gap-1.5 text-foreground">
+                      <span className={cn("flex size-4 items-center justify-center rounded", m.iconBg)}>
+                        <Icon className="size-2.5 text-white" />
+                      </span>
+                      {t(m.labelKey)}
                     </span>
-                    {t(m.labelKey)}
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-1.5 border-border/60 border-t pt-2 text-muted-foreground">
+                {Object.entries(relLabelKey).map(([k, keyName]) => (
+                  <span key={k} className="inline-flex items-center gap-1.5">
+                    <span className="h-0.5 w-4 rounded-full" style={{ backgroundColor: relColor[k] }} />
+                    {t(keyName)}
                   </span>
-                );
-              })}
+                ))}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-x-3 gap-y-1.5 border-border/60 border-t pt-2 text-muted-foreground">
-              {Object.entries(relLabelKey).map(([k, keyName]) => (
-                <span key={k} className="inline-flex items-center gap-1.5">
-                  <span className="h-0.5 w-4 rounded-full" style={{ backgroundColor: relColor[k] }} />
-                  {t(keyName)}
-                </span>
-              ))}
-            </div>
-          </div>
-        </Panel>
+          </Panel>
+        )}
       </ReactFlow>
-      <NodeDetailSheet
-        node={selected}
-        nodesById={nodesById}
-        onSelect={setSelected}
-        onOpenChange={(o) => !o && setSelected(null)}
-        taskId={taskId}
-        live={live}
-      />
+      {!readOnly && (
+        <NodeDetailSheet
+          node={selected}
+          nodesById={nodesById}
+          onSelect={setSelected}
+          onOpenChange={(o) => !o && setSelected(null)}
+          taskId={taskId}
+          live={live}
+        />
+      )}
     </>
   );
 }
@@ -769,6 +783,7 @@ export function ExplorationGraph({
   taskId,
   live,
   activeIds = NO_ACTIVE,
+  readOnly = false,
 }: {
   nodes: TaskNode[];
   edges: Edge[];
@@ -777,6 +792,9 @@ export function ExplorationGraph({
   taskId?: string;
   live?: LiveState;
   activeIds?: ReadonlySet<string>;
+  // readOnly drops the controls, minimap, legend and detail drawer for a
+  // preview canvas; pan and zoom stay available.
+  readOnly?: boolean;
 }) {
   return (
     <div className={cn("w-full overflow-hidden rounded-xl", className)}>
@@ -788,6 +806,7 @@ export function ExplorationGraph({
           taskId={taskId}
           live={live}
           activeIds={activeIds}
+          readOnly={readOnly}
         />
       </ReactFlowProvider>
     </div>

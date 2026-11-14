@@ -126,6 +126,10 @@ type Server struct {
 	// free slots off the same snapshot and over-promote past the limit.
 	concMu sync.Mutex
 
+	// browsers holds one Chromium per task (see browser_registry.go). The idle
+	// reaper closes sessions no tool has touched for ten minutes.
+	browsers browserSessions
+
 	// Profile changes and OAuth reconciliation share one cross-store mutation order.
 	profileMu    sync.Mutex
 	oauthApplied map[int64]string
@@ -203,6 +207,7 @@ type Server struct {
 	archiveWake chan struct{}
 	archiveWG   sync.WaitGroup
 	side        *sideQuestionState
+	asks        askState
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.

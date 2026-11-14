@@ -70,6 +70,12 @@ C1 Driver (Go, new package `browser/`)
 - Tests: fake-CDP unit tests for ref staleness, iframe offsets, dialog policy; one integration test behind an env flag with real Chromium.
 
 C2 Live view and take-over
+**C1 status (2026-11-13): shipped.** `browser/` implements the pipe transport, the snapshot/ref contract, the dialog policy and crash recovery; the ten tools are seeded to `auto`/`pentest`/`worker` and wrapped by the existing scope guard; `browser_driver` selects the surface. One bug found only by running it: the recorder returns a full proxy URL, and prefixing it again produced `ERR_NO_SUPPORTED_PROXIES` - the first live run navigated nowhere. `proxyURL` now normalizes, with a test.
+
+**C1 wiring decision (2026-11-13).** The driver lands as the `browser/` package; the tools are host tools seeded to `auto`, `pentest` and `worker` only, and the MCP `browser` row is disabled while the native driver is on, because two browser surfaces in one prompt is how a model ends up driving two browsers. A setting `browser_driver = mcp|native` (default `mcp`) flips it, so the native path can be measured against the MCP path on the same fixture before it becomes the default. The driver is per task, kept in a registry keyed by task id, closed when the task stops; navigation goes through `browserURLHost` + `scopeRefusal` so there is one boundary implementation, and every mutating tool returns `{url, title}` so the model re-snapshots instead of assuming.
+
+**C2 transport decision (2026-11-13): SSE frames + POST input, not a WebSocket.** The product already streams activity over SSE and every mutation is a POST; a WebSocket would be new surface for one feature, and the plan's own open decision offered both. Frames go out as base64 JPEG on a dedicated stream with a sequence number, input comes back as `POST /api/tasks/{id}/browser/input` with the same scope guard as navigation, and the driver refuses input from a session that does not own the view.
+
 - Backend: `Page.startScreencast` (JPEG, ack-based backpressure) fanned out per browser. The product has no WebSocket; add one endpoint `GET /api/tasks/{id}/browser/{bid}/live` (WebSocket: frames down, input events up) behind the same auth. Input: `Input.dispatchMouseEvent`, `dispatchKeyEvent`, `insertText`, with viewport scaling.
 - Ownership: `PATCH /api/tasks/{id}/browser/{bid} {owner: agent|operator}`. While the operator owns it, agent browser tools return "operator has the page" instead of acting.
 - Ask protocol on top of `ask_operator`: join a pending ask instead of re-notifying; on agent-side timeout return `{pending:true}`; keep an unclaimed operator answer for 30 minutes keyed by the message.
@@ -113,6 +119,33 @@ E2 Findings upsert rule: dedupe on (target, lower(title)), refresh evidence, nev
 E3 Scope rule model: `{effect, pattern, note}`; exclude wins, longest include wins, no match is `unknown`, not out. Port the ~120-line matcher from `/tmp/executioner/packages/protocol/src/scope.ts` with its tests. Decide first how it composes with the existing `scope/` boundary hook.
 E4 Engagement as an MCP server: `POST /mcp` (JSON-RPC, `initialize` / `tools/list` / `tools/call`), per-session scoped token, profile allow-list enforced in both list and call. Start read-only (`list_assets`, `get_asset`, `list_findings`, `list_scope`) then record tools. Needs a security review before any write tool.
 E5 Prompt text: adapt the impact gate ("as an attacker I could ...") and the reporter's structure into the worker and finding-report prompts.
+
+## E4 write tools: the review that must come first (2026-11-13)
+
+The read-only surface shipped; a write tool (`record_finding`, `add_hint`) would let an external harness change the record. Before any is added, the review must answer:
+
+1. **Attribution.** A write must name the token in the row it creates (`origin`/`worker` = `mcp:<token name>`), so the report can tell a harness-written finding from an agent's.
+2. **Scope.** A write that names an asset must pass the same scope guard as a tool call; a token scoped to one task must not be able to write to another through a crafted id.
+3. **Evidence.** `record_finding` from outside would bypass the fold rule's evidence path unless it goes through `RecordFindingTx`; it must, or a harness can create duplicate findings the fold would have merged.
+4. **Rate and size.** The 120/min limiter and the 8 MiB body cap apply, and a write tool needs a per-token write budget on top.
+5. **Audit.** `mcp_audit` must record the write's payload hash, not just the tool name, so a disputed change can be traced.
+6. **Revocation.** Revoking a token must stop writes immediately; no queued or in-flight write may land after the revoke commits.
+
+Until those six are answered, the surface stays read-only.
+
+## Plan F: deterministic playbooks (discussion, 2026-11-13)
+
+Executioner's executor is a DAG of tool nodes with branches and loops, run serially, one target per run, with a step mode; it has no scope gate, no retries, no resume, and keeps step state in memory. Copying it would put a second scheduler beside the planner, with its own failure modes, and the console's guard would have to be threaded through it.
+
+What the console already has: the planner sequences tools per intent, `task_templates` is metadata only, and Plan D can apply a drafted plan (goals, seed intents, hints, scope) in one transaction.
+
+Recommendation, cheapest first:
+
+1. **Template -> seed intents (S).** Let a template carry a list of seed intents (summary, asset selector, tool hint) and apply it at creation through the Plan D apply path. A template becomes a plan without a model, which covers the repeatable recon pipeline for the price of a schema column and a form.
+2. **`run_playbook(name, target)` (M), only if operators want branching.** A playbook is a TOML file of ordered steps naming manifest tool ids and parameter templates; one tool expands it into `run_tool` calls through the existing resolver, scope guard and rate gate, recording one activity row per step. No branches, no loops, no step mode: a failing step stops the playbook and the worker decides what happens next.
+3. **Do not build a DAG executor.** Branching and loops are where the planner already wins, and where a second scheduler would need the scope gate, retries and resume that Executioner never had.
+
+Decision: start with (1) when a concrete repeatable pipeline is named; (2) only if a fixed sequence longer than a hint can express is actually needed.
 
 Deliberately out: deterministic workflow executor (decide separately whether operator playbooks are wanted; Executioner's executor is serial, has no scope gate, retries or resume), `browser_eval`, CDP network capture/rewrite, Electron plumbing, the CLI/PTY assistant runner.
 

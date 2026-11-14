@@ -15,6 +15,7 @@ import { api } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
 import type { Conversation, PlanDraft } from "@/lib/types";
 
+import { PlanProposalGraph } from "./plan-proposal-graph";
 import { PlanProposalPreview } from "./plan-proposal-preview";
 
 // The drafting assistant is a normal chat agent; it can only propose, because
@@ -211,14 +212,17 @@ export function PlanTab({ taskId }: { taskId: string }) {
     panel = <p className="text-muted-foreground text-xs">{t("loading")}</p>;
   } else if (draft) {
     panel = (
-      <PlanProposalPreview
-        taskId={taskId}
-        draft={draft}
-        onApplied={(updated) =>
-          setDrafts((list) => (list ?? []).map((item) => (item.id === updated.id ? updated : item)))
-        }
-        onDiscarded={load}
-      />
+      <div className="flex flex-col gap-3">
+        <PlanProposalGraph draft={draft} />
+        <PlanProposalPreview
+          taskId={taskId}
+          draft={draft}
+          onApplied={(updated) =>
+            setDrafts((list) => (list ?? []).map((item) => (item.id === updated.id ? updated : item)))
+          }
+          onDiscarded={load}
+        />
+      </div>
     );
   }
 

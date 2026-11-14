@@ -1882,10 +1882,12 @@ export interface PlanScope {
 
 export interface PlanProposal {
   summary: string;
-  goals: PlanGoal[];
-  intents: PlanIntent[];
-  hints: PlanHint[];
-  scope: PlanScope[];
+  // Every section is optional on the wire: the drafting model may omit any of
+  // them, and the preview normalizes before rendering.
+  goals?: PlanGoal[];
+  intents?: PlanIntent[];
+  hints?: PlanHint[];
+  scope?: PlanScope[];
 }
 
 export interface PlanDraft {

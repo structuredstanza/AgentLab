@@ -55,6 +55,18 @@ func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 		tools = append(tools, t)
 		seen[t.Name()] = true
 	}
+	// The native browser driver replaces the Playwright MCP when it is selected:
+	// two browser surfaces in one prompt is how a model ends up driving two
+	// browsers. The scope guard wraps these exactly as it wraps the MCP tools.
+	if s.m.BrowserDriverNative() {
+		for _, t := range s.browserTools() {
+			if seen[t.Name()] {
+				continue
+			}
+			tools = append(tools, scopeGuardTool(s.m.Assets(), t))
+			seen[t.Name()] = true
+		}
+	}
 	custom, err := s.customTools()
 	if err != nil {
 		log.Printf("[custom-tool] failed to load: %v", err)
@@ -531,6 +543,26 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 	s.seedMemoryToolBindings()    // Knowledge/reflection tools: give them their default agent bindings on databases seeded before them (one-time)
 	s.seedCuratorTools()          // Memory-curation tools: seeded bound to "curator" only, so no other agent can reach them
 	s.seedDrafterTools()          // Plan-drafting tools: bound to "drafter" (list_tools is shared with worker/planner), so no other agent can draft a plan
+	if s.m.BrowserDriverNative() {
+		// The built-in driver replaces the Playwright MCP: seed its tools and
+		// disable the MCP row, or every prompt lists two browser tool sets.
+		s.seedBrowserTools()
+		if _, err := s.m.PG().Exec(`UPDATE mcp_servers SET enabled=false WHERE name='browser'`); err != nil {
+			log.Printf("[browser] failed to disable the MCP row: %v", err)
+		}
+		go func() {
+			t := time.NewTicker(time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-t.C:
+					s.reapBrowsers()
+				}
+			}
+		}()
+	}
 	s.seedAutoReportFindingBinding()
 	s.unbindGoalMetDefault()
 	s.reseedGoalsPrompt()     // Added a "extract operation constraints" step to the goals prompt → existing databases get a new default version appended (one-time)

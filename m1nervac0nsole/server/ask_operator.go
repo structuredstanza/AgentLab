@@ -18,20 +18,35 @@ import (
 
 const askOperatorMaxImage = 10 << 20
 
+// askOperatorWait bounds how long the tool blocks for the operator. The ask
+// stays open past it, so a long human delay never loses the question; the
+// default is short enough that a worker turn is not parked on a human for the
+// whole run budget.
+const (
+	askOperatorWaitDefault = 120 * time.Second
+	askOperatorWaitMax     = 600 * time.Second
+)
+
 var askOperatorImageExt = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".webp": true, ".gif": true}
 
-// toolAskOperator lets a worker formally request operator input and pauses the intent.
+// toolAskOperator lets a worker formally request operator input. It waits for
+// the answer instead of pausing the run: the operator replies through the
+// existing intent-message path (which still pauses and resumes when the UI
+// needs to), and a wait that times out leaves the ask open so the question is
+// never lost.
 func (s *Server) toolAskOperator() actool.CoreTool {
 	return wrTool("ask_operator",
-		"Ask the human operator for input you cannot obtain yourself (a captcha solution, an email/SMS OTP code, a 2FA answer, a decision, or an action only they can perform). The question appears in this intent's chat for the operator, optionally with a screenshot, and this intent then pauses; the operator's reply resumes this run with the answer as your next input. Ask precisely, and only when you are genuinely blocked. When the block is environmental (a sandboxed or filtered network path, a missing binary or key, a proxy or TLS failure this runtime cannot fix), do not retry or work around it: include in the question the exact single command the operator should run in their own terminal, as one copy-pastable line, plus what to paste back, then wait.",
+		"Ask the human operator for input you cannot obtain yourself (a captcha solution, an email/SMS OTP code, a 2FA answer, a decision, or an action only they can perform). The question appears in this intent's chat for the operator, optionally with a screenshot, and this tool waits up to timeout_seconds for the reply. The reply is returned as {\"answered\":true,\"ask_id\":\"...\",\"answer\":\"...\"}. If the operator has not answered by then the ask stays open and the result is {\"pending\":true,\"ask_id\":\"...\"}: continue with other work or ask again later, and a retry of the same question collects a late answer immediately. A second call while an ask is already open for this task joins it instead of notifying the operator twice. Ask precisely, and only when you are genuinely blocked. When the block is environmental (a sandboxed or filtered network path, a missing binary or key, a proxy or TLS failure this runtime cannot fix), do not retry or work around it: include in the question the exact single command the operator should run in their own terminal, as one copy-pastable line, plus what to paste back, then wait.",
 		map[string]any{"type": "object", "properties": map[string]any{
-			"question":   map[string]any{"type": "string", "description": "What you need from the operator, precisely. For environmental blocks: the exact single command they should run in their own terminal (one line, copy-pastable) and what to paste back."},
-			"image_path": map[string]any{"type": "string", "description": "Optional path to a screenshot (png/jpg/jpeg/webp/gif, max 10MB)."},
+			"question":        map[string]any{"type": "string", "description": "What you need from the operator, precisely. For environmental blocks: the exact single command they should run in their own terminal (one line, copy-pastable) and what to paste back."},
+			"image_path":      map[string]any{"type": "string", "description": "Optional path to a screenshot (png/jpg/jpeg/webp/gif, max 10MB)."},
+			"timeout_seconds": map[string]any{"type": "integer", "description": "How long to wait for the operator, 1-600 seconds (default 120). The ask stays open after a timeout."},
 		}, "required": []any{"question"}},
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var req struct {
-				Question  string `json:"question"`
-				ImagePath string `json:"image_path"`
+				Question       string `json:"question"`
+				ImagePath      string `json:"image_path"`
+				TimeoutSeconds int    `json:"timeout_seconds"`
 			}
 			_ = json.Unmarshal(in, &req)
 			q := strings.TrimSpace(req.Question)
@@ -48,20 +63,50 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 			if t == nil {
 				return actool.Errorf("Error: task not found"), nil
 			}
-			att, err := stageAskOperatorImage(s.m.dir, taskID, req.ImagePath)
-			if err != nil {
-				return actool.Errorf("Error: " + err.Error()), nil
+			// A late answer for exactly this question is the operator's reply to
+			// a previous attempt: hand it over before asking again.
+			if askID, answer, ok := s.asks.takeLate(taskID, q); ok {
+				return actool.Text(askOperatorAnswer(askID, answer)), nil
 			}
-			text, att := handoffText(q, att, s.hasProviderCredentials())
-			act := userActivityWithAttachments("worker", text, att)
-			node := ri.IntentID
-			act.NodeID = &node
-			s.engine.emitActivity(t, act)
-			if _, err := s.applyIntentControl(context.Background(), t, ri.IntentID, "pause", firstLine(q, 120), ""); err != nil {
-				return actool.Errorf("Error: question delivered but pausing the intent failed: " + err.Error()), nil
+			ask, created := s.asks.join(taskID, q)
+			if created {
+				att, err := stageAskOperatorImage(s.m.dir, taskID, req.ImagePath)
+				if err != nil {
+					s.asks.drop(taskID, ask)
+					return actool.Errorf("Error: " + err.Error()), nil
+				}
+				text, att := handoffText(q, att, s.hasProviderCredentials())
+				act := userActivityWithAttachments("worker", text, att)
+				node := ri.IntentID
+				act.NodeID = &node
+				s.engine.emitActivity(t, act)
 			}
-			return actool.Text("Question delivered to the operator. This intent is pausing now: finish your current step, record everything you already know as facts, and stop. The operator's reply will resume this run and arrive as your next input."), nil
+			timeout := askOperatorWaitDefault
+			if req.TimeoutSeconds > 0 {
+				timeout = time.Duration(req.TimeoutSeconds) * time.Second
+				if timeout > askOperatorWaitMax {
+					timeout = askOperatorWaitMax
+				}
+			}
+			wctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			if answer, ok := s.asks.wait(wctx, ask); ok {
+				return actool.Text(askOperatorAnswer(ask.id, answer)), nil
+			}
+			return actool.Text(askOperatorPending(ask.id)), nil
 		})
+}
+
+// askOperatorAnswer and askOperatorPending give the agent a stable result shape
+// to branch on: answered carries the text, pending says the ask is still open.
+func askOperatorAnswer(askID, answer string) string {
+	b, _ := json.Marshal(map[string]any{"answered": true, "ask_id": askID, "answer": answer})
+	return string(b)
+}
+
+func askOperatorPending(askID string) string {
+	b, _ := json.Marshal(map[string]any{"pending": true, "ask_id": askID})
+	return string(b)
 }
 
 // toolReportBlocked lets the planner stop an engagement that cannot continue
@@ -171,7 +216,7 @@ func handoffText(question string, att []chatAttachment, imagesWithheld bool) (st
 		text += " (screenshot saved at " + att[0].Path + " - open it in the task workspace)"
 		att = nil
 	}
-	return text + " (this intent is pausing; reply here to resume it with your answer)", att
+	return text + " (reply here with your answer; the ask stays open until you do)", att
 }
 
 func stageAskOperatorImage(dataDir, taskID, src string) ([]chatAttachment, error) {

@@ -1730,7 +1730,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const draft = (mockPlanDrafts.get(seg[1]) ?? []).find((item) => item.id === Number(seg[3]));
     if (!draft) throw new Error("Plan draft not found");
     if (draft.status !== "draft") throw new Error("Plan draft is not pending");
-    if (draft.proposal.scope.some((rule) => rule.effect === "include") && b.allow_include !== true)
+    if ((draft.proposal.scope ?? []).some((rule) => rule.effect === "include") && b.allow_include !== true)
       throw new Error("The draft adds scope inclusions: apply it with allow_include");
     draft.status = "applied";
     draft.applied_at = new Date().toISOString();

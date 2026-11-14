@@ -75,9 +75,13 @@ call `ask_operator` instead of guessing, brute-forcing or abandoning the flow:
   therefore not attached to the conversation: the hand-off text names the staged
   file (`uploads/...`) and the operator opens it in the task workspace. That is
   the intended behaviour, not an error - do not resend without the image.
-- `ask_operator` pauses this intent. Finish the current step, record what you
-  already know as facts, and stop; the operator's reply resumes the run and
-  arrives as your next input.
+- `ask_operator` waits for the operator for `timeout_seconds` (default 120,
+  maximum 600). An answer arrives in the result. On timeout it returns
+  `{pending: true, ask_id}` and the ask stays open: record what you already know
+  as facts, and either continue with what you can do without the answer or call
+  `ask_operator` again later with the same question - a late answer is kept for
+  30 minutes and a retry collects it immediately. A second call while one is
+  pending joins the same ask instead of asking twice.
 
 ## Practical notes
 

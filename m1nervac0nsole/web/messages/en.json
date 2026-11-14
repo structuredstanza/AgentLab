@@ -342,6 +342,7 @@
       "noDraft": "No draft yet. The drafter's proposal appears here for review.",
       "preview": {
         "title": "Proposal",
+        "graph": "Plan graph",
         "statusDraft": "Awaiting your decision",
         "statusApplied": "Applied",
         "goals": "Goals",

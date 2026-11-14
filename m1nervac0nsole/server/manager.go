@@ -286,6 +286,10 @@ type Manager struct {
 
 // Settings keys the UI toggles at runtime.
 const (
+	// browser_driver picks the browser surface: "mcp" (the Playwright server,
+	// default) or "native" (the built-in driver in browser/). Read at tool
+	// assembly, so a change applies to the next run.
+	settingBrowserDriver       = "browser_driver"
 	settingTrafficCapture      = "traffic_capture"
 	settingAgentTrafficBinding = "agent_traffic_binding"
 	settingWebSearchOn         = "web_search_enabled"
@@ -519,6 +523,13 @@ func (m *Manager) TrafficEnabled() bool {
 
 // SetTrafficEnabled persists and applies the traffic-capture toggle. Callers must
 // rebuild the agents afterwards so the new proxy/tools/prompt take hold.
+// BrowserDriverNative reports whether the built-in driver replaces the
+// Playwright MCP for this process. Read per assembly, so it is cheap.
+func (m *Manager) BrowserDriverNative() bool {
+	v, _, _ := m.pg.GetSetting(settingBrowserDriver)
+	return v == "native"
+}
+
 func (m *Manager) SetTrafficEnabled(on bool) error {
 	if err := m.pg.SetBool(settingTrafficCapture, on); err != nil {
 		return err

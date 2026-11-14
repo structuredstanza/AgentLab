@@ -132,10 +132,27 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "node is not an intent")
 		return
 	}
+	// An ask_operator wait does not pause the run, so a reply can arrive while
+	// the intent is still running. Deliver it to the open ask and let the tool
+	// return it; no pause/resume round trip is needed for that case.
+	if node.State == "running" {
+		if askID, answered := s.asks.answer(t.ID, message); answered {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"id": iid, "state": "running", "accepted": true, "request_id": requestID,
+				"ask_id": askID, "answered": true,
+			})
+			return
+		}
+	}
 	if node.State != "paused" {
 		writeErr(w, http.StatusConflict, errIntentNotPaused)
 		return
 	}
+	// The paused path resumes the run with this message. If an ask is still
+	// open, this message is its answer: resolve it now and keep it keyed by the
+	// question, so a reply that arrived after the agent stopped waiting is not
+	// lost if the resume fails or the agent asks again.
+	askID, _ := s.asks.answer(t.ID, message)
 	agentMessage, ok := s.prepareChatMentionMessage(w, message)
 	if !ok {
 		return
@@ -154,10 +171,14 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"id":         iid,
 		"state":      "running",
 		"accepted":   true,
 		"request_id": requestID,
-	})
+	}
+	if askID != "" {
+		out["ask_id"] = askID
+	}
+	writeJSON(w, http.StatusOK, out)
 }

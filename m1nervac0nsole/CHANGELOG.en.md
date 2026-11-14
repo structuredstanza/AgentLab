@@ -51,6 +51,20 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - The browser is scope-judged on what it is told, not on what it does. `browser_navigate` passes the scope guard because it carries a URL; a click, a form submission or `browser_evaluate` can still reach a host the task excludes. The recorder captures that traffic and the browser skill forbids directing the browser outside the boundary, but the guard does not enforce it. Accepted because the browser is opt-in for an engagement; enforcing it belongs at the proxy, which sees every host before the page does.
 - Report why an MCP server failed to start. A stdio server that exits during the handshake reported only `connection closed`, with its stderr discarded; the child's last 4 KiB of stderr now rides in the error and on the MCP page.
 
+### Browser driver
+
+- Give the guest its own browser driver. `browser/` speaks CDP over Chromium's `--remote-debugging-pipe` - no WebSocket, no new dependency - and implements the snapshot/ref contract: `- role "name" [ref=gNeM]`, with value, checked, disabled and required rendered, 2000-line cap, and refs invalidated by a generation that bumps on every top-level navigation (`stale reference, take a new snapshot`). It also carries the dialog policy (accept within 2 seconds of an agent action, otherwise park the dialog for the operator) and crash recovery on the same profile.
+- Ten tools - `browser_open`, `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`, `browser_select`, `browser_wait`, `browser_screenshot`, `browser_upload` - bound to `auto`, `pentest` and `worker` only, wrapped by the same scope guard as the MCP tools (the navigation argument and the page it landed on), launched against the recording proxy so every request the browser makes is evidence. `browser_driver` selects the surface (`mcp` by default, `native`); when native, the MCP browser row is disabled so a prompt never lists two browsers, and idle sessions close after ten minutes.
+- `browser_screenshot` writes the PNG into the task workspace and returns its path; the harness has no image tool result, so the path is what the model and the operator get.
+
+### Operator hand-off
+
+- `ask_operator` now waits for the operator up to `timeout_seconds` (default 120, maximum 600) instead of pausing the intent. A second call while one is pending joins the same ask rather than asking twice; a timeout returns `{pending: true, ask_id}` and leaves the ask open, and a late answer is kept for 30 minutes so a retry collects it immediately.
+
+### Plan preview
+
+- A pending draft now renders on the exploration-graph canvas as a read-only synthetic graph - one node per goal and intent, goal-to-intent and `depends_on` edges, laid out by the existing layered layout - above the diff-style list that keeps the exact text.
+
 ### Scope rules
 
 - Let the operator write rules over the boundary the hunt accumulates. A rule (`{effect, pattern, note}`, stored in `task_scope_rules`) decides for the hosts it matches before any `task_scope` row does, so "include api.corp.example" is obeyed even when a broad `root_domain` row excludes `corp.example`. Within the rule layer the `scope` package keeps its semantics: an exclusion beats an include, the longest include wins, and no match is `unknown`, which never blocks. Routes are `GET`/`POST`/`DELETE /api/tasks/{id}/scope/rules`, and the task overview has a Rules section beside the rows.

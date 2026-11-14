@@ -22,17 +22,24 @@ var browserNavTools = map[string]bool{
 	"mcp__browser__open":             true,
 	"mcp__browser__browser_navigate": true,
 	"mcp__browser__browser_open":     true,
+	// The native driver's tools take the same boundary checks.
+	"browser_navigate": true,
+	"browser_open":     true,
 }
 
 // browserToolPrefix marks every tool of the browser MCP server.
 const browserToolPrefix = "mcp__browser__"
+
+// nativeBrowserPrefix marks the tools of the built-in driver (browser/), which
+// take the same boundary checks as the MCP server's.
+const nativeBrowserPrefix = "browser_"
 
 // scopeGuardTool wraps a browser tool with the task boundary: a navigation's url
 // argument is judged before the page loads, and the page every call reports is
 // judged after it, so a server-side redirect or a click that navigates cannot
 // land the run off-scope. Other MCP servers' tools are returned unchanged.
 func scopeGuardTool(assets *db.AssetStore, t actool.CoreTool) actool.CoreTool {
-	if !strings.HasPrefix(t.Name(), browserToolPrefix) {
+	if !strings.HasPrefix(t.Name(), browserToolPrefix) && !strings.HasPrefix(t.Name(), nativeBrowserPrefix) {
 		return t
 	}
 	return &scopeGuard{CoreTool: t, assets: assets}

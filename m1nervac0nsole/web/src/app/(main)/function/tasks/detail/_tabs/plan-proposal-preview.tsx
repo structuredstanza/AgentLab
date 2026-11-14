@@ -16,7 +16,8 @@ import type { PlanDraft, PlanProposal } from "@/lib/types";
 // hasInclude mirrors plan.HasInclude on the backend. An inclusion widens what
 // the guard will allow, so Apply stays disabled until the operator says so.
 export function hasInclude(proposal: PlanProposal): boolean {
-  return proposal.scope.some((rule) => rule.effect === "include");
+  // A proposal may omit any section; only a present scope can widen the task.
+  return (proposal.scope ?? []).some((rule) => rule.effect === "include");
 }
 
 function Section({ title, children, testId }: { title: string; children: React.ReactNode; testId: string }) {
@@ -42,7 +43,13 @@ export function PlanProposalPreview({
   const t = useTranslations("taskDetail.plan");
   const [includeAck, setIncludeAck] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  // A proposal from the model may omit any section, so normalize once here and
+  // let the render below read plain arrays.
   const proposal = draft.proposal;
+  const goals = proposal.goals ?? [];
+  const intents = proposal.intents ?? [];
+  const hints = proposal.hints ?? [];
+  const scope = proposal.scope ?? [];
   const needsAck = hasInclude(proposal);
   const pending = draft.status === "draft";
   const nodeCount = (draft.created_node_ids ?? []).length;
@@ -91,11 +98,11 @@ export function PlanProposalPreview({
       <Separator />
 
       <Section title={t("preview.goals")} testId="plan-goals">
-        {proposal.goals.length === 0 ? (
+        {goals.length === 0 ? (
           <p className="text-muted-foreground text-xs">{t("preview.none")}</p>
         ) : (
           <ul className="flex flex-col gap-1">
-            {proposal.goals.map((goal) => (
+            {goals.map((goal) => (
               <li key={goal.ref} className="flex flex-wrap items-baseline gap-1.5 text-xs">
                 <Badge variant="outline">{goal.ref}</Badge>
                 <span className="min-w-0 flex-1">{goal.text}</span>
@@ -107,11 +114,11 @@ export function PlanProposalPreview({
       </Section>
 
       <Section title={t("preview.intents")} testId="plan-intents">
-        {proposal.intents.length === 0 ? (
+        {intents.length === 0 ? (
           <p className="text-muted-foreground text-xs">{t("preview.none")}</p>
         ) : (
           <ul className="flex flex-col gap-1.5">
-            {proposal.intents.map((intent) => (
+            {intents.map((intent) => (
               <li key={intent.ref} className="flex flex-col gap-0.5 text-xs">
                 <div className="flex flex-wrap items-baseline gap-1.5">
                   <Badge variant="outline">{intent.ref}</Badge>
@@ -133,11 +140,11 @@ export function PlanProposalPreview({
       </Section>
 
       <Section title={t("preview.hints")} testId="plan-hints">
-        {proposal.hints.length === 0 ? (
+        {hints.length === 0 ? (
           <p className="text-muted-foreground text-xs">{t("preview.none")}</p>
         ) : (
           <ul className="flex flex-col gap-1">
-            {proposal.hints.map((hint, index) => (
+            {hints.map((hint, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: hints carry no id and the list is read-only.
               <li key={index} className="flex flex-wrap items-baseline gap-1.5 text-xs">
                 {hint.rule ? <Badge variant="destructive">{t("preview.rule")}</Badge> : null}
@@ -149,11 +156,11 @@ export function PlanProposalPreview({
       </Section>
 
       <Section title={t("preview.scope")} testId="plan-scope">
-        {proposal.scope.length === 0 ? (
+        {scope.length === 0 ? (
           <p className="text-muted-foreground text-xs">{t("preview.none")}</p>
         ) : (
           <ul className="flex flex-col gap-1">
-            {proposal.scope.map((rule) => (
+            {scope.map((rule) => (
               <li
                 key={`${rule.effect}:${rule.kind}:${rule.value}`}
                 className="flex flex-wrap items-baseline gap-1.5 text-xs"
