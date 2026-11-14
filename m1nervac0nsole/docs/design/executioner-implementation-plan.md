@@ -118,8 +118,9 @@ Deliberately out: deterministic workflow executor (decide separately whether ope
 
 ---
 
-## Open decisions for the owner
-1. Plan B step 1: enable the Playwright MCP by default for capture-on tasks?
-2. Plan C: a WebSocket endpoint is new surface for this product - acceptable, or SSE frames + POST input?
-3. Plan D: may an applied plan create scope exclusions directly, or only propose them for a second confirmation?
-4. Plan E4: is exposing task state to external agent CLIs wanted at all?
+## Decisions
+1. Plan B step 1: enable the Playwright MCP by default for capture-on tasks? **Settled (2026-11-13): yes.** It is seeded enabled, bound directly to the executing agents, and starts with `playwright-mcp --executable-path /opt/ms-playwright/current/chrome --no-sandbox` plus `--ignore-https-errors` when the recorder is attached.
+2. Plan C: WebSocket endpoint or SSE + POST input? **Moot.** Plan C is closed: the browser is available, is used when the goal names it, and its snapshot is adequate.
+3. Plan D: may an applied plan create scope exclusions directly? **Settled: exclusions yes, inclusions only with `allow_include`.** An exclusion narrows the engagement; an inclusion widens what the guard allows, so it needs the operator to say so explicitly.
+4. Plan E3: does the rule model replace the `scope/` hook or feed it? **Open.** Recommendation: the model is data, `scope/` stays the enforcement point; the matcher lands inside it so there is one place that decides.
+5. Plan E4: is exposing task state to external agent CLIs wanted at all? **Open.** If yes, read-only first and a security review before any write tool.
