@@ -24,6 +24,7 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - Refuse to auto-complete a task that still has paused intents, and push a churn trigger when three intents on one asset are exhausted so the planner changes technique instead of re-issuing a variant.
 - Report coverage explicitly: the generated report has a **Coverage** section naming in-scope assets with no recorded exploration activity, so an untouched host reads as untested rather than clean.
 - Block archiving a task whose findings still have no bound traffic evidence (`evidence_version = 0`), naming each finding; `{"force": true}` overrides it for findings that are not HTTP traffic.
+- Close two scope-check bypasses. A URL carrying userinfo (`https://user:pass@host/`) reported the user as the host in both the guard's extractor and `scope.ParseAsset`, so the excluded host was never judged; and a service whose address was stored in the `domain` column (the shape `UpsertOtherService` writes for an IP literal) never reached `exact_ip`, `fuzzy_ip` or `cidr` asset-block rules. Both now classify the real host. The egress proxy also checks the engagement gate before its reachability probe, so a refused CONNECT no longer dials the target or answers 502 for a closed port.
 
 ### Operational memory
 
@@ -96,7 +97,7 @@ This document records the changes in this edition. The format follows [Keep a Ch
 
 ### Findings
 
-- Fold a repeated finding into its row. The planner and the workers converge on one vulnerability from different intents, and a second row split the evidence between them and inflated the report. A repeat now matches on task, case-insensitive name and asset set (so the same issue on two hosts stays two findings, and the asset order does not matter), refreshes severity, summary, evidence and assets, adds the new intent's link and anchors, and leaves `evidence_version` alone, because that counts bound traffic and the archive gate reads 0 as "no proof bound". The status is never touched: a human's false positive or resolved decision outlives a re-observation. A finding without a name is never folded, because an empty name is not an identity.
+- Fold a repeated finding into its row. The planner and the workers converge on one vulnerability from different intents, and a second row split the evidence between them and inflated the report. A repeat now matches on task, case-insensitive name and asset set (so the same issue on two hosts stays two findings, and the asset order does not matter), refreshes severity, summary, evidence and assets, adds the new intent's link and anchors, and leaves `evidence_version` alone, because that counts bound traffic and the archive gate reads 0 as "no proof bound". The status is never touched: a human's false positive or resolved decision outlives a re-observation. A finding without a name is never folded, because an empty name is not an identity. A repeat that carries no screenshot keeps the screenshots the first report recorded.
 
 ### Drafted plans
 
@@ -114,6 +115,11 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - Move the curator chat out of the side pane into a **Curator** tab beside Knowledge, Reflections and Preview.
 - Stop the coverage-graph drawer from clipping its content: the Radix scroll-area table wrapper is pinned to the panel width with a fixed layout, so long intent text wraps inside the drawer instead of widening it past the viewport.
 - Sending a message to a worker that is still running now pauses the intent and delivers the message; previously the send was a silent no-op because the server only accepts messages for a paused intent. The send button is available while the worker runs.
+- Deliver an operator message to the intent it names. A message to a running intent was consumed as any open `ask_operator` answer for the task, so a message meant for worker B was silently dropped and worker A proceeded on it as its answer; the ask now records its intent, only that intent's message resolves it, and any other running intent gets the normal 409.
+- Keep a trigger's watermark ahead of its fire. A failed `TouchTriggerFire` or `SetSchedState` write left the watermark behind, so the next 5-second tick re-fired the same interval trigger or event batch; the write now happens first and a failure skips the tick.
+- Bound the memory and lesson reads on agent construction with a 5-second server-rooted context, so an unresponsive database cannot hold a task's admission open and block pause or delete.
+- Refuse `browser_open` and `browser_navigate` outside a task instead of launching a Chromium under an empty task id that every request then refuses.
+- Truncate an ingested body on a rune boundary, and count goal length in characters, so a multi-byte body is not stored as invalid UTF-8 and a CJK goal is measured as the message says.
 
 ### Identifier cutover
 
@@ -208,7 +214,9 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - Retire the `m1nervac0nsole-selfupdate` detection indicator and its rule: the self-update client was removed, so nothing emits that User-Agent. The Sigma, Suricata, ATT&CK, triage and defense-guide material no longer tells defenders to hunt for it.
 - Centralize the web unit tests in `web/tests/` and run the two suites that had never executed (`activity-merge`, `chat-mentions`).
 - Delete verified dead code and orphans: unused `db/nkey.go` key builders and other unreachable Go helpers, 22 unreferenced web components, 16 uncalled API methods, 19 unused npm dependencies, and unreferenced scripts and docs. Restore the multibyte test fixtures that the ASCII cutover had hollowed out.
+- Delete the guard's in-memory audit ring (`Audit`, `AuditEntry`, `record`), a writer with no reader since `GET /api/audit` was removed; four unreferenced db/agent helpers (`GoalCountsAll`, `FindingIDByNodeID`, the non-transactional `SetFindingEvidencePath`, `ToolSet.CoverageDisabled`); the two dead cookie writers; and seven unnecessary web exports. `deadcode -test ./...` now reports nothing unreachable.
 - `lab start` now refuses to share `state/` with any other running `m1nervac0nsole-agentlab-*` sandbox (it checked a fixed list of old names), `tests/run.sh` rejects an unknown area, and `dev.sh` serves the frontend on the `:5173` that the docs and CORS allowlist expect.
+- Harden the host and guest scripts: a stopped VM makes `./lab status` exit 0 with a note instead of an error, export writes UTF-8 explicitly, the sandbox spec's host mounts follow a relocated checkout (`./lab` used to mount empty `/state` and missing `/dist` and secrets anywhere but the checked-in path), `stop` reuses the profile cleanup, a failed egress-proxy start terminates the process instead of orphaning it on the port, and the two manual verifiers refuse to run under `python -O`, where every check is an assert and would silently pass.
 
 ### Audit fixes
 

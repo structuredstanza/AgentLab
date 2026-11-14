@@ -185,6 +185,8 @@
       "settings": "System settings",
       "skills": "Skills",
       "tasks": "Tasks",
+      "tokens": "API tokens",
+      "toolbox": "Toolbox",
       "tools": "Tools",
       "traffic": "Traffic",
       "workspace": "Workspace",

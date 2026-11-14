@@ -89,7 +89,10 @@ func (s *Server) memoryRoundBlock(ctx context.Context, taskID, intentID int64, b
 // see. It is data from earlier work, never instructions, and the whole block is
 // capped by the packer.
 func (s *Server) taskMemoryBlock(t *Task, taskID int64, mode string) string {
-	ctx := context.Background()
+	// Bounded and rooted at the server: agent construction is on the task's
+	// admission path, so an unresponsive database must not hold it open forever.
+	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	defer cancel()
 	block, shown := s.memoryStartBlock(ctx, t, taskID)
 	log.Printf("[memory] task %s: %d knowledge entries shown (mode %s)", t.ID, len(shown.Knowledge), mode)
 	s.recordKnowledgeUsage(ctx, taskID, "task_start", shown.Knowledge)

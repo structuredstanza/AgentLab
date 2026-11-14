@@ -259,6 +259,19 @@ class StateStorageTests(unittest.TestCase):
         path, temporary = lab.sandbox_conf(None)
         self.assertEqual((path, temporary), (lab.SANDBOX_CONF, False))
 
+    def test_host_mounts_follow_a_relocated_checkout(self):
+        # The spec mounts host paths under the repository root; a clone at
+        # another path must rewrite them or /state, /dist and the secrets mount
+        # empty or missing paths.
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(lab, 'ROOT', Path(tmp)):
+                path, temporary = lab.sandbox_conf(None)
+                self.assertTrue(temporary)
+                text = path.read_text()
+                path.unlink()
+        self.assertIn(tmp + '/state:/state', text)
+        self.assertNotIn('/mnt/Research/AgentLab/', text)
+
     def test_quota_is_rewritten_only_on_the_state_mount(self):
         text, temporary = self.conf_text(409600)
         self.assertTrue(temporary)

@@ -279,13 +279,13 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
 }
 
 // Subscription login (Claude Code, Codex, Antigravity) runs through one SDK flow. The provider sign-in page is opened by the user, never by the console.
-export interface LLMOAuthPrompt {
+interface LLMOAuthPrompt {
   message: string;
   placeholder?: string;
   secret?: boolean;
   allow_empty?: boolean;
 }
-export interface LLMOAuthStart {
+interface LLMOAuthStart {
   session_id: string;
   status: "pending";
 }

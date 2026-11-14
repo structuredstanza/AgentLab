@@ -232,7 +232,6 @@ class SupervisorCleanupTests(unittest.TestCase):
                          mock.patch.object(supervisor, 'app_env', return_value={}), \
                          mock.patch.object(supervisor, 'admin_password', return_value='fixture'), \
                          mock.patch.object(supervisor, 'start_egress', return_value=mock.Mock(**{'poll.return_value': None})), \
-                         mock.patch.object(supervisor, 'start_egress', return_value=mock.Mock(**{'poll.return_value': None})), \
              mock.patch.object(supervisor, 'start_tcpdump', return_value=tcpd), \
                          mock.patch.object(supervisor, 'start_app', return_value=app), \
                          mock.patch.object(supervisor, 'write_file', side_effect=write), \

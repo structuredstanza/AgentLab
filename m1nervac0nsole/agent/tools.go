@@ -271,9 +271,6 @@ func (t *ToolSet) SetWorkDir(dir string) { t.workDir = dir }
 // asset queries), not merely a coverage denominator.
 func (t *ToolSet) SetCoverageEnabled(enabled bool) { t.coverageDisabled = !enabled }
 
-// CoverageDisabled reports whether the coverage feature is off for this task.
-func (t *ToolSet) CoverageDisabled() bool { return t.coverageDisabled }
-
 // coverageOnlyTools are the LLM tools that only make sense when asset coverage is
 // on. When the feature is off they are filtered out of the agent's tool list so
 // they neither pollute the prompt nor let the model build a disabled denominator.

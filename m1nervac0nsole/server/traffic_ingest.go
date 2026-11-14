@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/traffic"
 )
@@ -58,5 +59,11 @@ func truncateBody(s string) string {
 	if len(s) <= maxIngestBodySize {
 		return s
 	}
-	return s[:maxIngestBodySize] + "\n... [truncated by ingest]"
+	// Back off to a rune boundary: a byte cut inside a multi-byte character
+	// stores invalid UTF-8, and the evidence preview then calls the body binary.
+	cut := maxIngestBodySize
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n... [truncated by ingest]"
 }

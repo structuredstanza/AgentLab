@@ -13,7 +13,7 @@ import type { AssetInterceptKind, AssetInterceptRuleInput } from "@/lib/types";
 // Uses NativeSelect (native <select>) instead of shadcn Select, because this editor is rendered inside a Sheet drawer,
 // shadcn Select's dropdown portals to body, and clicking outside triggers the drawer's "click outside to close" and closes it by mistake; native dropdowns do not have this issue.
 // The label is resolved at render time via t(`kind.${value}`) (ASSET_INTERCEPT_KIND_OPTIONS has no other consumers).
-export const ASSET_INTERCEPT_KIND_OPTIONS: {
+const ASSET_INTERCEPT_KIND_OPTIONS: {
   value: AssetInterceptKind;
   placeholder: string;
 }[] = [

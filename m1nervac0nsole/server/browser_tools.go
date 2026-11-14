@@ -139,7 +139,10 @@ func (s *Server) browserOpenTool() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			taskID, _ := browserTaskID(ctx)
+			taskID, err := browserTaskID(ctx)
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
 			if liveHolder(taskID) != "" {
 				return actool.Errorf("Error: " + operatorHolds), nil
 			}
@@ -170,7 +173,10 @@ func (s *Server) browserNavigateTool() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			taskID, _ := browserTaskID(ctx)
+			taskID, err := browserTaskID(ctx)
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
+			}
 			if liveHolder(taskID) != "" {
 				return actool.Errorf("Error: " + operatorHolds), nil
 			}

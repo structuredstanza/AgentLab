@@ -552,28 +552,36 @@ def start_egress(sess, binary):
     with open(EGRESS_LOG, "ab") as logf:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
                              start_new_session=True)
-    sess.m["egress"] = {"status": "starting", "pid": p.pid, "addr": EGRESS_ADDR,
-                        "dir": EGRESS_DIR, "ca": EGRESS_CA, "log": EGRESS_LOG,
-                        "started_at": now_iso()}
-    sess.save()
-    host, port = EGRESS_ADDR.rsplit(":", 1)
-    deadline = time.monotonic() + EGRESS_TIMEOUT
-    while True:
-        if p.poll() is not None:
-            raise Fatal(f"egress proxy exited during start (rc={p.returncode}); see {EGRESS_LOG}")
+    try:
+        sess.m["egress"] = {"status": "starting", "pid": p.pid, "addr": EGRESS_ADDR,
+                            "dir": EGRESS_DIR, "ca": EGRESS_CA, "log": EGRESS_LOG,
+                            "started_at": now_iso()}
+        sess.save()
+        host, port = EGRESS_ADDR.rsplit(":", 1)
+        deadline = time.monotonic() + EGRESS_TIMEOUT
+        while True:
+            if p.poll() is not None:
+                raise Fatal(f"egress proxy exited during start (rc={p.returncode}); see {EGRESS_LOG}")
+            try:
+                with socket.create_connection((host, int(port)), timeout=1):
+                    break
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                raise Fatal(f"egress proxy did not listen on {EGRESS_ADDR} within {EGRESS_TIMEOUT}s")
+            time.sleep(0.2)
+        if not os.path.exists(EGRESS_CA):
+            raise Fatal(f"egress proxy did not write a CA to {EGRESS_CA}")
+        with open(EGRESS_CA, "rb") as ca:
+            ca_sha256 = hashlib.file_digest(ca, "sha256").hexdigest()
+        sess.m["egress"].update(status="running", process=proc_info(p.pid), ca_sha256=ca_sha256)
+        sess.save()
+    except BaseException:
         try:
-            with socket.create_connection((host, int(port)), timeout=1):
-                break
-        except OSError:
-            pass
-        if time.monotonic() > deadline:
-            raise Fatal(f"egress proxy did not listen on {EGRESS_ADDR} within {EGRESS_TIMEOUT}s")
-        time.sleep(0.2)
-    if not os.path.exists(EGRESS_CA):
-        raise Fatal(f"egress proxy did not write a CA to {EGRESS_CA}")
-    sess.m["egress"].update(status="running", process=proc_info(p.pid),
-                            ca_sha256=hashlib.sha256(open(EGRESS_CA, "rb").read()).hexdigest())
-    sess.save()
+            stop_egress(sess, p)
+        except Exception as error:
+            sess.error(f"egress proxy startup cleanup failed: {error}")
+        raise
     log(f"egress proxy up on {EGRESS_ADDR}")
     return p
 

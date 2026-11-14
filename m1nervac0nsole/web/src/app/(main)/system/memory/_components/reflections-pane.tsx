@@ -20,7 +20,7 @@ import type { Reflection, ReflectionKind, ReflectionQuery, ReflectionStats, Task
 
 import { ReflectionDetail } from "./reflection-detail";
 
-export const REFLECTION_KINDS: ReflectionKind[] = ["opsec", "noise", "lookfor", "learning", "mistake"];
+const REFLECTION_KINDS: ReflectionKind[] = ["opsec", "noise", "lookfor", "learning", "mistake"];
 
 function fmtDate(ts: string): string {
   return new Date(ts).toLocaleString(getDateLocale(), {

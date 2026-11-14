@@ -279,11 +279,25 @@ func (p *Proxy) handle(ctx context.Context, conn net.Conn) {
 // as the site's answer. A probe keeps "the port is open" a fact about the
 // target.
 func (p *Proxy) mitm(ctx context.Context, conn net.Conn, br *bufio.Reader, authority string) {
+	host := hostFromAddr(authority)
+	// The gate runs before the probe. A refused host must not receive a TCP
+	// connection: otherwise a closed port answers 502 instead of 403 and the
+	// proxy becomes a port-state oracle for out-of-scope infrastructure.
+	if p.Gate != nil {
+		if ok, reason := p.Gate.Allow(ctx, host, ""); !ok {
+			started := time.Now()
+			logEvent(ctx, Event{Time: started, Method: "CONNECT", Host: host,
+				Refused: true, Reason: reason, Duration: time.Since(started)})
+			body := "blocked by engagement policy: " + reason
+			fmt.Fprintf(conn, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+				len(body), body)
+			return
+		}
+	}
 	if !p.reachable(ctx, authority) {
 		writeEgressFailure(conn, egressDialFailed)
 		return
 	}
-	host := hostFromAddr(authority)
 	leaf, err := p.CA.Leaf(host)
 	if err != nil {
 		fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")

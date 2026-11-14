@@ -22,6 +22,7 @@ func TestRecordFindingFoldsARepeat(t *testing.T) {
 	first, err := es.RecordFinding(context.Background(), RecordFindingInput{
 		TaskID: task.ID, ExplorationID: expID, VulnClass: "sqli", Name: "Login form SQL injection",
 		Severity: SeverityHigh, Summary: "the login form is injectable", Evidence: "poc one", Worker: "worker-a",
+		Screenshots: []string{"tasks/1/screenshots/first.png"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +67,32 @@ func TestRecordFindingFoldsARepeat(t *testing.T) {
 	}
 	if version != 0 {
 		t.Fatalf("evidence_version = %d after a text-only refresh, want 0 (the archive gate reads 0 as no bound proof)", version)
+	}
+
+	// A repeat may carry no screenshot (the planner never drives the browser),
+	// so an empty list must keep the evidence the first report recorded; a
+	// repeat that does carry one replaces it.
+	var shots string
+	if err := d.QueryRow(`SELECT screenshots::text FROM findings WHERE id=$1`, first.FindingID).
+		Scan(&shots); err != nil {
+		t.Fatal(err)
+	}
+	if shots != `["tasks/1/screenshots/first.png"]` {
+		t.Fatalf("screenshots after a repeat without evidence = %s, want the first report's", shots)
+	}
+	if _, err := es.RecordFinding(context.Background(), RecordFindingInput{
+		TaskID: task.ID, ExplorationID: expID, VulnClass: "sqli", Name: "Login form SQL injection",
+		Severity: SeverityCritical, Summary: "same proof again", Evidence: "poc two", Worker: "worker-c",
+		Screenshots: []string{"tasks/1/screenshots/second.png"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT screenshots::text FROM findings WHERE id=$1`, first.FindingID).
+		Scan(&shots); err != nil {
+		t.Fatal(err)
+	}
+	if shots != `["tasks/1/screenshots/second.png"]` {
+		t.Fatalf("screenshots after a repeat with evidence = %s, want the new one", shots)
 	}
 
 	// A repeat never moves it either.

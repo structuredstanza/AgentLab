@@ -229,6 +229,9 @@ func marshalStringArray(items []string) string {
 	}
 	escaped := make([]string, len(items))
 	for i, s := range items {
+		// PostgreSQL array parsing consumes a backslash inside a quoted element,
+		// so it must be escaped before the quote (see marshalJSONBArray).
+		s = strings.ReplaceAll(s, `\`, `\\`)
 		escaped[i] = `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
 	}
 	return "{" + strings.Join(escaped, ",") + "}"

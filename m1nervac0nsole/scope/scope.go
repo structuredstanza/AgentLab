@@ -88,6 +88,10 @@ func ParseAsset(value string) Asset {
 		if idx := strings.IndexAny(host, "/?#"); idx >= 0 {
 			host = host[:idx]
 		}
+		// Userinfo precedes the host; keeping it makes `u:p@host` parse as `u`.
+		if at := strings.LastIndex(host, "@"); at >= 0 {
+			host = host[at+1:]
+		}
 		if idx := strings.LastIndex(host, ":"); idx > 0 && !strings.Contains(host[idx:], "]") {
 			host = host[:idx]
 		}

@@ -11,7 +11,8 @@ tests/run.sh web        # Next.js UI
 tests/run.sh dev        # dev-launcher process contract
 ```
 
-The Go suites need a database for `db` and `server`:
+The Go suites need a database for `agent`, `config`, `db`, `enrich`, `evidence`,
+`guard`, `intercept`, `llmrec` and `server`:
 
 ```sh
 export M1NERVAC0NSOLE_PG_DSN='postgres://postgres@127.0.0.1:55770/m1nervac0nsole?sslmode=disable'
@@ -37,11 +38,13 @@ If you are looking for a test, use the index below; if you are running one,
 
 ### `m1nervac0nsole/tests/go/` — relocated black-box Go tests
 
-| Package | Tests | What it covers |
-|---|---|---|
-| `m1nervac0nsole/tests/go/manifest` | 12 | Tool manifest parsing, emission, golden fixtures, live builtin manifest |
-| `m1nervac0nsole/tests/go/scope` | 16 | Engagement scope: exclusion rules, enforcement |
-| `m1nervac0nsole/tests/go/useragent` | 1 | Every outbound request sets an identity header (source walk) |
+| Package | Files | Tests | What it covers |
+|---|---|---|---|
+| `m1nervac0nsole/tests/go/config` | 2 | 3 | Config loading and env overrides |
+| `m1nervac0nsole/tests/go/manifest` | 3 | 14 | Tool manifest parsing, emission, golden fixtures, live builtin manifest |
+| `m1nervac0nsole/tests/go/nativeproxy` | 1 | 11 | Native provider-proxy client |
+| `m1nervac0nsole/tests/go/scope` | 1 | 17 | Engagement scope: exclusion rules, enforcement |
+| `m1nervac0nsole/tests/go/useragent` | 1 | 1 | Every outbound request sets an identity header (source walk) |
 
 Fixtures for the manifest goldens live in `m1nervac0nsole/tests/go/manifest/testdata/golden`.
 
@@ -49,24 +52,27 @@ Fixtures for the manifest goldens live in `m1nervac0nsole/tests/go/manifest/test
 
 | Area | Files | Tests |
 |---|---|---|
-| `server/` | 112 | 346 |
-| `db/` | 56 | 183 |
-| `agent/` | 45 | 120 |
-| `third_party/norma/` | 34 | 147 |
-| `traffic/` | 14 | 49 |
-| `notify/` | 11 | 96 |
-| `llmrec/` | 6 | 14 |
-| `intercept/` | 5 | 20 |
-| `guard/` | 5 | 7 |
+| `server/` | 136 | 452 |
+| `db/` | 74 | 287 |
+| `agent/` | 53 | 164 |
+| `third_party/norma/` | 36 | 150 |
+| `traffic/` | 15 | 50 |
+| `notify/` | 10 | 73 |
+| `browser/` | 10 | 34 |
+| `intercept/` | 8 | 23 |
+| `egress/` | 7 | 57 |
+| `guard/` | 6 | 11 |
+| `llmrec/` | 6 | 15 |
 | `evidence/` | 5 | 9 |
+| `enrich/` | 4 | 24 |
 | `llmpool/` | 4 | 22 |
-| `sidequestion/` | 3 | 14 |
+| `limits/` | 3 | 22 |
 | `mcphttp/` | 3 | 3 |
-| `config/` | 2 | 3 |
-| `egress/` | 1 | 6 |
-| `limits/` | 1 | 14 |
-| `nativeproxy/` | 1 | 11 |
-| `cmd/m1nervac0nsole/` | 1 | 2 |
+| `sidequestion/` | 3 | 14 |
+| `report/` | 2 | 4 |
+| `cmd/m1nervac0nsole/` | 1 | 1 |
+| `plan/` | 1 | 8 |
+| `useragent/` | 1 | 3 |
 
 ### `tests/python/`
 

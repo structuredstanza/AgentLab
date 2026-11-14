@@ -84,27 +84,17 @@ func ValidSeverity(s string) bool {
 	return false
 }
 
-// AddFinding inserts a finding into the standalone findings table. taskID and
-// nodeID may be 0 (stored as NULL). name may be "" (frontend falls back to
-// vulnclass). Returns the new finding id.
-// SetFindingEvidencePath records where a finding's evidence lives on disk. The
-// caller writes the file (evidence.Store does) and this only records the path,
-// so the db layer stays unaware of the filesystem layout.
-// SetFindingEvidencePathTx is the in-transaction form, so the path is recorded
-// in the same commit as the row it belongs to.
+// SetFindingEvidencePathTx records where a finding's evidence lives on disk in
+// the same commit as the row it belongs to. The caller writes the file
+// (evidence.Store does), so the db layer stays unaware of the filesystem layout.
 func SetFindingEvidencePathTx(tx *sql.Tx, findingID int64, path string) error {
 	_, err := tx.Exec(`UPDATE findings SET evidence_path=$2 WHERE id=$1`, findingID, path)
 	return err
 }
 
-func (d *DB) SetFindingEvidencePath(findingID int64, path string) error {
-	if findingID <= 0 {
-		return fmt.Errorf("invalid finding id")
-	}
-	_, err := d.Exec(`UPDATE findings SET evidence_path=$2 WHERE id=$1`, findingID, path)
-	return err
-}
-
+// AddFinding inserts a finding into the standalone findings table. taskID and
+// nodeID may be 0 (stored as NULL). name may be "" (frontend falls back to
+// vulnclass). Returns the new finding id.
 func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, worker string, assetIDs []int64) (int64, error) {
 	aidsJSON, _ := json.Marshal(assetIDs)
 	if assetIDs == nil {

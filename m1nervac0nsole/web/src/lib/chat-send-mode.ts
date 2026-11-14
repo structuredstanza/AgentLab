@@ -12,8 +12,8 @@ import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.
 // so the old key combination is brought back here as an option.
 export type ChatSendMode = "enter" | "ctrl-enter";
 
-export const CHAT_SEND_MODE_KEY = "m1nervac0nsole_chat_send_mode";
-export const DEFAULT_CHAT_SEND_MODE: ChatSendMode = "enter";
+const CHAT_SEND_MODE_KEY = "m1nervac0nsole_chat_send_mode";
+const DEFAULT_CHAT_SEND_MODE: ChatSendMode = "enter";
 
 // Options for the transport-method dropdown on the settings screen. Because the labels vary by locale, they are returned from a hook rather than a constant
 // module. Hardcoding Korean in a pure module would garble the zh locale into Korean.

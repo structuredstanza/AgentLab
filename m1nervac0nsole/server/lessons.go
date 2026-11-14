@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/agent"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
@@ -60,7 +61,11 @@ func (s *Server) wireTaskLessons(t *Task, wk *agent.Worker, pl *agent.Planner) {
 	}
 	var injected []string
 	if lessonMode != "off" {
-		lessons, err := s.m.PG().TaskLessons(context.Background(), taskID, 8)
+		// Bounded and rooted at the server: this runs on agent construction,
+		// which holds the task's admission.
+		ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+		defer cancel()
+		lessons, err := s.m.PG().TaskLessons(ctx, taskID, 8)
 		if err != nil {
 			log.Printf("[rsi] lesson selection failed for task %s: %v", t.ID, err)
 		} else {
@@ -71,7 +76,7 @@ func (s *Server) wireTaskLessons(t *Task, wk *agent.Worker, pl *agent.Planner) {
 			for _, l := range lessons {
 				ids = append(ids, l.ID)
 			}
-			if err := s.m.PG().LogLessonUsage(context.Background(), taskID, ids, lessonMode); err != nil {
+			if err := s.m.PG().LogLessonUsage(ctx, taskID, ids, lessonMode); err != nil {
 				log.Printf("[rsi] lesson usage log failed for task %s: %v", t.ID, err)
 			}
 		}

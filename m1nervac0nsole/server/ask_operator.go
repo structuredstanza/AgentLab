@@ -65,10 +65,10 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 			}
 			// A late answer for exactly this question is the operator's reply to
 			// a previous attempt: hand it over before asking again.
-			if askID, answer, ok := s.asks.takeLate(taskID, q); ok {
+			if askID, answer, ok := s.asks.takeLate(taskID, ri.IntentID, q); ok {
 				return actool.Text(askOperatorAnswer(askID, answer)), nil
 			}
-			ask, created := s.asks.join(taskID, q)
+			ask, created := s.asks.join(taskID, ri.IntentID, q)
 			if created {
 				att, err := stageAskOperatorImage(s.m.dir, taskID, req.ImagePath)
 				if err != nil {

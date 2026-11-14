@@ -122,7 +122,16 @@ func (a *Asset) interceptCandidates() (domains, ips, urls []string) {
 			*dst = append(*dst, s)
 		}
 	}
-	add(&domains, a.Domain)
+	// A service on an IP literal stores the address in `domain` and leaves `ip`
+	// empty (see UpsertOtherService), so classify it like the URL host below or
+	// exact_ip/fuzzy_ip/cidr rules never see it.
+	if d := strings.TrimSpace(a.Domain); d != "" {
+		if net.ParseIP(d) != nil {
+			add(&ips, d)
+		} else {
+			add(&domains, d)
+		}
+	}
 	add(&domains, a.RootDomain)
 	for _, d := range a.BoundDomains {
 		add(&domains, d)

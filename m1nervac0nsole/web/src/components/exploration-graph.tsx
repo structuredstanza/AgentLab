@@ -45,7 +45,7 @@ const relLabelKey: Record<string, string> = {
   proves: "rel.proves",
 };
 
-export const relColor: Record<string, string> = {
+const relColor: Record<string, string> = {
   spawns: "#10b981",
   derived_from: "#6366f1",
   yields: "#f59e0b",

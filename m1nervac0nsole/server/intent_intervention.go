@@ -136,7 +136,7 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 	// the intent is still running. Deliver it to the open ask and let the tool
 	// return it; no pause/resume round trip is needed for that case.
 	if node.State == "running" {
-		if askID, answered := s.asks.answer(t.ID, message); answered {
+		if askID, answered := s.asks.answer(t.ID, iid, message); answered {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"id": iid, "state": "running", "accepted": true, "request_id": requestID,
 				"ask_id": askID, "answered": true,
@@ -152,7 +152,7 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 	// open, this message is its answer: resolve it now and keep it keyed by the
 	// question, so a reply that arrived after the agent stopped waiting is not
 	// lost if the resume fails or the agent asks again.
-	askID, _ := s.asks.answer(t.ID, message)
+	askID, _ := s.asks.answer(t.ID, iid, message)
 	agentMessage, ok := s.prepareChatMentionMessage(w, message)
 	if !ok {
 		return

@@ -37,6 +37,7 @@ func TestGuardRefusesExcludedHost(t *testing.T) {
 	}{
 		{"excluded host in a command", "nmap -p 80 out-of-scope.test", true},
 		{"excluded host in a url", "curl https://out-of-scope.test/admin", true},
+		{"excluded host behind userinfo", "curl https://user:pass@out-of-scope.test/admin", true},
 		{"in-scope host", "nmap -p 80 in-scope.test", false},
 		{"unrelated command", "ls -la /tmp", false},
 	}

@@ -14,10 +14,13 @@ const askLateAnswerTTL = 30 * time.Minute
 
 // pendingAsk is one operator question in flight for a task. A second
 // ask_operator call for the same task joins it: same id, no second
-// notification, and both callers wake on the same done channel.
+// notification, and both callers wake on the same done channel. intentID is
+// the intent that asked: an operator message addressed to a different intent
+// must not be consumed as this ask's answer.
 type pendingAsk struct {
 	id       string
 	taskID   string
+	intentID int64
 	question string
 	done     chan struct{}
 	answer   string
@@ -44,11 +47,18 @@ type askState struct {
 
 // join returns the task's pending ask, creating one when none is open. created
 // is false for a join, which is what suppresses a second operator notification.
-func (a *askState) join(taskID, question string) (ask *pendingAsk, created bool) {
+func (a *askState) join(taskID string, intentID int64, question string) (ask *pendingAsk, created bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.byTask == nil {
 		a.byTask = map[string]*pendingAsk{}
+	}
+	// takeLate only removes the entry it is asked for, so an answer whose
+	// question is never asked again would otherwise live for the process.
+	for key, entry := range a.late {
+		if time.Since(entry.at) > askLateAnswerTTL {
+			delete(a.late, key)
+		}
 	}
 	if ask = a.byTask[taskID]; ask != nil {
 		return ask, false
@@ -57,6 +67,7 @@ func (a *askState) join(taskID, question string) (ask *pendingAsk, created bool)
 	ask = &pendingAsk{
 		id:       fmt.Sprintf("ask-%d", a.seq),
 		taskID:   taskID,
+		intentID: intentID,
 		question: question,
 		done:     make(chan struct{}),
 	}
@@ -79,7 +90,7 @@ func (a *askState) wait(ctx context.Context, ask *pendingAsk) (string, bool) {
 	case <-ask.done:
 		a.mu.Lock()
 		answer := ask.answer
-		delete(a.late, lateAnswerKey(ask.taskID, ask.question))
+		delete(a.late, lateAnswerKey(ask.taskID, ask.intentID, ask.question))
 		a.mu.Unlock()
 		return answer, true
 	case <-ctx.Done():
@@ -89,21 +100,24 @@ func (a *askState) wait(ctx context.Context, ask *pendingAsk) (string, bool) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		if ask.answered {
-			delete(a.late, lateAnswerKey(ask.taskID, ask.question))
+			delete(a.late, lateAnswerKey(ask.taskID, ask.intentID, ask.question))
 			return ask.answer, true
 		}
 		return "", false
 	}
 }
 
-// answer resolves the task's pending ask with text. The answer is also parked
-// for askLateAnswerTTL keyed by the question; a waiter that receives it deletes
-// the parked copy, so only a reply that no agent collected survives for a retry.
-func (a *askState) answer(taskID, text string) (askID string, ok bool) {
+// answer resolves the task's pending ask with text when that ask belongs to
+// intentID. An operator message addressed to another intent is left for that
+// intent instead of being consumed as this ask's answer. The answer is also
+// parked for askLateAnswerTTL keyed by the question; a waiter that receives it
+// deletes the parked copy, so only a reply that no agent collected survives for
+// a retry.
+func (a *askState) answer(taskID string, intentID int64, text string) (askID string, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	ask := a.byTask[taskID]
-	if ask == nil {
+	if ask == nil || ask.intentID != intentID {
 		return "", false
 	}
 	delete(a.byTask, taskID)
@@ -112,16 +126,16 @@ func (a *askState) answer(taskID, text string) (askID string, ok bool) {
 	if a.late == nil {
 		a.late = map[string]lateAnswer{}
 	}
-	a.late[lateAnswerKey(taskID, ask.question)] = lateAnswer{askID: ask.id, text: text, at: time.Now()}
+	a.late[lateAnswerKey(taskID, intentID, ask.question)] = lateAnswer{askID: ask.id, text: text, at: time.Now()}
 	close(ask.done)
 	return ask.id, true
 }
 
 // takeLate returns and consumes a stored answer for this exact question.
-func (a *askState) takeLate(taskID, question string) (askID, text string, ok bool) {
+func (a *askState) takeLate(taskID string, intentID int64, question string) (askID, text string, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	key := lateAnswerKey(taskID, question)
+	key := lateAnswerKey(taskID, intentID, question)
 	entry, ok := a.late[key]
 	if !ok {
 		return "", "", false
@@ -151,6 +165,6 @@ func (a *askState) drop(taskID string, ask *pendingAsk) {
 	a.mu.Unlock()
 }
 
-func lateAnswerKey(taskID, question string) string {
-	return taskID + "\x00" + question
+func lateAnswerKey(taskID string, intentID int64, question string) string {
+	return fmt.Sprintf("%s\x00%d\x00%s", taskID, intentID, question)
 }

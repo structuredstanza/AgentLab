@@ -76,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pkg: [agent, config, db, evidence, guard, intercept, llmrec, server]
+        pkg: [agent, config, db, enrich, evidence, guard, intercept, llmrec, server]
     services:
       postgres:
         image: postgres:16-alpine

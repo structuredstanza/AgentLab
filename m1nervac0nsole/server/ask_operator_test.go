@@ -194,7 +194,7 @@ func TestAskOperatorJoinsPendingAsk(t *testing.T) {
 	if got := s.asks.pending(task.ID); got != ask {
 		t.Fatalf("second call replaced the pending ask: %v", got)
 	}
-	if askID, ok := s.asks.answer(task.ID, "abc123"); !ok || askID != ask.id {
+	if askID, ok := s.asks.answer(task.ID, ids[0], "abc123"); !ok || askID != ask.id {
 		t.Fatalf("answer resolved ask %q, want %q", askID, ask.id)
 	}
 	for i, ch := range []chan askCallResult{first, second} {
@@ -270,7 +270,7 @@ func TestAskOperatorTimeoutLeavesAskOpenAndCollectsLateAnswer(t *testing.T) {
 	}
 
 	// The human answers after the agent stopped waiting: the answer is kept.
-	if askID, ok := s.asks.answer(task.ID, "654321"); !ok || askID != pending.AskID {
+	if askID, ok := s.asks.answer(task.ID, ids[0], "654321"); !ok || askID != pending.AskID {
 		t.Fatalf("late answer resolved ask %q, want %q", askID, pending.AskID)
 	}
 
@@ -293,7 +293,7 @@ func TestAskOperatorTimeoutLeavesAskOpenAndCollectsLateAnswer(t *testing.T) {
 	if !answer.Answered || answer.AskID != pending.AskID || answer.Answer != "654321" {
 		t.Fatalf("retry result = %+v", answer)
 	}
-	if _, _, ok := s.asks.takeLate(task.ID, "what is the OTP"); ok {
+	if _, _, ok := s.asks.takeLate(task.ID, ids[0], "what is the OTP"); ok {
 		t.Fatal("the late answer was not consumed by the retry")
 	}
 }
@@ -302,17 +302,17 @@ func TestAskOperatorTimeoutLeavesAskOpenAndCollectsLateAnswer(t *testing.T) {
 // a question the human has long moved on from.
 func TestAskLateAnswerExpires(t *testing.T) {
 	var a askState
-	_, _ = a.join("7", "what is the OTP")
-	if _, ok := a.answer("7", "654321"); !ok {
+	_, _ = a.join("7", 1, "what is the OTP")
+	if _, ok := a.answer("7", 1, "654321"); !ok {
 		t.Fatal("answer did not resolve the ask")
 	}
-	key := lateAnswerKey("7", "what is the OTP")
+	key := lateAnswerKey("7", 1, "what is the OTP")
 	a.mu.Lock()
 	entry := a.late[key]
 	entry.at = time.Now().Add(-askLateAnswerTTL - time.Minute)
 	a.late[key] = entry
 	a.mu.Unlock()
-	if _, _, ok := a.takeLate("7", "what is the OTP"); ok {
+	if _, _, ok := a.takeLate("7", 1, "what is the OTP"); ok {
 		t.Fatal("an expired late answer was collected")
 	}
 }
@@ -330,7 +330,7 @@ func TestSendWorkerMessageAnswersPendingAsk(t *testing.T) {
 	if err := m.SetTaskStatus(task.ID, "running"); err != nil {
 		t.Fatal(err)
 	}
-	ask, _ := s.asks.join(task.ID, "what is the OTP")
+	ask, _ := s.asks.join(task.ID, ids[0], "what is the OTP")
 	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	answerCh := make(chan string, 1)
@@ -369,5 +369,44 @@ func TestSendWorkerMessageAnswersPendingAsk(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the waiter was not woken")
+	}
+}
+
+// A reply addressed to a different intent must not be consumed as the open
+// ask's answer: the operator meant it for that worker, and the asking worker
+// would otherwise proceed on a fabricated answer.
+func TestSendWorkerMessageDoesNotAnswerAnotherIntentsAsk(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	s := newFixtureServer(t, m)
+	task, ids := askTestTask(t, m, "ask other intent", 2)
+	if err := m.SetTaskStatus(task.ID, "running"); err != nil {
+		t.Fatal(err)
+	}
+	ask, _ := s.asks.join(task.ID, ids[0], "what is the OTP")
+
+	tok, err := signJWT(s.jwtKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iid := strconv.FormatInt(ids[1], 10)
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/intents/"+iid+"/messages",
+		strings.NewReader(`{"message":"steer the other worker","request_id":"ask-other"}`))
+	req.SetPathValue("id", task.ID)
+	req.SetPathValue("iid", iid)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	s.sendWorkerMessage(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if s.asks.pending(task.ID) != ask {
+		t.Fatal("the open ask was resolved by a message addressed to another intent")
+	}
+	if _, ok := s.asks.answer(task.ID, ids[0], "654321"); !ok {
+		t.Fatal("the asking intent could no longer answer its own ask")
 	}
 }

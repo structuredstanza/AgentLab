@@ -23,6 +23,8 @@ def jsonl(path):
 
 
 def main():
+    if not __debug__:
+        raise SystemExit('refusing to run with asserts disabled (python -O); the checks are asserts')
     token = lab.login()
     active = next(p for p in lab.api('/api/llm/profiles', token=token)['profiles'] if p['is_default'])
     if active.get('base_url') != lab.PRIMARY_URL or active.get('name') != lab.PRIMARY_NAME:

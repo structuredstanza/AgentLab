@@ -21,7 +21,15 @@ func assetInterceptCandidates(item assetInputItem) (domains, ips, urls []string)
 			*dst = append(*dst, s)
 		}
 	}
-	add(&domains, item.Domain)
+	// A service on an IP literal stores the address in `domain`; classify it the
+	// same way as the URL host below, or exact_ip/cidr rules never fire.
+	if d := strings.TrimSpace(item.Domain); d != "" {
+		if net.ParseIP(d) != nil {
+			add(&ips, d)
+		} else {
+			add(&domains, d)
+		}
+	}
 	for _, d := range item.BoundDomains {
 		add(&domains, d)
 	}

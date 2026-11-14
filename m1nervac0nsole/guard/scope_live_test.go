@@ -7,8 +7,8 @@ import (
 )
 
 // End to end through the hook registry: a Bash call naming an excluded host is
-// refused, and the audit row records why. This is the shape the server wires.
-func TestScopeEnforcementIsAudited(t *testing.T) {
+// refused with a reason. This is the shape the server wires.
+func TestScopeEnforcementBlocks(t *testing.T) {
 	g := New().WithScope(fakeScope{excluded: map[string]string{
 		"out-of-scope.test": "task scope excludes it",
 	}})
@@ -19,13 +19,5 @@ func TestScopeEnforcementIsAudited(t *testing.T) {
 	}
 	if msg == "" {
 		t.Fatal("block must carry a reason")
-	}
-	audit := g.Audit()
-	if len(audit) == 0 {
-		t.Fatal("a refused call must be audited")
-	}
-	last := audit[len(audit)-1]
-	if last.Action != "block" || last.Command == "" {
-		t.Fatalf("audit row = %+v, want action=block with the command recorded", last)
 	}
 }

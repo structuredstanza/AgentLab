@@ -957,6 +957,12 @@ func TestMarshalStringArray(t *testing.T) {
 	if got2 != "{}" {
 		t.Errorf("empty: %q", got2)
 	}
+	// PostgreSQL consumes a backslash inside a quoted element; both characters
+	// must survive the round trip or a TXT value is stored altered.
+	got3 := marshalStringArray([]string{`C:\path`, `a"b`})
+	if got3 != `{"C:\\path","a\"b"}` {
+		t.Errorf("escaping: %q", got3)
+	}
 }
 
 // =====================================================================

@@ -31,10 +31,3 @@ func TestTelegramTitleHasNoMarkdownEscapes(t *testing.T) {
 		t.Fatalf("the Telegram body contains markdown backslash escapes:\n%s", text)
 	}
 }
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

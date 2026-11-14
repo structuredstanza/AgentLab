@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/traffic"
 )
@@ -107,5 +108,21 @@ func TestTrafficIngestRequiresAuth(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != 401 {
 		t.Fatalf("unauthenticated ingest status = %d, want 401", w.Code)
+	}
+}
+
+// A fixed byte cut can split a multi-byte rune; the stored body would then be
+// invalid UTF-8 and the evidence preview would call it binary.
+func TestTruncateBodyKeepsValidUTF8(t *testing.T) {
+	body := strings.Repeat("가", maxIngestBodySize/3+2)
+	out := truncateBody(body)
+	if !utf8.ValidString(out) {
+		t.Fatal("truncated body is not valid UTF-8")
+	}
+	if !strings.HasSuffix(out, "... [truncated by ingest]") {
+		t.Fatal("truncation marker is missing")
+	}
+	if len(out) > maxIngestBodySize+len("\n... [truncated by ingest]") {
+		t.Fatalf("truncated body is %d bytes, over the cap", len(out))
 	}
 }

@@ -147,6 +147,11 @@ func hostOf(raw string) string {
 	if idx := strings.IndexAny(rest, "/?#"); idx >= 0 {
 		rest = rest[:idx]
 	}
+	// URL userinfo precedes the host: without this, `https://u:p@host/` reports
+	// `u` as the host and an excluded host is never judged.
+	if at := strings.LastIndex(rest, "@"); at >= 0 {
+		rest = rest[at+1:]
+	}
 	// A bracketed IPv6 literal ends at the closing bracket; the colons inside
 	// it are part of the address, not a port separator.
 	if strings.HasPrefix(rest, "[") {

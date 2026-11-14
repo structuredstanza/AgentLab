@@ -48,6 +48,8 @@ finally:
 
 
 def main():
+    if not __debug__:
+        raise SystemExit('refusing to run with asserts disabled (python -O); the checks are asserts')
     nonce = uuid.uuid4().hex
     token = lab.login()
     settings = lab.api('/api/settings', token=token)

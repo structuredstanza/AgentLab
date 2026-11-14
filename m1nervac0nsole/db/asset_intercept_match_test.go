@@ -126,4 +126,12 @@ func TestAssetInterceptCandidates(t *testing.T) {
 	if r, _, ok := MatchAssetInterceptRules([]AssetInterceptRule{rule("cidr", "10.0.0.0/8", true)}, nil, ips, nil); !ok {
 		t.Fatalf("an IP from a URL must match CIDR, ips=%v rule=%+v", ips, r)
 	}
+
+	// A service on an IP literal stores the address in domain and leaves ip
+	// empty; it must still reach the IP rules.
+	c := &Asset{Type: "service", Domain: "10.0.0.5"}
+	domains, ips, _ = c.interceptCandidates()
+	if r, _, ok := MatchAssetInterceptRules([]AssetInterceptRule{rule("cidr", "10.0.0.0/8", true)}, domains, ips, nil); !ok {
+		t.Fatalf("an IP stored in the domain field must match CIDR, domains=%v ips=%v rule=%+v", domains, ips, r)
+	}
 }

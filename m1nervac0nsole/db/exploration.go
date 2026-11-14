@@ -1446,32 +1446,6 @@ func (d *DB) TaskListMetricsAll() (map[int64]TaskListMetrics, error) {
 	return out, rows.Err()
 }
 
-// GoalCountsAll returns goal totals (total / met) per exploration id, one query
-// for all tasks — used by listTasks so the task list shows progress for every task.
-func (d *DB) GoalCountsAll() (map[int64]GoalCounts, error) {
-	rows, err := d.Query(`
-		SELECT exploration_id,
-		       COUNT(*) AS total,
-		       COUNT(*) FILTER (WHERE state = 'met') AS met
-		FROM exploration_nodes
-		WHERE kind = 'goal'
-		GROUP BY exploration_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[int64]GoalCounts{}
-	for rows.Next() {
-		var eid int64
-		var gc GoalCounts
-		if err := rows.Scan(&eid, &gc.Total, &gc.Met); err != nil {
-			return nil, err
-		}
-		out[eid] = gc
-	}
-	return out, rows.Err()
-}
-
 // TokenStatsByWorker sums token usage per worker for this exploration (from the
 // kind='result' records that carry usage). Used by the per-agent token display.
 func (s *ExplorationStore) TokenStatsByWorker() ([]TokenUsage, error) {

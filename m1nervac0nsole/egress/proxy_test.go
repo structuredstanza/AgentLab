@@ -216,8 +216,9 @@ func TestProxyRelaysPlaintextThroughConnect(t *testing.T) {
 	}
 }
 
-// The gate still applies to a relayed tunnel: a relay must not become an
-// unthrottled path to a target the engagement forbids.
+// The gate runs before the CONNECT is answered, so a refused plaintext tunnel
+// is refused at CONNECT and the origin is never reached. The relay keeps its
+// own check for a gate decision that changes between the two.
 func TestRelayedTunnelHonoursTheGate(t *testing.T) {
 	var hits atomic.Int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,25 +235,48 @@ func TestRelayedTunnelHonoursTheGate(t *testing.T) {
 	defer conn.Close()
 	io.WriteString(conn, "CONNECT "+authority+" HTTP/1.1\r\nHost: "+authority+"\r\n\r\n")
 	br := bufio.NewReader(conn)
-	if line, _ := br.ReadString('\n'); !strings.Contains(line, "200") {
-		t.Fatalf("CONNECT reply = %q", line)
-	}
-	for {
-		l, err := br.ReadString('\n')
-		if err != nil {
-			t.Fatalf("read the CONNECT headers: %v", err)
-		}
-		if l == "\r\n" {
-			break
-		}
-	}
-	io.WriteString(conn, "GET /secret HTTP/1.1\r\nHost: "+authority+"\r\nConnection: close\r\n\r\n")
-	out, _ := io.ReadAll(br)
-	if !strings.Contains(string(out), "403") {
-		t.Fatalf("relayed response = %q, want a refusal", out)
+	if line, _ := br.ReadString('\n'); !strings.Contains(line, "403") {
+		t.Fatalf("CONNECT reply = %q, want a 403 refusal", line)
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("origin was reached %d times despite the refusal", hits.Load())
+	}
+}
+
+// The gate must run before the reachability probe. A refused CONNECT that is
+// dialled first turns a closed port into a 502, so the proxy answers a
+// port-state question about infrastructure the engagement forbids.
+func TestConnectRefusalDoesNotDialTheTarget(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var accepted atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			c.Close()
+		}
+	}()
+
+	p := newTestProxy(t, denyAll{})
+	conn, err := net.Dial("tcp", p.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, "CONNECT "+ln.Addr().String()+" HTTP/1.1\r\nHost: x\r\n\r\n")
+	line, _ := bufio.NewReader(conn).ReadString('\n')
+	if !strings.Contains(line, "403") {
+		t.Fatalf("CONNECT reply = %q, want a 403 refusal", line)
+	}
+	if n := accepted.Load(); n != 0 {
+		t.Fatalf("the target accepted %d connection(s) despite the refusal", n)
 	}
 }
 

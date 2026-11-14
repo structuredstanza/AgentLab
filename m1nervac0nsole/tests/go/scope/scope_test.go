@@ -41,6 +41,20 @@ func TestWildcardCoversSubdomain(t *testing.T) {
 	}
 }
 
+// A URL may carry userinfo; the host after the @ is the target, not the user.
+func TestURLUserinfoIsNotTheHost(t *testing.T) {
+	asset := scope.ParseAsset("https://user:pass@api.target.example/admin")
+	if asset.Host != "api.target.example" {
+		t.Fatalf("host = %q, want api.target.example", asset.Host)
+	}
+	if v := verdict(t, "https://user:pass@api.target.example/admin", engagement); v.Status != scope.In {
+		t.Fatalf("status = %q, want in (%s)", v.Status, v.Reason)
+	}
+	if v := verdict(t, "https://user:pass@parked.example/", engagement); v.Status != scope.Out {
+		t.Fatalf("status = %q, want out: userinfo must not hide an excluded host", v.Status)
+	}
+}
+
 func TestWildcardCoversApex(t *testing.T) {
 	// A program's scope table means the apex too, even though DNS disagrees.
 	rules := []scope.Rule{rule(scope.Include, "*.target.example", "")}

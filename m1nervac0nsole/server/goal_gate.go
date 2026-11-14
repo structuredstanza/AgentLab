@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -22,7 +23,7 @@ func goalGateCheck(goal string) error {
 	if goalTargetlessRE.MatchString(g) {
 		return nil
 	}
-	if len(g) < goalMinLen {
+	if utf8.RuneCountInString(g) < goalMinLen {
 		return errors.New("goal is too short to carry a testable objective (min 80 chars): name the target and what counts as success; add the literal marker [targetless] only for genuinely target-less analysis tasks")
 	}
 	if goalURLRE.MatchString(g) || goalDomainRE.MatchString(g) || goalIPv4RE.MatchString(g) || goalLocalhostRE.MatchString(g) || goalPathRE.MatchString(g) {

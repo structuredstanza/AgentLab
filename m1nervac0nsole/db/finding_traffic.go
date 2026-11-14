@@ -409,8 +409,10 @@ WHERE task_id=$1 AND lower(name)=lower($2) AND asset_ids=$3::jsonb ORDER BY id L
 		// change moves it, and the archive gate reads 0 as "no proof bound".
 		// Refreshing the text must not touch it, or an unbound finding would
 		// pass a gate that exists to stop exactly that.
+		// Screenshots are evidence a repeat may not carry (the planner never
+		// drives the browser), so an empty list keeps the recorded ones.
 		if _, err := tx.Exec(`UPDATE findings SET vulnclass=$2, severity=$3, summary=$4, evidence=$5, worker=$6,
-asset_ids=$7, screenshots=$8 WHERE id=$1`, existingID, in.VulnClass, in.Severity, in.Summary, in.Evidence, in.Worker, string(assetsJSON), string(shotsJSON)); err != nil {
+asset_ids=$7, screenshots=CASE WHEN $8::jsonb = '[]'::jsonb THEN screenshots ELSE $8::jsonb END WHERE id=$1`, existingID, in.VulnClass, in.Severity, in.Summary, in.Evidence, in.Worker, string(assetsJSON), string(shotsJSON)); err != nil {
 			return nil, err
 		}
 		out.FindingID, out.NodeID = existingID, existingNode
@@ -484,11 +486,6 @@ VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, in.TaskID, out.N
 func (s *ExplorationStore) RecordFinding(ctx context.Context, in RecordFindingInput) (out *RecordedFinding, err error) {
 	in.ExplorationID = s.expID
 	err = s.db.WithEvidenceTx(ctx, func(tx *sql.Tx) error { var e error; out, e = RecordFindingTx(ctx, tx, in, nil); return e })
-	return
-}
-
-func (d *DB) FindingIDByNodeID(nodeID int64) (id int64, err error) {
-	err = d.QueryRow(`SELECT id FROM findings WHERE node_id=$1`, nodeID).Scan(&id)
 	return
 }
 

@@ -136,7 +136,8 @@ def stage_vpn(profile):
     if proc.returncode:
         raise RuntimeError('could not stage the OpenVPN profile in the guest: '
                            + proc.stderr.decode(errors='replace').strip()[:300])
-    remote = proc.stdout.decode().strip().splitlines()[-1]
+    lines = proc.stdout.decode().strip().splitlines()
+    remote = lines[-1] if lines else ''
     local = hashlib.sha256(payload).hexdigest()
     if remote != local:
         raise RuntimeError(f'OpenVPN profile checksum mismatch: guest {remote[:16]}… host {local[:16]}…')
@@ -183,18 +184,30 @@ def state_quota_mb(gb=None):
 def sandbox_conf(quota_mb):
     """Return (path, temporary): the spec to create the sandbox from.
 
-    With quota_mb None the checked-in spec is used as is. Otherwise a private copy
-    with only the /state quota rewritten is written, so the base file stays the single
-    source of truth for everything else.
+    The checked-in spec mounts host paths under the repository root; `lab` follows
+    its own location, so a clone elsewhere rewrites that prefix or the sandbox
+    would mount an empty /state and miss /dist and the secrets. With quota_mb None
+    and the spec's root already correct, the checked-in spec is used as is;
+    otherwise a private copy is written, so the base file stays the single source
+    of truth for everything else.
     """
-    if quota_mb is None:
-        return SANDBOX_CONF, False
     text = SANDBOX_CONF.read_text()
-    pattern = re.compile(r'(:/state)(?::quota=\d+)?(?=\s*$)', re.M)
-    replacement = r'\1' if quota_mb == 0 else rf'\1:quota={quota_mb}'
-    text, count = pattern.subn(replacement, text)
-    if count != 1:
-        raise RuntimeError(f'expected exactly one /state mount in {SANDBOX_CONF}, found {count}')
+    match = re.search(r'^\s*-\s*([^:\s]+)/state:', text, re.M)
+    if not match:
+        raise RuntimeError(f'no /state mount in {SANDBOX_CONF}')
+    spec_root = match.group(1)
+    rewritten = spec_root != str(ROOT)
+    if rewritten:
+        text = text.replace(spec_root + '/', str(ROOT) + '/')
+    if quota_mb is not None:
+        pattern = re.compile(r'(:/state)(?::quota=\d+)?(?=\s*$)', re.M)
+        replacement = r'\1' if quota_mb == 0 else rf'\1:quota={quota_mb}'
+        text, count = pattern.subn(replacement, text)
+        if count != 1:
+            raise RuntimeError(f'expected exactly one /state mount in {SANDBOX_CONF}, found {count}')
+        rewritten = True
+    if not rewritten:
+        return SANDBOX_CONF, False
     handle = tempfile.NamedTemporaryFile('w', suffix='.yaml', prefix='lab-sandbox-', dir=ROOT,
                                          delete=False)
     with handle:
@@ -338,8 +351,8 @@ def start(vpn=None, quota_gb=None):
                     raise RuntimeError('m1nervac0nsole did not become healthy; inspect state/captures and msb logs')
                 time.sleep(1)
     token = login()
-    settings = api('/api/settings', {'llm_record': True, 'traffic_capture': True,
-                    'agent_traffic_binding': True, 'llm_refusal_fallback_enabled': True}, token, 'PUT')
+    api('/api/settings', {'llm_record': True, 'traffic_capture': True,
+                          'agent_traffic_binding': True, 'llm_refusal_fallback_enabled': True}, token, 'PUT')
     settings = api('/api/settings', token=token)
     if not all(settings.get(key) for key in ('llm_record', 'traffic_capture', 'agent_traffic_binding', 'llm_refusal_fallback_enabled')):
         raise RuntimeError('m1nervac0nsole capture/refusal fallback settings are not enabled')
@@ -453,9 +466,7 @@ if path.exists():
 """)
     # The staged OpenVPN profile is a credential; it must not outlive the run that
     # asked for it, or a later start would tunnel through someone else's endpoint.
-    guest('python3', '-c',
-          "import os\np = '/run/secrets/openvpn-profile.ovpn'\n"
-          "if os.path.exists(p):\n    os.unlink(p)\n")
+    stage_vpn(None)
     msb('stop', NAME)
 
 
@@ -576,10 +587,10 @@ def export():
     sql = 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\n'
     sql += '\n'.join(f"SELECT json_build_object('table','{t}','row',row_to_json(t)) FROM public.\"{t}\" t;" for t in tables)
     sql += '\nCOMMIT;'
-    handles = {table: (raw / (table + '.jsonl')).open('w') for table in tables}
+    handles = {table: (raw / (table + '.jsonl')).open('w', encoding='utf-8') for table in tables}
     counts = dict.fromkeys(tables, 0)
     try:
-        with (raw / 'table-export.stderr').open('w') as errors:
+        with (raw / 'table-export.stderr').open('w', encoding='utf-8') as errors:
             proc = subprocess.Popen([str(MSB), 'exec', '--no-stdin', NAME, '--', *psql, '-c', sql],
                                     stdout=subprocess.PIPE, stderr=errors, text=True)
             try:
@@ -602,7 +613,7 @@ def export():
     with (raw / 'postgres.dump').open('wb') as dump:
         guest('pg_dump', '-h', '/run/postgresql', '-U', 'postgres', '-d', 'm1nervac0nsole', '-Fc', stdout=dump)
     guest('sync')
-    with (raw / 'capture-export.stderr').open('w') as errors:
+    with (raw / 'capture-export.stderr').open('w', encoding='utf-8') as errors:
         exporter = '/dist/guest-export.py' if guest_file('/dist/guest-export.py') else '/opt/agentlab/guest-export.py'
         proc = subprocess.Popen([str(MSB), 'exec', '--no-stdin', NAME, '--',
                                  'python3', exporter],
@@ -622,7 +633,7 @@ def export():
         shutil.copytree(logs, raw / 'runtime-logs', symlinks=True)
     if (ROOT / 'host-events.jsonl').exists():
         shutil.copyfile(ROOT / 'host-events.jsonl', raw / 'host-events.jsonl')
-    with (raw / 'sandbox.json').open('w') as stream:
+    with (raw / 'sandbox.json').open('w', encoding='utf-8') as stream:
         msb('inspect', NAME, '--format', 'json', stdout=stream)
     shutil.copyfile(ROOT / 'deployment/provenance.json', raw / 'provenance.json')
     proxy_network = PROXY_STATE / 'network'
@@ -653,7 +664,7 @@ def export():
             with path.open('rb') as stream:
                 hashes[str(path.relative_to(output))] = hashlib.file_digest(stream, 'sha256').hexdigest()
     manifest['sha256'] = hashes
-    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({'export': str(output), 'table_rows': counts, 'training': manifest['training']}, indent=2))
 
 
@@ -688,7 +699,11 @@ def main():
         usage = shutil.disk_usage(STATE_DIR)
         print(json.dumps({'host_state_filesystem_free_gib': round(usage.free / 2**30, 1),
                           'host_state_filesystem_total_gib': round(usage.total / 2**30, 1)}))
-        print(json.dumps(api('/api/settings', token=login()), indent=2))
+        # A stopped VM is a normal state, not a failure: report it and exit 0.
+        try:
+            print(json.dumps(api('/api/settings', token=login()), indent=2))
+        except OSError as exc:
+            print(f'console not reachable: {exc}', file=sys.stderr)
     elif args.action == 'exec':
         return execute(args.command)
     elif args.action == 'export':
