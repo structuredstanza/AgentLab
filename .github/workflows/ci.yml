@@ -59,12 +59,15 @@ jobs:
       # without root every kernel test reports BLOCKED, so a green run would say
       # nothing about the boundary. This step runs it as root and fails when a
       # test skipped, so "the boundary was not exercised" is a red build.
+      # The kernel tests assert host-wide state (netns, iptables chains), so the
+      # packages must not overlap: `-p 1` runs them one after the other. Running
+      # them together let one package's live session fail the other's teardown check.
       - name: go test (execbox kernel · root · fails on skip)
         run: |
           set -euo pipefail
           log="$(mktemp)"
           sudo env "PATH=$PATH" "HOME=$HOME" "GOPATH=$(go env GOPATH)" "GOMODCACHE=$(go env GOMODCACHE)" "GOCACHE=$(go env GOCACHE)" \
-            go test ./execbox/ ./server/ -run 'TestKernel' -count=1 -v 2>&1 | tee "$log"
+            go test -p 1 ./execbox/ ./server/ -run 'TestKernel' -count=1 -v 2>&1 | tee "$log"
           if grep -q -- '--- SKIP' "$log"; then
             echo "::error::the execbox kernel tests skipped, so isolation is unproven"
             exit 1
