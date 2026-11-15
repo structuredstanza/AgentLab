@@ -146,6 +146,11 @@ class VerifyCapture(unittest.TestCase):
         frames = mock.patch.object(vc, 'nonce_frames', return_value=1)
         frames.start()
         self.addCleanup(frames.stop)
+        # The prerequisite check runs before any of that, so a host without
+        # tshark would fail every case below for a reason none of them is about.
+        which = mock.patch.object(vc.shutil, 'which', return_value='/usr/bin/tshark')
+        which.start()
+        self.addCleanup(which.stop)
 
     def run_main(self, fake, argv=()):
         out = io.StringIO()
