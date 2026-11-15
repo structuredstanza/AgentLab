@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -39,6 +40,27 @@ func TestNativeBrowserToolsAreBoundToExecutors(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The native driver is the only testing browser: no setting selects a surface,
+// so a leftover browser_driver row changes nothing.
+func TestNativeBrowserToolsAreAssembledWithoutASetting(t *testing.T) {
+	if os.Getenv("M1NERVAC0NSOLE_PG_DSN") == "" {
+		t.Skip("no M1NERVAC0NSOLE_PG_DSN")
+	}
+	m, s, _ := memoryTestServer(t)
+	if err := m.pg.SetSetting("browser_driver", "mcp"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = m.pg.Exec(`DELETE FROM settings WHERE key='browser_driver'`) })
+
+	tools, _ := s.hostTools()
+	for _, tool := range tools {
+		if tool.Name() == "browser_open" {
+			return
+		}
+	}
+	t.Fatal("the testing browser was not assembled")
 }
 
 // The native tools take the same boundary as the MCP ones: the guard must wrap
@@ -93,21 +115,6 @@ func TestNativeBrowserPrefixIsWrapped(t *testing.T) {
 	}
 }
 
-// The recorder returns a full URL and the global proxy may be a bare host:port;
-// prefixing a full URL again is what produced ERR_NO_SUPPORTED_PROXIES.
-func TestProxyURL(t *testing.T) {
-	cases := map[string]string{
-		"http://127.0.0.1:8788": "http://127.0.0.1:8788",
-		"127.0.0.1:8788":        "http://127.0.0.1:8788",
-		"socks5://127.0.0.1:1":  "socks5://127.0.0.1:1",
-	}
-	for in, want := range cases {
-		if got := proxyURL(in); got != want {
-			t.Errorf("proxyURL(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 // fakeToolDriver stands in for a Chromium driver: these tests exercise the tool
 // layer, not the browser.
 type fakeToolDriver struct {
@@ -120,7 +127,9 @@ type fakeToolDriver struct {
 	since      int64
 	limit      int
 	blocked    []string
+	popups     []string
 	downloads  []string
+	uploaded   []string
 	calls      int
 	lookups    int
 }
@@ -172,8 +181,9 @@ func (f *fakeToolDriver) Screenshot(context.Context, bool) ([]byte, error) {
 	return nil, nil
 }
 
-func (f *fakeToolDriver) Upload(context.Context, string, []string) (browser.PageState, error) {
+func (f *fakeToolDriver) Upload(_ context.Context, _ string, paths []string) (browser.PageState, error) {
 	f.calls++
+	f.uploaded = append(f.uploaded, paths...)
 	return browser.PageState{}, nil
 }
 
@@ -183,6 +193,12 @@ func (f *fakeToolDriver) Title() string { return "Example" }
 func (f *fakeToolDriver) BlockedRequests() []string {
 	out := f.blocked
 	f.blocked = nil
+	return out
+}
+
+func (f *fakeToolDriver) Popups() []string {
+	out := f.popups
+	f.popups = nil
 	return out
 }
 
@@ -387,5 +403,65 @@ func TestBrowserToolsRefuseWhileOperatorHolds(t *testing.T) {
 	res, err := s.browserClickTool().Call(ctx, json.RawMessage(`{"ref":"g1e1"}`), nil)
 	if err != nil || res.IsError || drv.calls != 1 {
 		t.Fatalf("a released slot still refused: %v %q calls=%d", err, resultText(res), drv.calls)
+	}
+}
+
+// Uploads are rooted in the current task's workspace. The old check joined the
+// shared work dir and cleaned the string, so a sibling task's file, an absolute
+// path and a symlink planted in the workspace all reached CDP.
+func TestBrowserUploadStaysInTaskWorkspace(t *testing.T) {
+	drv := &fakeToolDriver{}
+	s := toolTestServer(t, drv)
+	dir := t.TempDir()
+	s.m = &Manager{dir: dir}
+	own := filepath.Join(dir, "tasks", "7", "uploads")
+	other := filepath.Join(dir, "tasks", "8")
+	for _, d := range []string{own, other} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wordlist := filepath.Join(own, "wordlist.txt")
+	secret := filepath.Join(other, "secret.txt")
+	for _, f := range []string{wordlist, secret} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(secret, filepath.Join(own, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(path string) actool.Result {
+		t.Helper()
+		in, err := json.Marshal(map[string]any{"ref": "f1", "paths": []string{path}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.browserUploadTool().Call(toolTestContext(), in, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		return res
+	}
+
+	for _, path := range []string{secret, "uploads/link.txt", "../8/secret.txt"} {
+		res := call(path)
+		if !res.IsError {
+			t.Fatalf("%q reached the driver instead of being refused: %q", path, resultText(res))
+		}
+		if text := resultText(res); !strings.Contains(text, "task workspace") {
+			t.Fatalf("%q refusal must name the task workspace: %q", path, text)
+		}
+	}
+	if drv.calls != 0 {
+		t.Fatalf("a refused path reached the driver: %d calls", drv.calls)
+	}
+
+	if res := call("uploads/wordlist.txt"); res.IsError {
+		t.Fatalf("legitimate upload refused: %q", resultText(res))
+	}
+	if len(drv.uploaded) != 1 || drv.uploaded[0] != wordlist {
+		t.Fatalf("upload paths = %v, want [%s]", drv.uploaded, wordlist)
 	}
 }

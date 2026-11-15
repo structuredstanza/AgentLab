@@ -128,7 +128,7 @@ func TestReclaimOnLegacyIndexIsHarmless(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestDeleteAllConvertsLegacyIndex(t *testing.T) {
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

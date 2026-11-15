@@ -1,30 +1,20 @@
 package agent
 
 import (
-	"database/sql"
 	"os"
 	"testing"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/internal/testlock"
 )
 
-// TestMain acquires a PostgreSQL advisory lock (7337741002) for the entire
-// agent test suite so cross-package DELETE cleanup races with db/server
-// packages are avoided when running `go test ./...`.
+// TestMain holds the shared cross-package suite lock (testlock.LockKey) for the
+// entire agent test suite so cross-package DELETE cleanup races with the db and
+// server packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
 	dsn, _, err := db.DSN()
 	if err != nil {
-		os.Exit(m.Run())
+		dsn = "" // no DB configured — tests that need PG skip themselves
 	}
-	conn, err := sql.Open("pgx", dsn)
-	if err != nil || conn.Ping() != nil {
-		os.Exit(m.Run())
-	}
-	defer conn.Close()
-	if _, err := conn.Exec(`SELECT pg_advisory_lock(7337741002)`); err != nil {
-		os.Exit(m.Run())
-	}
-	defer conn.Exec(`SELECT pg_advisory_unlock(7337741002)`) //nolint:errcheck
-	os.Exit(m.Run())
+	os.Exit(testlock.Run(dsn, m.Run))
 }

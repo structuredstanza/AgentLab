@@ -444,14 +444,60 @@ func (s *Server) WarnIfExposed(addr string) {
 	log.Printf("[auth] warning: the admin password is not set yet and the server is bound to %q, so other hosts can reach it. It cannot be initialized without a setup token, but do not expose this port to external networks until initial setup is complete (default 127.0.0.1:8787)", addr)
 }
 
-// extractToken reads the JWT from Authorization: Bearer header,
-// m1nervac0nsole_token cookie, or ?token= query param (for SSE connections).
-func extractToken(r *http.Request) string {
+// streamCookieName carries the JWT to the SSE GET endpoints, which cannot set an
+// Authorization header. It is HttpOnly (no page script can read or forge it) and
+// SameSite=Strict (no cross-site request carries it), and extractToken reads it
+// only for those endpoints, so a cookie the browser attaches on its own can never
+// authorize a mutation. The name differs from authCookieName on purpose: the UI
+// writes its non-secret marker into that one from JavaScript, which would
+// overwrite this credential and strip its HttpOnly flag.
+const streamCookieName = "m1nervac0nsole_stream"
+
+// sseCookieAllowed reports whether r is a read-only SSE GET, the only requests
+// that may authenticate with streamCookieName. Everything else must present the
+// JWT explicitly (bearer header, or ?token= for non-browser clients).
+func sseCookieAllowed(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	p := r.URL.Path
+	switch {
+	case p == "/api/logs/stream", p == "/api/exploration/activity/stream":
+		return true
+	case strings.HasPrefix(p, "/api/tasks/") && strings.HasSuffix(p, "/browser/stream"):
+		return true
+	case strings.HasPrefix(p, "/api/side-questions/") && strings.HasSuffix(p, "/events"):
+		return true
+	}
+	return false
+}
+
+// setStreamCookie hands the browser the credential its SSE streams use, so the
+// JWT no longer has to ride in a URL (access logs, history, referrers). No Secure
+// flag: the console is routinely served over plain HTTP on loopback or behind a
+// local reverse proxy, where a Secure cookie is never stored.
+func setStreamCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     streamCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(jwtTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// extractToken reads the JWT from Authorization: Bearer, from ?token= (SSE
+// clients outside the browser), or — only where allowCookie is set — from the
+// HttpOnly stream cookie.
+func extractToken(r *http.Request, allowCookie bool) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
 	}
-	if c, err := r.Cookie("m1nervac0nsole_token"); err == nil && c.Value != "" {
-		return c.Value
+	if allowCookie {
+		if c, err := r.Cookie(streamCookieName); err == nil && c.Value != "" {
+			return c.Value
+		}
 	}
 	return r.URL.Query().Get("token")
 }
@@ -465,7 +511,7 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			h.ServeHTTP(w, r)
 			return
 		}
-		tok := extractToken(r)
+		tok := extractToken(r, sseCookieAllowed(r))
 		if tok == "" {
 			writeErr(w, 401, authErrUnauthorized)
 			return
@@ -581,6 +627,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[auth] initialized the admin password (client=%s)", clientLogID(r))
+	setStreamCookie(w, tok)
 	writeJSON(w, 200, map[string]any{"token": tok})
 }
 
@@ -594,7 +641,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	if !s.verifyToken(extractToken(r)) {
+	if !s.verifyToken(extractToken(r, false)) {
 		writeErr(w, 401, authErrUnauthorized)
 		return
 	}
@@ -655,7 +702,24 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[auth] changed the admin password. All existing sessions are now invalidated (client=%s)", clientLogID(r))
+	setStreamCookie(w, tok)
 	writeJSON(w, 200, map[string]any{"ok": true, "token": tok})
+}
+
+// POST /api/auth/logout — clears the HttpOnly stream cookie. The JWT itself
+// stays valid until it expires or the password changes (there is no server-side
+// session table), but a logged-out browser must not keep a credential the
+// operator asked to drop: page scripts cannot clear an HttpOnly cookie.
+func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     streamCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // POST /api/auth/login — validates username/password and returns a JWT.
@@ -702,5 +766,6 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, authErrTokenGen)
 		return
 	}
+	setStreamCookie(w, tok)
 	writeJSON(w, 200, map[string]any{"token": tok})
 }

@@ -4,11 +4,11 @@ import * as React from "react";
 
 import { useTranslations } from "next-intl";
 
+import { CuratorChat } from "@/components/curator-chat";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { Company, Task } from "@/lib/types";
 
-import { CuratorChat } from "./_components/curator-chat";
 import { KnowledgePane } from "./_components/knowledge-pane";
 import { PreviewPane } from "./_components/preview-pane";
 import { ReflectionsPane } from "./_components/reflections-pane";
@@ -65,7 +65,7 @@ export default function MemoryPage() {
           <PreviewPane tasks={tasks} />
         </TabsContent>
         <TabsContent value="curator" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <CuratorChat />
+          <CuratorChat agentKey="curator" i18n="memoryPage" />
         </TabsContent>
       </Tabs>
     </div>

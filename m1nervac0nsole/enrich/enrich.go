@@ -20,7 +20,9 @@
 // contacted — including a redirect destination. A job without task context is
 // dropped rather than enriched on behalf of no task. DNS resolution is ungated by
 // RoE (§5.2) but still honours an explicit exclusion, since resolving a host the
-// operator ruled out is contact the operator did not authorize.
+// operator ruled out is contact the operator did not authorize. An HTTP probe
+// also asks the network policy, so only a destination the task's own authorized
+// rules cover is contacted; no authorizer means no probe.
 package enrich
 
 import (
@@ -44,6 +46,7 @@ import (
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/useragent"
 
 	"github.com/miekg/dns"
@@ -81,6 +84,7 @@ type Engine struct {
 	proxy   string       // masking egress proxy URL (may carry credentials; never logged raw)
 	client  *http.Client // nil = HTTP probing disabled (httpOff says why)
 	httpOff string
+	auth    netpolicy.Authorizer // nil = every HTTP probe is refused
 
 	jobs    chan job
 	wg      sync.WaitGroup // one count per accepted job, for Wait
@@ -116,6 +120,10 @@ type Options struct {
 	// with the proxy, one per hop (redirects included), plus transport failures.
 	// It must be cheap and must not call back into the engine.
 	Observe func(Observation)
+	// Authorizer is the network-policy gate every HTTP probe asks before it
+	// dials. nil refuses every probe: a destination no policy answered for is
+	// not authorized, and enrichment is outbound contact like any other.
+	Authorizer netpolicy.Authorizer
 }
 
 const (
@@ -182,6 +190,7 @@ func New(as *db.AssetStore, opts Options) *Engine {
 		as:     as,
 		resolv: resolv,
 		proxy:  proxy,
+		auth:   opts.Authorizer,
 		jobs:   make(chan job, queueSize),
 		cool:   map[string]time.Time{},
 		closed: make(chan struct{}),
@@ -426,7 +435,9 @@ func (e *Engine) allow(taskID int64, target string) (bool, string) {
 	var domains, ips, urls []string
 	// A bare host (DNS job) is matched as a host; only a real URL is offered to
 	// the URL rules, so a fuzzy_url pattern cannot match a hostname by accident.
-	if u, err := url.Parse(target); err == nil && u.Scheme != "" && u.Host != "" {
+	u, uerr := url.Parse(target)
+	isURL := uerr == nil && u.Scheme != "" && u.Host != ""
+	if isURL {
 		urls = append(urls, target)
 	}
 	if net.ParseIP(host) != nil {
@@ -437,7 +448,43 @@ func (e *Engine) allow(taskID int64, target string) (bool, string) {
 	if d := db.EvaluateAssetGate(block, allowRules, domains, ips, urls); !d.Allowed {
 		return false, d.Reason
 	}
+	// The checks above only know operator exclusions and intercept blocks; the
+	// network policy is the grant. A DNS job resolves a name and never contacts
+	// the target, so it keeps the documented ungated behaviour; an HTTP probe
+	// asks before it dials, and a redirect hop asks again through this function.
+	if isURL {
+		if dec := e.authorize(taskID, u); !dec.Allow {
+			return false, "network policy: " + dec.Reason
+		}
+	}
 	return true, ""
+}
+
+// authorize asks the network policy whether this task may reach the probe
+// destination. No authorizer means no answer, and no answer refuses.
+func (e *Engine) authorize(taskID int64, u *url.URL) netpolicy.Decision {
+	if e.auth == nil {
+		return netpolicy.Decision{Stage: netpolicy.StagePolicy, Reason: "no network-policy authorizer is configured"}
+	}
+	scheme := strings.ToLower(u.Scheme)
+	proto := "http"
+	if scheme == "ws" || scheme == "wss" {
+		proto = "ws"
+	}
+	port := 0
+	if p := u.Port(); p != "" {
+		port, _ = strconv.Atoi(p)
+	}
+	if port == 0 {
+		switch scheme {
+		case "http", "ws":
+			port = 80
+		case "https", "wss":
+			port = 443
+		}
+	}
+	s := netpolicy.Session{ID: "enrich:" + itoa(taskID), TaskID: taskID, Purpose: netpolicy.PurposeTesting}
+	return e.auth.Authorize(e.ctx, s, netpolicy.Destination{Scheme: scheme, Host: u.Hostname(), Port: port, Protocol: proto})
 }
 
 // checkRedirect re-checks a redirect destination before it is contacted. An

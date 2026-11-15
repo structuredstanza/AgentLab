@@ -102,7 +102,7 @@ func runBash(ctx context.Context, input json.RawMessage, tc *ToolContext) (Resul
 // runBashManaged runs the command through the task manager, supporting explicit
 // background launch and timeout auto-backgrounding.
 func runBashManaged(ctx context.Context, tc *ToolContext, command string, timeout time.Duration, explicitBG bool) (Result, error) {
-	spec := SpawnSpec{Command: command, Kind: KindBash, WorkingDir: tc.WorkingDir, Description: short(command), Env: tc.Env}
+	spec := SpawnSpec{Command: command, Kind: KindBash, WorkingDir: tc.WorkingDir, Description: short(command), Env: tc.Env, toolUseID: tc.ToolUseID}
 
 	if explicitBG {
 		t, err := tc.Tasks.Spawn(spec)
@@ -125,16 +125,17 @@ func runBashManaged(ctx context.Context, tc *ToolContext, command string, timeou
 	if finished {
 		info, _ := tc.Tasks.Get(t.ID)
 		tc.Tasks.Forget(t.ID)
+		ref := artifactRef(t)
 		if info.Status == TaskFailed {
 			if strings.TrimSpace(output) == "" {
 				output = "(no output)"
 			}
-			return Errorf(fmt.Sprintf("%s\n\n[exit code %d]", Capture(tc, output), info.ExitCode)), nil
+			return Errorf(withArtifact(fmt.Sprintf("%s\n\n[exit code %d]", Capture(tc, output), info.ExitCode), ref)), nil
 		}
 		if strings.TrimSpace(output) == "" {
 			output = "(command produced no output)"
 		}
-		return Text(Capture(tc, output)), nil
+		return Text(withArtifact(Capture(tc, output), ref)), nil
 	}
 
 	// Timed out while still running.
@@ -150,11 +151,39 @@ func runBashManaged(ctx context.Context, tc *ToolContext, command string, timeou
 	return Errorf(Capture(tc, out) + fmt.Sprintf("\n\n[command timed out after %s]", timeout)), nil
 }
 
-// runBashSync is the original blocking implementation, used when no task manager
-// is available (background execution disabled).
+// runBashSync is the blocking implementation, used when no task manager is
+// available (background execution disabled). With a host executor installed it
+// runs the command through the isolation boundary; without one it spawns
+// directly, as the standalone SDK always has.
 func runBashSync(ctx context.Context, tc *ToolContext, command string, timeout time.Duration) (Result, error) {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	if ex := currentExecutor(); ex != nil {
+		spec := SpawnSpec{Command: command, Kind: KindBash, Env: tcEnv(tc)}
+		if tc != nil {
+			spec.WorkingDir = tc.WorkingDir
+		}
+		res, err := ex.RunOnce(withExecIdentity(cctx, tc), spec)
+		out := Capture(tc, res.Output)
+		switch {
+		case cctx.Err() == context.DeadlineExceeded:
+			return Errorf(withArtifact(out+fmt.Sprintf("\n\n[command timed out after %s]", timeout), res.Artifact)), nil
+		case err != nil:
+			// The run failed after the supervisor had already delivered output:
+			// report what arrived instead of dropping it.
+			return Errorf(withArtifact(out+"\n\n[command did not finish: "+err.Error()+"]", res.Artifact)), nil
+		case res.ExitCode != 0:
+			if strings.TrimSpace(out) == "" {
+				out = "(no output)"
+			}
+			return Errorf(withArtifact(fmt.Sprintf("%s\n\n[exit code %d]", out, res.ExitCode), res.Artifact)), nil
+		}
+		if strings.TrimSpace(out) == "" {
+			out = "(command produced no output)"
+		}
+		return Text(withArtifact(out, res.Artifact)), nil
+	}
 
 	shell, flags := shellCmd()
 	cmd := exec.CommandContext(cctx, shell, append(flags, command)...)

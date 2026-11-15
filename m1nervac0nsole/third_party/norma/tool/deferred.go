@@ -25,6 +25,25 @@ const (
 	ExecuteExtraToolName = "ExecuteExtraTool"
 )
 
+// PreToolHook is the host's pre-tool gate (guard, intercept rules, scope) as the
+// harness runs it. A tool that invokes another tool calls it under the inner
+// tool's name, so the wrapper's own approval never stands in for the call it
+// makes.
+type PreToolHook func(name string, input []byte) (block bool, message string, updated []byte)
+
+type preToolHookKey struct{}
+
+// WithPreToolHook attaches the host's pre-tool gate to ctx. ExecuteExtraTool
+// reads it and runs it for the tool it invokes.
+func WithPreToolHook(ctx context.Context, hook PreToolHook) context.Context {
+	return context.WithValue(ctx, preToolHookKey{}, hook)
+}
+
+func preToolHookFrom(ctx context.Context) PreToolHook {
+	h, _ := ctx.Value(preToolHookKey{}).(PreToolHook)
+	return h
+}
+
 // UnlockSet is a session-scoped, concurrency-safe set of deferred-tool names that
 // are currently callable via ExecuteExtraTool. Globally-available deferred tools
 // are seeded at construction; skill-gated ones are added at runtime when their
@@ -218,7 +237,8 @@ func NewSearchExtraTools(reg *Registry, deferred []string) CoreTool {
 // NewExecuteExtraTool builds the always-loaded invoker for deferred tools. It runs
 // the named tool from reg, but only if it is currently in the unlock set. Schema is
 // validated before the call. unlock may be nil (then every registry tool is
-// callable — no gating).
+// callable — no gating). When the context carries a PreToolHook (the harness
+// attaches one), the inner tool is gated under its own name before it runs.
 func NewExecuteExtraTool(reg *Registry, unlock *UnlockSet) CoreTool {
 	return Build(Spec{
 		Name: ExecuteExtraToolName,
@@ -266,6 +286,17 @@ func NewExecuteExtraTool(reg *Registry, unlock *UnlockSet) CoreTool {
 			}
 			if err := ValidateInput(t.InputSchema(), params); err != nil {
 				return Errorf("Error: invalid params for " + args.ToolName + ": " + err.Error()), nil
+			}
+			// The wrapper's own gate already ran under ExecuteExtraTool; the tool
+			// being invoked is a separate call, so it gets its own verdict under
+			// its own name. A deny rule written for the inner tool used to be
+			// invisible here.
+			if hook := preToolHookFrom(ctx); hook != nil {
+				if block, msg, updated := hook(args.ToolName, params); block {
+					return Errorf("Error: " + args.ToolName + " was not permitted: " + msg), nil
+				} else if len(updated) > 0 {
+					params = updated
+				}
 			}
 			return t.Call(ctx, params, tc)
 		},

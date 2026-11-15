@@ -114,4 +114,36 @@ describe("skill editor", () => {
     expect(content).not.toContain("heavy.py contents");
     expect(content).toBe("# SKILL.md contents\n# a note\n");
   });
+
+  it("keeps a dirty buffer unless the operator confirms discarding it", async () => {
+    render(<SkillsPage />);
+    await waitFor(() => expect(screen.getAllByText("probe-skill").length).toBeGreaterThan(0));
+
+    fireEvent.click(treeItem("heavy.py"));
+    await waitFor(() => expect(h.pending["heavy.py"]).toBeTruthy());
+    h.pending["heavy.py"]("print('heavy.py contents')\n");
+
+    const textarea = await waitFor(() => {
+      const el = document.querySelector("textarea");
+      if (!el) throw new Error("editor not open");
+      return el as HTMLTextAreaElement;
+    });
+    expect(textarea.value).toBe("print('heavy.py contents')\n");
+    fireEvent.change(textarea, { target: { value: "print('edited')\n" } });
+
+    // Cancel: the selection must not move, so the edit stays in the buffer.
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(treeItem("SKILL.md"));
+    expect(confirm).toHaveBeenCalled();
+    expect(document.querySelector("textarea")).toBe(textarea);
+    expect(textarea.value).toBe("print('edited')\n");
+
+    // Confirm: the other file loads and replaces the buffer.
+    confirm.mockReturnValue(true);
+    fireEvent.click(treeItem("SKILL.md"));
+    await waitFor(() => expect(h.pending["SKILL.md"]).toBeTruthy());
+    h.pending["SKILL.md"]("# SKILL.md contents\n");
+    await waitFor(() => expect(document.querySelector("textarea")?.value).toBe("# SKILL.md contents\n"));
+    confirm.mockRestore();
+  });
 });

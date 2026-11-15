@@ -14,10 +14,9 @@ import (
 	actool "github.com/structuredstanza/norma/tool"
 )
 
-// browserToolKeys is the native browser surface. It replaces the Playwright MCP
-// when the operator flips browser_driver to native: the same snapshot/ref
-// contract, but scope is enforced on navigation and every request goes through
-// the recording proxy.
+// browserToolKeys is the native browser surface: the only testing browser. Scope
+// is enforced on navigation and every request goes through the recording proxy.
+// Research - public documentation, repositories, advisories - is Obscura's job.
 var browserToolKeys = []string{
 	"browser_open", "browser_navigate", "browser_snapshot", "browser_click",
 	"browser_type", "browser_press", "browser_select", "browser_wait",
@@ -86,6 +85,7 @@ type browserToolDriver interface {
 	URL() string
 	Title() string
 	BlockedRequests() []string
+	Popups() []string
 	Downloads() []string
 	Console(since int64, limit int) []browser.ConsoleEntry
 	ConsoleSeq() int64
@@ -112,15 +112,21 @@ var browserToolExisting = func(s *Server, taskID string) browserToolDriver {
 }
 
 // browserText is the result every tool that touched the driver returns: the
-// tool's own text plus what the driver collected since the previous call. Both
-// lists drain on read, so a blocked host or a finished download is reported
-// exactly once, by whichever tool call notices it.
+// tool's own text plus what the driver collected since the previous call. Every
+// list drains on read, so a blocked host, an attached popup or a finished
+// download is reported exactly once, by whichever tool call notices it.
 func browserText(d browserToolDriver, text string) actool.Result {
 	if d == nil {
 		return actool.Text(text)
 	}
 	if hosts := d.BlockedRequests(); len(hosts) > 0 {
 		text += fmt.Sprintf("\nblocked %d out-of-scope requests: %s", len(hosts), strings.Join(hosts, ", "))
+	}
+	for _, popup := range d.Popups() {
+		if popup == "" {
+			popup = "(destination not reported by the browser)"
+		}
+		text += "\npopup opened: " + popup
 	}
 	for _, path := range d.Downloads() {
 		text += "\ndownloaded: " + path
@@ -139,7 +145,7 @@ func (s *Server) browserOpenTool() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			taskID, err := browserTaskID(ctx)
+			taskID, err := s.browserTaskID(ctx)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -173,7 +179,7 @@ func (s *Server) browserNavigateTool() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			taskID, err := browserTaskID(ctx)
+			taskID, err := s.browserTaskID(ctx)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -209,7 +215,7 @@ func (s *Server) browserSnapshotTool() actool.CoreTool {
 				MaxLines int    `json:"max_lines"`
 			}
 			_ = json.Unmarshal(in, &a)
-			taskID, err := browserTaskID(ctx)
+			taskID, err := s.browserTaskID(ctx)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -237,7 +243,7 @@ func (s *Server) browserSnapshotTool() actool.CoreTool {
 
 // browserRefAction is the shape every ref-driven tool shares.
 func (s *Server) browserRefAction(ctx context.Context, act func(context.Context, browserToolDriver) (browser.PageState, error)) (actool.Result, error) {
-	taskID, err := browserTaskID(ctx)
+	taskID, err := s.browserTaskID(ctx)
 	if err != nil {
 		return actool.Errorf("Error: " + err.Error()), nil
 	}
@@ -359,7 +365,7 @@ func (s *Server) browserWaitTool() actool.CoreTool {
 			if timeout > time.Minute {
 				timeout = time.Minute
 			}
-			taskID, err := browserTaskID(ctx)
+			taskID, err := s.browserTaskID(ctx)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -385,7 +391,7 @@ func (s *Server) browserScreenshotTool() actool.CoreTool {
 				FullPage bool `json:"full_page"`
 			}
 			_ = json.Unmarshal(in, &a)
-			taskID, err := browserTaskID(ctx)
+			taskID, err := s.browserTaskID(ctx)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -426,17 +432,13 @@ func (s *Server) browserUploadTool() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("bad input: " + err.Error()), nil
 			}
-			taskID, err := browserTaskID(ctx)
+			taskID, err := s.browserTaskID(ctx)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			abs := make([]string, 0, len(a.Paths))
-			for _, p := range a.Paths {
-				clean := filepath.Clean(strings.TrimPrefix(p, "/"))
-				if strings.HasPrefix(clean, "..") {
-					return actool.Errorf(fmt.Sprintf("Error: %q is outside the workspace", p)), nil
-				}
-				abs = append(abs, filepath.Join(s.m.dir, clean))
+			abs, err := s.browserUploadPaths(taskID, a.Paths)
+			if err != nil {
+				return actool.Errorf("Error: " + err.Error()), nil
 			}
 			drv, err := browserToolFor(s, ctx, taskID)
 			if err != nil {
@@ -448,6 +450,61 @@ func (s *Server) browserUploadTool() actool.CoreTool {
 			}
 			return browserText(drv, pageLine(state.URL, state.Title)), nil
 		})
+}
+
+// errBrowserUploadPath is the refusal for a path that leaves the task workspace.
+// It names the accepted shape so the model retries instead of giving up.
+const errBrowserUploadPath = "is outside the task workspace; pass a path relative to it, e.g. uploads/wordlist.txt"
+
+// browserUploadPaths resolves upload paths inside the current task's workspace.
+// The old check joined the shared work dir instead, so an absolute path was
+// silently re-rooted there and a symlink planted in the workspace was followed to
+// another task's file. CDP takes absolute paths, so each one is resolved and then
+// proved contained with a rooted open: os.Root refuses a symlink that leaves the
+// root, which no lexical check can.
+// shortcut: Chromium re-opens the path it is handed, so a symlink swapped in after
+// this check is only caught by the next upload; upgrade if CDP gains fd input.
+func (s *Server) browserUploadPaths(taskID string, paths []string) ([]string, error) {
+	dir := filepath.Join(s.m.dir, "tasks", taskID)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("the task workspace is not available: %w", err)
+	}
+	defer root.Close()
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return nil, fmt.Errorf("the task workspace is not available: %w", err)
+	}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		name := strings.TrimSpace(p)
+		if name == "" || filepath.IsAbs(name) {
+			return nil, fmt.Errorf("%q %s", p, errBrowserUploadPath)
+		}
+		clean := filepath.Clean(name)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("%q %s", p, errBrowserUploadPath)
+		}
+		target, err := filepath.EvalSymlinks(filepath.Join(dir, clean))
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a file in the task workspace: %w", p, err)
+		}
+		rel, err := filepath.Rel(realDir, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("%q %s", p, errBrowserUploadPath)
+		}
+		f, err := root.Open(rel)
+		if err != nil {
+			return nil, fmt.Errorf("%q %s", p, errBrowserUploadPath)
+		}
+		fi, statErr := f.Stat()
+		f.Close()
+		if statErr != nil || fi.IsDir() {
+			return nil, fmt.Errorf("%q is not a file in the task workspace", p)
+		}
+		out = append(out, target)
+	}
+	return out, nil
 }
 
 // consoleLine is one browser_log entry with the short keys a model reads.
@@ -480,7 +537,7 @@ func (s *Server) browserLogTool() actool.CoreTool {
 				Limit int   `json:"limit"`
 			}
 			_ = json.Unmarshal(in, &a)
-			taskID, err := browserTaskID(ctx)
+			taskID, err := s.browserTaskID(ctx)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -504,7 +561,7 @@ func (s *Server) browserCloseTool() actool.CoreTool {
 		"Close this task's browser. Cookies stay in the task's profile, so a later browser_open is still signed in; the next browser tool starts a fresh tab. Idempotent.",
 		objSchema(map[string]any{}),
 		func(ctx context.Context, _ json.RawMessage) (actool.Result, error) {
-			taskID, err := browserTaskID(ctx)
+			taskID, err := s.browserTaskID(ctx)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}

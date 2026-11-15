@@ -309,13 +309,13 @@ func (p *Proxy) mitm(ctx context.Context, conn net.Conn, br *bufio.Reader, autho
 	// proxy always CONNECTs to its upstream - even for an http:// target - so a
 	// plaintext request arrives here; terminating TLS on it consumes the request
 	// and answers nothing, which is how every plain-HTTP target became a 502.
-	// Peek one byte: 0x16 opens a TLS handshake, anything else is relayed.
+	// Peek one byte: 0x16 opens a TLS handshake, anything else is a request.
 	first, err := br.Peek(1)
 	if err != nil {
 		return
 	}
 	if first[0] != 0x16 {
-		p.relayTunnel(ctx, conn, br, authority, host)
+		p.serveTunnel(ctx, conn, br, authority, false)
 		return
 	}
 
@@ -328,61 +328,36 @@ func (p *Proxy) mitm(ctx context.Context, conn net.Conn, br *bufio.Reader, autho
 	}
 	defer tlsConn.Close()
 
-	inner := bufio.NewReader(tlsConn)
+	p.serveTunnel(ctx, tlsConn, bufio.NewReader(tlsConn), authority, true)
+}
+
+// serveTunnel forwards the requests arriving inside a CONNECT tunnel until the
+// client stops asking for more. Both the terminated (TLS) and the plaintext
+// tunnel go through here, so each request is gated, charged and logged
+// individually instead of the tunnel being relayed as opaque bytes.
+func (p *Proxy) serveTunnel(ctx context.Context, conn net.Conn, br *bufio.Reader, authority string, useTLS bool) {
 	for {
-		tlsConn.SetDeadline(time.Now().Add(requestTimeout))
-		method, target, headers, err := readRequestHead(inner)
+		conn.SetDeadline(time.Now().Add(requestTimeout))
+		method, target, headers, err := readRequestHead(br)
 		if err != nil {
 			return
 		}
-		if !p.forward(ctx, tlsConn, inner, method, target, headers, authority, true) {
+		if !p.forward(ctx, conn, br, method, target, headers, authority, useTLS) || clientClosed(headers) {
 			return
 		}
 	}
 }
 
-// relayTunnel forwards a CONNECT tunnel verbatim, without terminating TLS.
-//
-// It exists for the proxy-to-proxy hop: the recording proxy CONNECTs to this
-// proxy for plaintext targets too, and a TLS handshake there would swallow the
-// request. The engagement gate and the reachability probe still apply, so a
-// relay is not an unthrottled path to a target, and the connection is logged
-// like any other.
-func (p *Proxy) relayTunnel(ctx context.Context, conn net.Conn, br *bufio.Reader, authority, host string) {
-	started := time.Now()
-	if p.Gate != nil {
-		if ok, reason := p.Gate.Allow(ctx, host, ""); !ok {
-			logEvent(ctx, Event{Time: started, Method: "CONNECT", Host: host,
-				Refused: true, Reason: reason, Duration: time.Since(started)})
-			body := "blocked by engagement policy: " + reason
-			fmt.Fprintf(conn, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
-				len(body), body)
-			return
+// clientClosed reports whether the request asked for its connection to end, so
+// the tunnel closes after its response instead of waiting for a request the
+// client will never send.
+func clientClosed(headers [][2]string) bool {
+	for _, kv := range headers {
+		if strings.EqualFold(kv[0], "connection") && strings.Contains(strings.ToLower(kv[1]), "close") {
+			return true
 		}
 	}
-	upstream, err := (&net.Dialer{Timeout: connectProbeTimeout}).DialContext(ctx, "tcp", authority)
-	if err != nil {
-		logEvent(ctx, Event{Time: started, Method: "CONNECT", Host: host,
-			Refused: true, Reason: "dial: " + err.Error(), Duration: time.Since(started)})
-		writeEgressFailure(conn, egressDialFailed)
-		return
-	}
-	defer upstream.Close()
-	logEvent(ctx, Event{Time: started, Method: "CONNECT", Host: host, Duration: time.Since(started)})
-
-	// A tunnel outlives one request, so the per-request deadline must go; the
-	// idle timeout is enforced per copy below instead.
-	conn.SetDeadline(time.Time{})
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(upstream, br)
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(conn, upstream)
-		done <- struct{}{}
-	}()
-	<-done
+	return false
 }
 
 // reachable reports whether authority accepted a TCP connection, dialling once
@@ -799,7 +774,9 @@ func (p *Proxy) forwardH2(ctx context.Context, upstream net.Conn, method, path, 
 		if hopByHop[key] || key == "host" || key == "content-length" {
 			continue
 		}
-		req.Header.Set(kv[0], kv[1])
+		// Add, not Set: a header the caller sent twice (or one whose values are
+		// legitimately repeated) must reach the origin with every value.
+		req.Header.Add(kv[0], kv[1])
 	}
 	resp, err := tr.RoundTrip(req)
 	if err != nil {

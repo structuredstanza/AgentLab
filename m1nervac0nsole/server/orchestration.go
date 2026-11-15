@@ -40,8 +40,9 @@ func jsonResult(v any) (actool.Result, error) {
 func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 	tools := append(s.m.HostTools(), s.orchestrationTools()...)
 	tools = append(tools, s.findingRetestTools()...)
-	tools = append(tools, s.platformTools()...) // Platform operation tools (create/edit skills/tools/MCP, for Auto use)
-	tools = append(tools, s.curatorTools()...)  // Memory-curation tools, bound to the curator chat agent only
+	tools = append(tools, s.platformTools()...)    // Platform operation tools (create/edit skills/tools/MCP, for Auto use)
+	tools = append(tools, s.curatorTools()...)     // Memory-curation tools, bound to the curator chat agent only
+	tools = append(tools, s.toolCuratorTools()...) // Toolbox-curation tools, bound to the toolcurator chat agent only
 	// The drafter's list_tools is the platform tool appended above; a second
 	// copy would reach the model as two functions with one name.
 	seen := make(map[string]bool, len(tools))
@@ -55,17 +56,15 @@ func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 		tools = append(tools, t)
 		seen[t.Name()] = true
 	}
-	// The native browser driver replaces the Playwright MCP when it is selected:
-	// two browser surfaces in one prompt is how a model ends up driving two
-	// browsers. The scope guard wraps these exactly as it wraps the MCP tools.
-	if s.m.BrowserDriverNative() {
-		for _, t := range s.browserTools() {
-			if seen[t.Name()] {
-				continue
-			}
-			tools = append(tools, scopeGuardTool(s.m.Assets(), t))
-			seen[t.Name()] = true
+	// The native Chromium driver is the testing browser, and the only one: the
+	// Playwright MCP is retired. The scope guard wraps these as it wraps every
+	// browser tool.
+	for _, t := range s.browserTools() {
+		if seen[t.Name()] {
+			continue
 		}
+		tools = append(tools, scopeGuardTool(s.m.Assets(), t))
+		seen[t.Name()] = true
 	}
 	custom, err := s.customTools()
 	if err != nil {
@@ -216,7 +215,7 @@ func (s *Server) toolListTasks() actool.CoreTool {
 			}
 			out := make([]map[string]any, 0)
 			for _, t := range s.m.List() {
-				status := s.deriveTaskStatus(t)
+				status := s.resolvedTaskStatus(t)
 				end := lastAct[t.ExpID]
 				if live := s.engine.LastActivity(t.ID); live > end {
 					end = live
@@ -483,22 +482,6 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 		})
 }
 
-// deriveTaskStatus mirrors listTasks' status derivation for the list_tasks tool.
-func (s *Server) deriveTaskStatus(t *Task) string {
-	lifecycle := t.lifecycleSnapshot()
-	switch {
-	case isTerminalStatus(lifecycle.Status):
-		return lifecycle.Status
-	case lifecycle.Status == db.StatusNeedsOperator:
-		return db.StatusNeedsOperator
-	case lifecycle.Paused || s.engine.IsPaused(t.ID):
-		return "paused"
-	case s.engine.ReadyFor(t) && s.engine.Started(t.ID):
-		return "running"
-	}
-	return "created"
-}
-
 // orchestrationToolSeeds seeds the cross-task tools into the tools table so they
 // are bindable per-agent (default: bound to nobody — opt-in for orchestration
 // agents). First-insert only, like the traffic seeds. Returns the orchestration and
@@ -542,27 +525,28 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 	s.seedWorkerReadbackRebind()  // Fix for an old migration that deleted bindings by mistake: re-bind search_all_worker_traces/get_worker_trace/node_detail back to worker (one-time)
 	s.seedMemoryToolBindings()    // Knowledge/reflection tools: give them their default agent bindings on databases seeded before them (one-time)
 	s.seedCuratorTools()          // Memory-curation tools: seeded bound to "curator" only, so no other agent can reach them
+	s.seedToolCuratorTools()      // Toolbox-curation tools: seeded bound to "toolcurator" only, so no other agent can reach them
 	s.seedDrafterTools()          // Plan-drafting tools: bound to "drafter" (list_tools is shared with worker/planner), so no other agent can draft a plan
-	if s.m.BrowserDriverNative() {
-		// The built-in driver replaces the Playwright MCP: seed its tools and
-		// disable the MCP row, or every prompt lists two browser tool sets.
-		s.seedBrowserTools()
-		if _, err := s.m.PG().Exec(`UPDATE mcp_servers SET enabled=false WHERE name='browser'`); err != nil {
-			log.Printf("[browser] failed to disable the MCP row: %v", err)
-		}
-		go func() {
-			t := time.NewTicker(time.Minute)
-			defer t.Stop()
-			for {
-				select {
-				case <-s.ctx.Done():
-					return
-				case <-t.C:
-					s.reapBrowsers()
-				}
+	// The native Chromium driver is the only testing browser, so its tools are
+	// always seeded and the idle reaper always runs: a session nobody touches
+	// any more must not hold a Chromium process for the life of the server.
+	s.seedBrowserTools()
+	// The research browser is launched through the gateway, which only accepts a
+	// session credential the backend mints per run. Assembly reads this hook;
+	// nil means no gateway runs and the child gets no proxy argument.
+	researchProxyFor = s.researchProxy
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-t.C:
+				s.reapBrowsers()
 			}
-		}()
-	}
+		}
+	}()
 	s.seedAutoReportFindingBinding()
 	s.unbindGoalMetDefault()
 	s.reseedGoalsPrompt()     // Added a "extract operation constraints" step to the goals prompt → existing databases get a new default version appended (one-time)

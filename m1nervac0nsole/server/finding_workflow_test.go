@@ -99,7 +99,9 @@ func TestFindingWorkflowAutoHintToPlannerAndSetting(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.SplitN(result, "\n", 2)[1]), &recorded); err != nil {
 		t.Fatal(err)
 	}
-	if recorded.FindingID == recorded.NodeID || len(recorded.Traffic.Bindings) != 3 || notices != 1 {
+	// The two ids come from independent sequences, so they may coincide; what
+	// matters is that both are set and the handoff carried its three references.
+	if recorded.FindingID <= 0 || recorded.NodeID <= 0 || len(recorded.Traffic.Bindings) != 3 || notices != 1 {
 		t.Fatal("bad finding/traffic result", result)
 	}
 	for i, b := range recorded.Traffic.Bindings {

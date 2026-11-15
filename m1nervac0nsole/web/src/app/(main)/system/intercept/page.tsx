@@ -417,6 +417,10 @@ export default function InterceptPage() {
   const [enabledTools, setEnabledTools] = React.useState<Set<string>>(new Set());
   const [scopeLoading, setScopeLoading] = React.useState(false);
   const [scopeSaving, setScopeSaving] = React.useState(false);
+  // A config that never loaded is not an empty scope: saving from it would persist
+  // [] and silently drop every configured rule and the model judge.
+  const [scopeLoaded, setScopeLoaded] = React.useState(false);
+  const [scopeError, setScopeError] = React.useState("");
   const [scopeTools, setScopeTools] = React.useState<string[]>([]); // Page header info bar: the tool currently intercepted by the hook
 
   // ---- data ----
@@ -551,12 +555,17 @@ export default function InterceptPage() {
   async function openScope() {
     setScopeOpen(true);
     setScopeLoading(true);
+    setScopeLoaded(false);
+    setScopeError("");
     try {
       const [tools, cfg] = await Promise.all([api.tools(), api.interceptGetToolConfig()]);
       setAllTools(tools);
       setEnabledTools(new Set(cfg.enabled_tools));
+      setScopeLoaded(true);
     } catch (e) {
-      toast.error(t("toast.loadFailed", { error: (e as Error).message }));
+      const message = (e as Error).message;
+      setScopeError(message);
+      toast.error(t("toast.loadFailed", { error: message }));
     } finally {
       setScopeLoading(false);
     }
@@ -948,6 +957,8 @@ export default function InterceptPage() {
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
             {scopeLoading ? (
               <p className="py-4 text-muted-foreground text-sm">{t("rules.loading")}</p>
+            ) : scopeError ? (
+              <p className="py-4 text-destructive text-sm">{t("scope.loadFailed", { error: scopeError })}</p>
             ) : (
               toolGroups.map((group, gi) => (
                 <div key={group.label}>
@@ -988,7 +999,7 @@ export default function InterceptPage() {
             <Button variant="outline" size="sm" onClick={() => setScopeOpen(false)}>
               {t("editor.cancel")}
             </Button>
-            <Button size="sm" onClick={saveScope} disabled={scopeSaving || scopeLoading}>
+            <Button size="sm" onClick={saveScope} disabled={scopeSaving || scopeLoading || !scopeLoaded}>
               {scopeSaving ? t("editor.saving") : t("editor.save")}
             </Button>
           </div>

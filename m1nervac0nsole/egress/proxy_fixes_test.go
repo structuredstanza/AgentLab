@@ -119,6 +119,39 @@ func TestCallerCredentialsReachTheOrigin(t *testing.T) {
 	}
 }
 
+// A header the caller sends more than once must reach an h2 origin with every
+// value. The h2 path built the request with Header.Set, which kept only the
+// last value of each name.
+func TestDuplicateHeadersReachHTTP2Origin(t *testing.T) {
+	var got []string
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Values("X-Dup")
+		io.WriteString(w, "ok")
+	}))
+	origin.EnableHTTP2 = true
+	origin.StartTLS()
+	defer origin.Close()
+
+	p := newTestProxy(t, nil)
+	client := newH2TestProxy(t, p)
+
+	req, err := http.NewRequest(http.MethodGet, origin.URL+"/dup", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Add("X-Dup", "one")
+	req.Header.Add("X-Dup", "two")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request to an h2 origin failed: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if joined := strings.Join(got, ","); joined != "one,two" {
+		t.Fatalf("origin saw X-Dup %v, want [one two]", got)
+	}
+}
+
 // A plain-HTTP proxy request carries no port, and dialling a bare host fails
 // with "missing port in address" — so every http:// request returned 502.
 func TestDialAuthorityFillsTheSchemeDefault(t *testing.T) {

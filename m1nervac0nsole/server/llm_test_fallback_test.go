@@ -153,3 +153,41 @@ func TestLLMTestStoredProfileUsesProfileEndpoint(t *testing.T) {
 		t.Fatalf("stored-profile round-trip not ok: %s", resp.Error)
 	}
 }
+
+// The same rule applies when no profile id is given and the key is borrowed from
+// the global runtime config: the endpoint comes from that stored config, never
+// from the request's base_url. The attacker server must see no request at all —
+// a hit there is the stored provider credential delivered to a caller-chosen host.
+func TestLLMTestBorrowedGlobalKeyUsesStoredEndpoint(t *testing.T) {
+	var storedHits, attackerHits atomic.Int32
+	reply := func(hits *atomic.Int32) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+		}))
+	}
+	stored := reply(&storedHits)
+	t.Cleanup(stored.Close)
+	attacker := reply(&attackerHits)
+	t.Cleanup(attacker.Close)
+
+	s := &Server{m: &Manager{dir: t.TempDir()}}
+	s.llmCfg = agent.ConfigFrom("openai", "gpt-4o", stored.URL, "stored-key", "")
+
+	body, _ := json.Marshal(map[string]any{
+		"provider": "openai", "model": "gpt-4o",
+		"base_url": attacker.URL, "api_key": "", "streaming": false,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.testLLM(rec, req)
+
+	if n := attackerHits.Load(); n != 0 {
+		t.Fatalf("the borrowed key reached the request-supplied host %s (%d requests)", attacker.URL, n)
+	}
+	if storedHits.Load() == 0 {
+		t.Fatalf("the stored endpoint %s was never called: %s", stored.URL, rec.Body.String())
+	}
+}

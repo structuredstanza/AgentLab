@@ -95,13 +95,9 @@ JSON
   command -v go >/dev/null 2>&1 || die "Go not found. Please install Go (>=1.26) first: https://go.dev/dl/"
   ok "Go: $(go version)"
 
-  # To embed the frontend, static artifacts must be built with node
+  # build.sh owns the frontend export, the embed copy and the version stamp
   if command -v npm >/dev/null 2>&1; then
-    info "Building the frontend static output…"
-    ( cd web && npm ci && npm run build:static )
-    rm -rf server/webui/dist && mkdir -p server/webui && cp -r web/out server/webui/dist
-    info "Compiling a single binary with the frontend embedded…"
-    CGO_ENABLED=0 go build -tags embedui -trimpath -o m1nervac0nsole ./cmd/m1nervac0nsole
+    M1NERVAC0NSOLE_OUTPUT="$PWD/m1nervac0nsole" ./build.sh
   else
     warn "npm not found: compiling the backend only, without the embedded frontend (run the frontend separately with npm run dev)"
     CGO_ENABLED=0 go build -o m1nervac0nsole ./cmd/m1nervac0nsole

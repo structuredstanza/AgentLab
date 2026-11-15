@@ -36,6 +36,7 @@ import type {
   TaskLLMResolution,
   TaskScopeRow,
   TaskTemplate,
+  ToolManifest,
   TrafficEvidenceRole,
   TrafficEvidenceSnapshot,
 } from "../types";
@@ -57,6 +58,26 @@ const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
 const mockTaskCredentials = new Map<string, TaskCredential[]>(Object.entries(structuredClone(D.taskCredentials)));
 let nextMockCredentialID = 100;
+// Runtime manifest store for the demo: one built-in, edits and additions persist across calls.
+const MOCK_NMAP_MANIFEST: ToolManifest = {
+  id: "nmap",
+  name: "Nmap",
+  description: "Port and service discovery, parsed from XML output",
+  category: "scan",
+  accepts: ["ip", "cidr", "domain"],
+  requires: ["nmap"],
+  available: true,
+  source: "builtin",
+  toml: 'id = "nmap"\nname = "Nmap"\ndescription = "Port and service discovery, parsed from XML output"\ncategory = "scan"\n',
+  installable: false,
+  params: {
+    ports: { type: "string", label: "Ports", default: "-", placeholder: "22,80,443 or -" },
+    service: { type: "bool", label: "Service detection", default: "true" },
+    timing: { type: "enum", label: "Timing template", default: "T4", options: ["T2", "T3", "T4"] },
+  },
+  timeout_seconds: 900,
+};
+const mockManifests: ToolManifest[] = [structuredClone(MOCK_NMAP_MANIFEST)];
 // Drafted engagement plans, keyed by the demo task id. The seed draft carries an
 // inclusion, so the demo exercises the "this widens the task scope" gate.
 const mockPlanDrafts = new Map<string, PlanDraft[]>([
@@ -2781,26 +2802,55 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
 
   // ── tools ──
   if (path === "/tools" && m === "GET") return { tools: D.tools };
-  if (path === "/tool-manifests" && m === "GET")
-    return {
-      tools: [
-        {
-          id: "nmap",
-          name: "Nmap",
-          description: "Port and service discovery, parsed from XML output",
-          category: "scan",
-          accepts: ["ip", "cidr", "domain"],
-          requires: ["nmap"],
-          available: true,
-          params: {
-            ports: { type: "string", label: "Ports", default: "-", placeholder: "22,80,443 or -" },
-            service: { type: "bool", label: "Service detection", default: "true" },
-            timing: { type: "enum", label: "Timing template", default: "T4", options: ["T2", "T3", "T4"] },
-          },
-          timeout_seconds: 900,
-        },
-      ],
+  if (path === "/tool-manifests" && m === "GET") return { tools: mockManifests };
+  if (path === "/tool-manifests" && m === "POST") {
+    const toml = String(b.toml ?? "");
+    const id = /^id\s*=\s*"([^"]+)"/m.exec(toml)?.[1];
+    if (!id) throw new Error('manifest: id is required (id = "name")');
+    const existing = mockManifests.find((x) => x.id === id);
+    if (existing) {
+      existing.toml = toml;
+      if (existing.source === "builtin") existing.source = "modified";
+    } else {
+      mockManifests.push({
+        id,
+        name: id,
+        description: /^description\s*=\s*"([^"]*)"/m.exec(toml)?.[1] ?? "",
+        category: "custom",
+        accepts: ["ip", "domain"],
+        requires: [id],
+        available: false,
+        source: "custom",
+        toml,
+        installable: /^\[install\]/m.test(toml),
+        params: {},
+        timeout_seconds: 300,
+      });
+    }
+    return { id };
+  }
+  if (seg[0] === "tool-manifests" && seg.length === 2 && m === "DELETE") {
+    const i = mockManifests.findIndex((x) => x.id === seg[1]);
+    if (i < 0 || mockManifests[i].source === "builtin") throw new Error("manifest not found");
+    if (mockManifests[i].source === "modified") {
+      mockManifests[i] = structuredClone(MOCK_NMAP_MANIFEST);
+    } else {
+      mockManifests.splice(i, 1);
+    }
+    return { deleted: seg[1] };
+  }
+  if (seg[0] === "tool-manifests" && seg[2] === "install") {
+    const target = mockManifests.find((x) => x.id === seg[1]);
+    if (!target?.installable) throw new Error("manifest has no install script");
+    target.available = true;
+    target.artifact = {
+      path: `/state/toolbox/bin/${target.id}`,
+      size: 4_194_304,
+      sha256: "9f2c1b7de4a05c6381f0b2d7e9a4c5b8d1e3f6a7c0b9d2e4f5a6b7c8d9e0f1a2",
+      installed_at: new Date().toISOString(),
     };
+    return { output: "(demo) installed", is_error: false, available: true, artifact: target.artifact };
+  }
   if (seg[0] === "tools" && seg[2] === "preview")
     return {
       program: "nmap",

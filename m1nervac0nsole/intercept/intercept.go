@@ -185,9 +185,10 @@ var defaultEnabledTools = []string{
 	"Bash", "WebFetch", "web_search",
 	"shell_open", "shell_send",
 	"Write", "Edit", "MultiEdit",
-	// memory_propose is also in approvalRequiredTools below, which is what makes
-	// it ask; listing it here only keeps the settings page's scope honest.
-	"memory_propose",
+	// memory_propose and the tool curator's two proposals and its install are
+	// also in approvalRequiredTools below, which is what makes them ask; listing
+	// them here only keeps the settings page's scope honest.
+	"memory_propose", "toolbox_propose_template", "toolbox_propose_tool", "toolbox_install",
 }
 
 // approvalRequiredTools are the tools whose every call raises the operator
@@ -201,21 +202,52 @@ var defaultEnabledTools = []string{
 // writes is durable and promotable into a scope every task reads, so it is
 // asked even when a rule or the judge would allow, and a deny rule still wins.
 // The curator's read tools are deliberately absent: gating a search protects
-// nothing and makes the curator unusable.
+// nothing and makes the curator unusable. The tool curator's two proposals
+// (toolbox_propose_template, toolbox_propose_tool) are gated the same way: a
+// saved template or custom tool is something agents can later run, so a person
+// reads it first; its toolbox_list/read/validate tools are not gated.
+// toolbox_install is gated because running a template's install script is a
+// separate, privileged operation: approving the template must not install it.
+// The platform writers are gated for the same reason as the curator's: what
+// they write is what every later run loads. update_skill_file rewrites a skill
+// body that workers and planners read by default, and create_custom_tool /
+// update_custom_tool store a tool an agent can then call, so a person reads the
+// write before it takes effect.
 var approvalRequiredTools = map[string]bool{
-	"memory_propose": true,
+	"memory_propose":           true,
+	"toolbox_propose_template": true,
+	"toolbox_propose_tool":     true,
+	"toolbox_install":          true,
+	"update_skill_file":        true,
+	"create_custom_tool":       true,
+	"update_custom_tool":       true,
 }
 
 // approvalRequiredAsk is the decision Match returns for an approvalRequiredTools
 // call that no deny rule matched. It is an ordinary ask, so the guard turns it
 // into HandleAsk and the pending record, conversation card, cancellation and
 // decide endpoint behave exactly like a rule's ask; nothing is written unless a
-// person approves.
-func approvalRequiredAsk() Decision {
+// person approves. The wording names the tool being approved, so a toolbox
+// proposal is never presented as a memory one; memory_propose keeps its
+// original text.
+func approvalRequiredAsk(tool string) Decision {
+	rule := "tool curator proposal (" + tool + ")"
+	msg := "The tool curator's " + tool + " call needs your approval before it is saved."
+	switch tool {
+	case "memory_propose":
+		rule = "curator memory proposal"
+		msg = "The curator's memory proposal needs your approval before it is stored."
+	case "toolbox_install":
+		rule = "tool curator install (" + tool + ")"
+		msg = "The tool curator's " + tool + " call needs your approval before it runs the template's install script."
+	case "update_skill_file", "create_custom_tool", "update_custom_tool":
+		rule = "platform write (" + tool + ")"
+		msg = "The agent's " + tool + " call needs your approval: it changes what later runs load."
+	}
 	return Decision{
-		RuleName:       "curator memory proposal",
+		RuleName:       rule,
 		Action:         "ask",
-		Message:        "The curator's memory proposal needs your approval before it is stored.",
+		Message:        msg,
 		TimeoutEnabled: true,
 		TimeoutSeconds: defaultJudgeAskTimeoutSecs,
 		TimeoutAction:  "deny",
@@ -636,7 +668,7 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 		// own card is kept, but an allow rule must not skip the person: keep the
 		// rule's identity for the audit and still ask.
 		if approvalRequiredTools[toolName] && dec.Action == "allow" {
-			ask := approvalRequiredAsk()
+			ask := approvalRequiredAsk(toolName)
 			ask.RuleID, ask.RuleName, ask.ConfigDigest = dec.RuleID, dec.RuleName, dec.ConfigDigest
 			return ask, true
 		}
@@ -645,7 +677,7 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	// No deny/allow/ask rule claimed the call. A deny above already won; here the
 	// approval-required tool still asks, so no rule set can silently allow it.
 	if approvalRequiredTools[toolName] {
-		return approvalRequiredAsk(), true
+		return approvalRequiredAsk(toolName), true
 	}
 	return Decision{}, false
 }

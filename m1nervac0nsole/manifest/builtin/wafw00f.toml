@@ -10,7 +10,7 @@ find_all = { type = "bool", label = "Find all WAFs", default = "true", descripti
 
 [command]
 program = "wafw00f"
-args = ["{{ target.value }}", "-f", "json", "-o", "/dev/stdout", "{{ params.find_all | -a }}", "-p", "{{ proxy }}"]
+args = ["{{ target.value }}", "-f", "json", "-o", "/dev/stdout", "{{ params.find_all | -a }}", "{{ proxy | -p }}"]
 timeout_seconds = 300
 
 [emit]

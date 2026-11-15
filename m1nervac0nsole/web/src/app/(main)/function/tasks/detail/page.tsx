@@ -29,7 +29,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
-import type { LLMProfile, Task } from "@/lib/types";
+import type { InterceptApprovalRow, LLMProfile, Task } from "@/lib/types";
 
 import { AssetsTab } from "./_tabs/assets-tab";
 import { BroadcastTab } from "./_tabs/broadcast-tab";
@@ -210,7 +210,10 @@ function TaskDetailInner() {
   const [paused, setPaused] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("sessions");
-  const [interceptPendingCount, setInterceptPendingCount] = React.useState(0);
+  // The task's pending approvals, polled once here and shared with the Sessions tab:
+  // the header needs the count and the tab needs the rows, and two pollers of the
+  // same endpoint downloaded the whole approval history twice every 5 s.
+  const [pendingIntercepts, setPendingIntercepts] = React.useState<InterceptApprovalRow[]>([]);
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [archiving, setArchiving] = React.useState(false);
 
@@ -223,11 +226,12 @@ function TaskDetailInner() {
 
   React.useEffect(() => {
     let alive = true;
+    setPendingIntercepts([]);
     const load = () =>
       api
         .interceptTask(id)
         .then((rows) => {
-          if (alive) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length);
+          if (alive) setPendingIntercepts(rows.filter((r) => r.status === "pending"));
         })
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
@@ -239,6 +243,7 @@ function TaskDetailInner() {
       clearInterval(t);
     };
   }, [id]);
+  const interceptPendingCount = pendingIntercepts.length;
 
   const taskLoadInFlight = React.useRef<string | null>(null);
   const load = React.useCallback(() => {
@@ -431,7 +436,11 @@ function TaskDetailInner() {
       {/* Tab content */}
       <div className="flex-1 p-4 lg:p-6">
         <TabsContent value="sessions" className="mt-0">
-          <SessionsTab taskId={id} taskPaused={task?.status === "paused" || Boolean(task?.paused)} />
+          <SessionsTab
+            taskId={id}
+            taskPaused={task?.status === "paused" || Boolean(task?.paused)}
+            pendingIntercepts={pendingIntercepts}
+          />
         </TabsContent>
         <TabsContent value="browser" className="mt-0">
           <BrowserTab taskId={id} />

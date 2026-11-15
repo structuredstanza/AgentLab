@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/execbox"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/intercept"
 	"github.com/structuredstanza/norma/agentcore"
 	"github.com/structuredstanza/norma/harness"
@@ -228,13 +229,23 @@ func (w *Worker) compactionWindow() int {
 
 // SetProxy configures the recording proxy address that workers route target
 // traffic through, plus the CA cert path WebFetch trusts to verify HTTPS through
-// that MITM proxy. Empty addr disables the hint.
+// that MITM proxy. Empty addr disables the hint. The address is only the
+// gateway's; the credential that makes a request acceptable to it comes from the
+// session of the run, which is why the URL is built per run (runProxyURL).
 func (w *Worker) SetProxy(addr, caCert string) { w.proxyAddr, w.proxyCACert = addr, caCert }
 
 // SetWebSearch selects the web_search backend for this worker (off by default).
 func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
 
-// proxyEnv builds the Bash-subprocess env that routes child-command HTTP through
+// runProxyURL returns the proxy URL this run's tool environment carries: the
+// gateway address with the credential of the session the run was issued. Empty
+// when the run has no session or no proxy is configured, so a tool gets no proxy
+// rather than a bare address the gateway would refuse.
+func runProxyURL(ctx context.Context, addr string) string {
+	return execbox.ProxyURL(ctx, addr)
+}
+
+// ProxyEnv builds the Bash-subprocess env that routes child-command HTTP through
 // the egress proxy (the recording MITM when capture is on, or the global proxy
 // directly when it is off) and, only when a MITM CA is present, makes the common
 // toolchain trust it — so tools need no manual -x/--proxy/-k. Each ecosystem reads
@@ -243,15 +254,19 @@ func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
 // GIT_SSL_CAINFO→git, NODE_EXTRA_CA_CERTS→node; NODE_USE_ENV_PROXY makes Node 24+
 // honor the proxy vars. ALL_PROXY is set too so a socks5 egress proxy (which curl
 // only reads from ALL_PROXY, not HTTP(S)_PROXY) works in the capture-off path.
-// Empty proxyAddr → nil (direct, unchanged env).
-func proxyEnv(proxyAddr, caCert string) []string {
-	if proxyAddr == "" {
+// Empty proxy → nil (direct, unchanged env).
+//
+// proxy must be the run's own proxy URL (runProxyURL), never a bare address: the
+// gateway refuses an anonymous request, so a tool handed the address alone can
+// only fail.
+func ProxyEnv(proxy, caCert string) []string {
+	if proxy == "" {
 		return nil
 	}
 	env := []string{
-		"HTTP_PROXY=" + proxyAddr, "HTTPS_PROXY=" + proxyAddr,
-		"http_proxy=" + proxyAddr, "https_proxy=" + proxyAddr,
-		"ALL_PROXY=" + proxyAddr, "all_proxy=" + proxyAddr, // socks5 egress: curl reads only this
+		"HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy,
+		"http_proxy=" + proxy, "https_proxy=" + proxy,
+		"ALL_PROXY=" + proxy, "all_proxy=" + proxy, // socks5 egress: curl reads only this
 		"NODE_USE_ENV_PROXY=1", // Node 24+: honor HTTP(S)_PROXY in built-in fetch/http
 	}
 	if caCert != "" {
@@ -516,6 +531,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if tc.DeadlineUnix > 0 {
 		settle = wrapupSettlementForTask("worker", []string{"Bash"}, clamped, tools...)
 	}
+	// The gateway accepts no anonymous request, so both the Bash env and WebFetch
+	// carry this run's session credential, never the bare address.
+	proxy := runProxyURL(ctx, w.proxyAddr)
 	opts := agentcore.Options{
 		Provider:        w.prov,
 		SystemPrompt:    system,
@@ -527,7 +545,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// WebFetch goes through the recording proxy, so its HTTP is traced just like curl's; loading the proxy CA lets HTTPS certificates re-signed via MITM
 		// The re-signed HTTPS certificate passes verification normally (rather than disabling verification). If proxy is empty, connect directly.
 		EnableWebFetch: true,
-		WebFetchProxy:  w.proxyAddr,
+		WebFetchProxy:  proxy,
 		WebFetchCACert: w.proxyCACert,
 		// Web search (optional). ddgs requires no key; brave-free requires BraveKey; tavily requires TavilyKey.
 		// WebSearchProxy is a separate egress proxy (http/https/socks5), unrelated to the MITM proxy that records traffic; if empty, connect directly.
@@ -540,7 +558,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		DeepSeekSearchModel:   w.webSearch.DeepSeekModel,
 		WebSearchProxy:        w.webSearch.Proxy,
 		// HTTP from Bash subcommands goes through the recording proxy by default, and trusts its CA (tools need no -x/-k).
-		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert),
+		BashEnv:    ProxyEnv(proxy, w.proxyCACert),
 		WorkingDir: runDir,
 		MaxTurns:   w.maxTurns, // 0 = unlimited (configurable in agent management)
 		// Wall-clock budget, checked at turn boundaries; never interrupts mid-turn. 0 = unlimited. When a task-level deadline exists, clamp to min(own budget,

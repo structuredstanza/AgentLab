@@ -2,10 +2,14 @@
 //
 // Captures the network activity of one tab through the chrome.debugger API
 // (Network domain) and pushes text request/response pairs to the m1nervac0nsole
-// ingest endpoint in batches. State lives in chrome.storage.session so the
-// popup and the (short-lived) service worker share one view; the queue is
-// deliberately in-memory — a browser restart drops unsent entries, which is
-// the acceptable failure mode for a manual capture session.
+// ingest endpoint in batches. Counters live in chrome.storage.session so the
+// popup and the (short-lived) service worker share one view; the pending queue
+// and the ids the server already accepted live in chrome.storage.local, so a
+// restart or a worker recycle neither drops a capture nor resends one.
+
+importScripts("queue.js"); // pure queue helpers, kept out of this file to be testable
+
+const { QUEUE_CAP, SENT_CAP, newId, cap, pending, takeBatch, rememberSent } = CaptureQueue;
 
 const FLUSH_AT = 10; // entries per batch
 const MAX_BODY = 256 * 1024; // matches the server-side ingest cap
@@ -14,7 +18,8 @@ const SKIP_MIME = ["image/", "font/", "audio/", "video/", "application/octet-str
 let session = {
   capturing: false,
   tabId: null,
-  queue: [], // pending ExternalExchange objects
+  queue: [], // pending ExternalExchange objects, persisted in storage.local
+  sentIds: [], // ids the server already accepted, persisted alongside the queue
   requests: new Map(), // debugger requestId -> partial request info
   ingested: 0,
   failed: 0,
@@ -32,6 +37,38 @@ async function saveState() {
   });
 }
 
+// Queue and accepted-ids are written together, so a restart can never restore a
+// queue whose entries the server already has without the ids that suppress them.
+async function saveQueue() {
+  for (;;) {
+    try {
+      await chrome.storage.local.set({ pendingQueue: session.queue, sentIds: session.sentIds });
+      return;
+    } catch (e) {
+      // storage.local is capped (~10 MB): shed the oldest half rather than lose
+      // the whole queue to one oversized capture
+      if (session.queue.length <= 1) throw e;
+      session.queue = session.queue.slice(Math.ceil(session.queue.length / 2));
+    }
+  }
+}
+
+let restored = null;
+
+// The service worker is recycled freely, so the queue is reloaded on first use.
+function restoreQueue() {
+  if (!restored) {
+    restored = (async () => {
+      const { pendingQueue = [], sentIds = [] } = await chrome.storage.local.get(["pendingQueue", "sentIds"]);
+      session.sentIds = sentIds;
+      session.queue = cap(pending(session.queue.concat(pendingQueue), sentIds), QUEUE_CAP);
+    })().catch(() => {
+      // no readable queue: start empty, live captures still flush
+    });
+  }
+  return restored;
+}
+
 async function getConfig() {
   const { serverUrl = "", token = "" } = await chrome.storage.local.get(["serverUrl", "token"]);
   return { serverUrl: serverUrl.replace(/\/+$/, ""), token };
@@ -44,6 +81,7 @@ async function getActiveTabId() {
 
 async function start() {
   if (session.capturing) return { ok: true };
+  await restoreQueue();
   const { serverUrl, token } = await getConfig();
   if (!serverUrl || !token) {
     return { ok: false, error: "Set the console URL and token first." };
@@ -56,10 +94,13 @@ async function start() {
     return { ok: false, error: `attach failed: ${e.message}` };
   }
   await chrome.debugger.sendCommand({ tabId }, "Network.enable", {});
-  session = { ...session, capturing: true, tabId, queue: [], requests: new Map(), ingested: 0, failed: 0, lastError: "" };
+  // queue and sentIds survive: unsent captures from a previous session are
+  // flushed rather than discarded when a new capture starts
+  session = { ...session, capturing: true, tabId, requests: new Map(), ingested: 0, failed: 0, lastError: "" };
   chrome.action.setBadgeText({ text: "REC" });
   chrome.action.setBadgeBackgroundColor({ color: "#c2410c" });
   await saveState();
+  await flush();
   return { ok: true };
 }
 
@@ -118,7 +159,8 @@ async function queueExchange(info, response) {
     }
   }
 
-  session.queue.push({
+  session.queue = cap(session.queue.concat([{
+    id: newId(),
     method: info.method,
     url: info.url,
     status: response.status || 0,
@@ -128,36 +170,48 @@ async function queueExchange(info, response) {
     requestBody: reqBody,
     responseHeaders: respHeaders,
     responseBody: respBody,
-  });
+  }]), QUEUE_CAP);
   if (session.queue.length >= FLUSH_AT) await flush();
+  else await saveQueue();
 }
 
 async function flush() {
-  if (session.queue.length === 0) return;
+  await restoreQueue();
+  // drop whatever the server already accepted before the last restart
+  session.queue = pending(session.queue, session.sentIds);
+  if (session.queue.length === 0) {
+    await saveQueue();
+    return;
+  }
   const { serverUrl, token } = await getConfig();
   if (!serverUrl || !token) {
     session.lastError = "missing server URL or token";
     await saveState();
     return;
   }
-  const batch = session.queue.splice(0, FLUSH_AT);
+  const { batch, rest } = takeBatch(session.queue, FLUSH_AT);
+  session.queue = rest;
   try {
     const res = await fetch(`${serverUrl}/api/traffic/ingest`, {
       method: "POST",
       headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ exchanges: batch }),
+      // the id is local bookkeeping; the ingest payload stays as it was
+      body: JSON.stringify({ exchanges: batch.map(({ id, ...exchange }) => exchange) }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const out = await res.json();
     session.ingested += out.ingested || 0;
     session.failed += out.failed || 0;
+    // recorded before the queue write, so a restart cannot resend this batch
+    session.sentIds = rememberSent(session.sentIds, batch.map((e) => e.id), SENT_CAP);
     session.lastError = out.failed ? `${out.failed} entries rejected by the server` : "";
   } catch (e) {
     // put the batch back (oldest first) but cap the queue so a dead server
-    // cannot grow memory unbounded
-    session.queue = batch.concat(session.queue).slice(0, 200);
+    // cannot grow it unbounded; the cap drops the oldest entries
+    session.queue = cap(batch.concat(session.queue), QUEUE_CAP);
     session.lastError = e.message;
   }
+  await saveQueue();
   await saveState();
 }
 
@@ -211,6 +265,8 @@ chrome.debugger.onDetach.addListener((source) => {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
+    // a recycled worker answers getState before anything else touches the queue
+    await restoreQueue();
     switch (msg?.type) {
       case "getState": {
         sendResponse({

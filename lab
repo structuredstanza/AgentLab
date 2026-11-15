@@ -7,10 +7,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import selectors
 import shutil
 import secrets
+import shlex
 import tarfile
 import subprocess
 import sys
@@ -61,6 +63,30 @@ def login():
         (ROOT / 'secrets/admin-password').read_text().strip()})['token']
 
 
+# A rendered unit starts with this, so a later run can tell its own install from a
+# user's file and migrate the former instead of refusing it.
+UNIT_MARKER = f'# Installed by ./lab from deployment/{PROXY_UNIT.name}'
+# The unit double-quotes ExecStart arguments; a path holding a quote, a backslash or
+# a control character has no safe spelling there, so it is refused rather than
+# written into a unit that fails only when the service starts.
+UNIT_UNSAFE = set('"\\')
+
+
+def render_proxy_unit(root):
+    root = str(root)
+    unsafe = sorted({c for c in root if c in UNIT_UNSAFE or not c.isprintable()})
+    if unsafe:
+        raise RuntimeError(f'Cannot install a systemd unit for {root}: '
+                           f'unsupported characters {unsafe}')
+    escaped = root.replace('%', '%%')
+    lines = []
+    for line in PROXY_UNIT.read_text().splitlines():
+        # $ is expanded only in ExecStart, so it is doubled only there.
+        path = escaped.replace('$', '$$') if line.startswith('ExecStart=') else escaped
+        lines.append(line.replace('@ROOT@', path))
+    return '\n'.join([UNIT_MARKER, *lines]) + '\n'
+
+
 def start_provider_proxy():
     if not PROXY_BIN.is_file():
         raise RuntimeError(f'Native provider proxy is not built: {PROXY_BIN}')
@@ -76,13 +102,21 @@ def start_provider_proxy():
             stream.write(secrets.token_urlsafe(48) + '\n')
     PROXY_TOKEN.chmod(0o600)
     unit = PROXY_UNIT
-    installed = Path.home() / '.config/systemd/user/m1nervac0nsole-cliproxy.service'
+    installed = Path.home() / f'.config/systemd/user/{unit.name}'
     installed.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if installed.exists() or installed.is_symlink():
+    rendered = render_proxy_unit(ROOT)
+    if installed.is_symlink():
         if installed.resolve() != unit.resolve():
             raise RuntimeError(f'Refusing to replace an unrelated service: {installed}')
-    else:
-        installed.symlink_to(unit)
+        # Older runs symlinked the checked-in unit, which is a template now.
+        installed.unlink()
+    current = installed.read_text() if installed.is_file() else None
+    if installed.exists() and (current is None or not current.startswith(UNIT_MARKER)):
+        raise RuntimeError(f'Refusing to replace an unrelated service: {installed}')
+    if current != rendered:
+        if current is not None:
+            print(f'Migrating {installed.name} to {ROOT}')
+        installed.write_text(rendered)
     subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True, timeout=30)
     subprocess.run(['systemctl', '--user', 'start', unit.name], check=True, timeout=40)
     deadline = time.monotonic() + 30
@@ -260,22 +294,28 @@ def resize_state(gb, confirmed):
 
 GUEST_DIST = ROOT / 'deployment/guest-dist'
 M1NERVAC0NSOLE_SRC = ROOT / 'm1nervac0nsole'
-# Inputs of the guest build. Generated trees (out/, dist/, node_modules) are
-# skipped: a build rewrites them, so counting them would make every check stale.
-BUILD_INPUTS = [M1NERVAC0NSOLE_SRC / name for name in (
-    'cmd', 'agent', 'db', 'manifest', 'server', 'skills', 'web/src', 'web/messages',
-    'go.mod', 'go.sum', 'build.sh', 'web/package.json', 'web/package-lock.json',
-)] + [ROOT / 'deployment/guest-start.py', ROOT / 'deployment/guest-export.py']
+# Generated trees (out/, dist/, node_modules) are skipped: a build rewrites them,
+# so counting them would make every check stale. Everything else under the module is
+# an input, so a stray artifact costs a rebuild, never a stale binary.
 BUILD_SKIP = {'node_modules', '.next', 'out', 'dist', 'graphify-out', '__pycache__'}
+# Files the web build itself rewrites in place. They are not inputs, and counting
+# them would make every start stale right after a build.
+BUILD_SKIP_FILES = {'tsconfig.tsbuildinfo', 'next-env.d.ts'}
 
 
 def newest_build_input():
+    """Newest mtime among the guest build's inputs: the whole module, so an edit in
+    any package it links (execbox, gateway, traffic, ...) counts, plus the guest
+    scripts."""
     newest = 0.0
-    for path in BUILD_INPUTS:
+    for path in (M1NERVAC0NSOLE_SRC, ROOT / 'deployment/guest-start.py',
+                 ROOT / 'deployment/guest-export.py'):
         if path.is_dir():
             for root, dirs, files in os.walk(path):
                 dirs[:] = [d for d in dirs if d not in BUILD_SKIP]
                 for name in files:
+                    if name in BUILD_SKIP_FILES:
+                        continue
                     newest = max(newest, os.path.getmtime(os.path.join(root, name)))
         elif path.exists():
             newest = max(newest, os.path.getmtime(path))
@@ -308,6 +348,116 @@ def build_guest_dist(force=False):
     for name in ('guest-start.py', 'guest-export.py'):
         shutil.copy2(ROOT / 'deployment' / name, GUEST_DIST / name)
     return GUEST_DIST
+
+
+def image_tag(spec=None):
+    """The image reference deployment/sandbox.yaml boots, e.g. agentlab/m1nervac0nsole:deepseek-v1."""
+    spec = SANDBOX_CONF if spec is None else spec
+    found = re.findall(r'^image:[ \t]*(\S+)[ \t]*$', spec.read_text(), re.M)
+    if len(found) != 1:
+        raise RuntimeError(f'expected exactly one image: line in {spec}, found {len(found)}')
+    return found[0]
+
+
+def image_arch():
+    """The recipe is amd64-only: the Dockerfile downloads an x64 JDK and .dockerignore
+    carries only m1nervac0nsole/dist/amd64, so another host would build an image whose
+    COPY and release downloads cannot resolve."""
+    machine = platform.machine().lower()
+    if machine not in ('x86_64', 'amd64'):
+        raise RuntimeError(f'the image recipe is amd64-only (x64 JDK download, dist/amd64 in '
+                           f'.dockerignore); this host is {machine or "unknown"}')
+    return 'amd64'
+
+
+def build_image_candidate(tag, root=ROOT):
+    """Build the binary the Dockerfile copies, then <tag>-candidate from the checked-in recipe."""
+    arch = image_arch()
+    # Pin the target: an exported GOOS/GOARCH would otherwise stage a binary the
+    # Dockerfile's COPY does not look for, silently baking an older one.
+    env = dict(os.environ, M1NERVAC0NSOLE_TARGET_OS='linux', M1NERVAC0NSOLE_TARGET_ARCH=arch)
+    subprocess.run([str(root / 'm1nervac0nsole/build.sh')], env=env, check=True)
+    candidate = f'{tag}-candidate'
+    # TARGETARCH is a BuildKit automatic argument; passing it keeps the legacy
+    # builder's COPY m1nervac0nsole/dist/${TARGETARCH}/... resolvable too.
+    subprocess.run(['docker', 'build', '--build-arg', f'TARGETARCH={arch}',
+                    '-f', str(root / 'deployment/Dockerfile'), '-t', candidate, str(root)],
+                   check=True)
+    return candidate
+
+
+def image_capabilities(root=ROOT):
+    """The command names and executable paths deployment/image-capabilities.txt requires."""
+    path = root / 'deployment/image-capabilities.txt'
+    entries = [line.strip() for line in path.read_text().splitlines()]
+    entries = [entry for entry in entries if entry and not entry.startswith('#')]
+    if not entries:
+        raise RuntimeError(f'no capabilities listed in {path}')
+    return entries
+
+
+def check_image_capabilities(image, root=ROOT):
+    """Fail unless every inventoried command resolves inside image.
+
+    The names travel as argv to `sh -c`, so a checkout path with spaces needs no
+    quoting and no shell sees it.
+    """
+    script = 'for t do command -v "$t" >/dev/null || { echo "missing: $t"; exit 1; }; done'
+    proc = subprocess.run(['docker', 'run', '--rm', '--entrypoint', 'sh', image, '-c', script,
+                           'sh', *image_capabilities(root)], capture_output=True, text=True)
+    if proc.returncode:
+        detail = (proc.stdout + proc.stderr).strip()[:300] or f'exit {proc.returncode}'
+        raise RuntimeError(f'{image} lacks a required capability: {detail}')
+
+
+def docker_image_id(reference):
+    """The local image ID behind reference, or None when the reference is not present."""
+    proc = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', reference],
+                          capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def image_load_command(tag, root=ROOT):
+    """The documented way to put a locally built image into microsandbox's cache.
+
+    `msb load` reads a `docker save` archive (or an OCI layout) and `pull_policy:
+    never` then boots the cached reference. Printed, never run: loading the image or
+    recreating the VM is a deployment decision.
+    """
+    return (f'docker save -o IMAGE.tar {shlex.quote(tag)} && '
+            f'MSB_HOME={shlex.quote(str(root / "microsandbox"))} '
+            f'{shlex.quote(str(root / ".venv/bin/msb"))} load -i IMAGE.tar')
+
+
+def image_build(replace=False):
+    """Build the configured image tag as a candidate; move the tag only when asked.
+
+    The candidate is built and checked first, so a failed build or a missing tool
+    leaves the configured tag exactly where it was. Nothing here starts, stops or
+    recreates a sandbox, and deployment/sandbox.yaml is never edited.
+    """
+    tag = image_tag()
+    candidate = build_image_candidate(tag)
+    check_image_capabilities(candidate)
+    candidate_id = docker_image_id(candidate)
+    if candidate_id is None:
+        raise RuntimeError(f'the candidate image {candidate} is not present after the build')
+    print(f'{tag}: candidate built from deployment/Dockerfile; this does not reproduce the '
+          'historical image (base tag, apt and several clones float)')
+    summary = {'tag': tag, 'candidate': candidate, 'candidate_id': candidate_id,
+               'tag_replaced': False, 'reproducible': False, 'load': image_load_command(tag)}
+    if replace:
+        previous = docker_image_id(tag)
+        if previous is None:
+            print(f'{tag}: no local image to preserve; moving the tag onto the candidate')
+        else:
+            rollback = f'{tag}-prev-{previous.removeprefix("sha256:")[:12]}'
+            subprocess.run(['docker', 'tag', tag, rollback], check=True)
+            summary['rollback'] = rollback
+        subprocess.run(['docker', 'tag', candidate, tag], check=True)
+        summary['tag_replaced'] = True
+    print(json.dumps(summary, indent=2))
+    return summary
 
 
 def guest_file(path):
@@ -470,12 +620,60 @@ if path.exists():
     msb('stop', NAME)
 
 
+HOST_EVENTS = 'host-events.jsonl'
+NATIVE_SSE = 'native-sse.ndjson'
+# Streams that a writer holds open are never pruned; only rotated segments are.
+ACTIVE_STREAMS = {HOST_EVENTS, NATIVE_SSE}
+# The only files `prune` may delete: rotated segments of the two append-only streams.
+PRUNABLE = ('host-events-*.jsonl', 'proxy-state/captures/native-sse-*.ndjson')
+# Bounded segments keep an append-only stream from growing without limit and let
+# an export copy it and `prune` delete what it captured without racing the writer.
+STREAM_SEGMENT_BYTES = 64 << 20
+
+
+def stream_segment(path):
+    """Reserve a unique immutable segment name beside an append-only stream."""
+    for attempt in range(1000):
+        suffix = '' if attempt == 0 else f'-{attempt}'
+        target = path.with_name(f'{path.stem}-{time.time_ns()}{suffix}{path.suffix}')
+        try:
+            os.close(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        except FileExistsError:
+            continue
+        return target
+    raise RuntimeError(f'Could not reserve a segment name beside {path}')
+
+
+def rotate_stream(path, limit=STREAM_SEGMENT_BYTES):
+    """Move a full append-only stream to an immutable segment; return the segment.
+
+    Rotation happens before the writer opens the file, so a segment is never
+    appended to once it exists and `lab prune` can delete it safely. Rotated
+    segments survive a restart; nothing is deleted here.
+    """
+    if path.is_symlink():
+        raise RuntimeError(f'Refusing symlinked event stream: {path}')
+    try:
+        if path.stat().st_size < limit:
+            return None
+    except FileNotFoundError:
+        return None
+    target = stream_segment(path)
+    try:
+        path.replace(target)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    return target
+
+
 def execute(command):
     if command and command[0] == '--':
         command = command[1:]
     if not command:
         raise ValueError('exec requires a command after --')
-    log = ROOT / 'host-events.jsonl'
+    log = ROOT / HOST_EVENTS
+    rotate_stream(log)
     command_id = uuid.uuid4().hex
     with log.open('ab', buffering=0) as events:
         def event(kind, **data):
@@ -517,20 +715,8 @@ def extract_capture_archive(stream, destination):
         archive.extractall(destination, filter=regular_files_only)
 
 
-def export_provider_proxy_traffic(raw):
-    capture_dir = PROXY_STATE / 'captures'
-    source = capture_dir / 'native-sse.ndjson'
-    if PROXY_STATE.is_symlink() or capture_dir.is_symlink() or source.is_symlink():
-        raise RuntimeError('Refusing symlinked native provider capture')
-    if not source.exists():
-        return None
-    if not source.is_file():
-        raise RuntimeError('Native provider capture is not a regular file')
-
-    target_dir = raw / 'provider-proxy-traffic'
-    target_dir.mkdir(mode=0o700)
-    target_dir.chmod(0o700)
-    target = target_dir / 'native-sse.ndjson'
+def copy_artifact(source, target):
+    """Copy one file into an export with private modes; return its sha256."""
     created = False
     try:
         with source.open('rb') as source_stream, target.open('xb') as target_stream:
@@ -538,28 +724,92 @@ def export_provider_proxy_traffic(raw):
             shutil.copyfileobj(source_stream, target_stream)
         target.chmod(0o600)
         with target.open('rb') as stream:
-            checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+            return hashlib.file_digest(stream, 'sha256').hexdigest()
     except BaseException:
         if created:
             target.unlink(missing_ok=True)
         raise
+
+
+def export_segments(sources, root, target_dir, raw):
+    """Copy every stream segment into target_dir; return the manifest entries."""
+    target_dir.mkdir(mode=0o700)
+    target_dir.chmod(0o700)
+    entries = []
+    for source in sources:
+        if source.is_symlink() or not source.is_file():
+            raise RuntimeError(f'Capture stream is not a regular file: {source}')
+        target = target_dir / source.name
+        entries.append({'source': str(source.relative_to(root)),
+                        'artifact': str(target.relative_to(raw)),
+                        'sha256': copy_artifact(source, target)})
+    return entries
+
+
+def export_provider_proxy_traffic(raw):
+    """Copy every native provider capture segment; return the manifest entry."""
+    capture_dir = PROXY_STATE / 'captures'
+    if PROXY_STATE.is_symlink() or capture_dir.is_symlink():
+        raise RuntimeError('Refusing symlinked native provider capture')
+    sources = sorted(capture_dir.glob('native-sse*.ndjson')) if capture_dir.is_dir() else []
+    if not sources:
+        return None
     return {
-        'source': 'proxy-state/captures/native-sse.ndjson',
-        'artifact': 'raw/provider-proxy-traffic/native-sse.ndjson',
+        'source': 'proxy-state/captures/native-sse*.ndjson',
+        'artifact': 'raw/provider-proxy-traffic/',
+        'segments': export_segments(sources, ROOT, raw / 'provider-proxy-traffic', raw),
         'format': 'NDJSON privacy.Record; Body is base64-encoded',
         'correlation_fields': ['Direction', 'Provider', 'Model', 'Profile', 'SessionID'],
         'scope': 'Native provider inference HTTP request/response bodies before core response translation or aggregation; not a PCAP or full wire capture',
         'privacy': 'Raw provider HTTP bodies and path/content metadata may be sensitive; SessionID is client-supplied opaque data; keep private',
-        'sha256': checksum,
     }
 
 
+def export_host_events(raw):
+    """Copy every recorded host event segment; return the manifest entry."""
+    sources = sorted(ROOT.glob('host-events*.jsonl'))
+    if not sources:
+        return None
+    return {
+        'source': 'host-events*.jsonl',
+        'artifact': 'raw/host-events/',
+        'segments': export_segments(sources, ROOT, raw / 'host-events', raw),
+    }
+
+
+def prunable_segments(entries):
+    """The rotated segments an export captured; the active streams stay put."""
+    return [{'source': segment['source'], 'sha256': segment['sha256']}
+            for entry in entries if entry is not None
+            for segment in entry['segments']
+            if Path(segment['source']).name not in ACTIVE_STREAMS]
+
 
 def export():
+    """Write one complete export, or leave no directory behind at all.
+
+    A half-written export is not evidence of anything and a later `prune` must
+    never be pointed at one, so a failure removes the whole directory rather
+    than resuming from it.
+    """
     export_id = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     output = ROOT / 'exports' / export_id
+    try:
+        output.mkdir(parents=True, mode=0o700)
+    except FileExistsError:
+        raise RuntimeError(f'Export already exists: {output}') from None
+    try:
+        summary = write_export(output)
+    except BaseException:
+        shutil.rmtree(output, ignore_errors=True)
+        raise
+    print(json.dumps(summary, indent=2))
+
+
+def write_export(output):
+    """Write every artifact and the manifest below output; return the summary."""
     raw = output / 'raw'
-    raw.mkdir(parents=True, mode=0o700)
+    raw.mkdir(mode=0o700)
     manifest = {'started_at': now(), 'sandbox': NAME, 'model_data': 'genuine records only',
                 'consistency': 'transactional PostgreSQL rows; separate pg_dump snapshot; online filesystem copy',
                 'privacy': 'raw artifacts may contain credentials, task content and personal data',
@@ -578,6 +828,8 @@ def export():
                 'limits': ['guest-root can tamper with guest-side captures',
                            'packet rotation overwrites old segments; inspect session manifest',
                            'TLS packet payloads are encrypted; application proxy records inspectable HTTP',
+                           'host event and native provider streams rotate into segments; only '
+                           './lab prune <export> deletes the segments a verified export captured',
                            'reasoning exists only when explicitly exposed by the provider']}
     psql = ['psql', '-h', '/run/postgresql', '-U', 'postgres', '-d', 'm1nervac0nsole', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1']
     tables = guest(*psql, '-c', "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename",
@@ -631,8 +883,9 @@ def export():
     logs = ROOT / 'microsandbox/sandboxes' / NAME / 'logs'
     if logs.exists():
         shutil.copytree(logs, raw / 'runtime-logs', symlinks=True)
-    if (ROOT / 'host-events.jsonl').exists():
-        shutil.copyfile(ROOT / 'host-events.jsonl', raw / 'host-events.jsonl')
+    host_events = export_host_events(raw)
+    if host_events is not None:
+        manifest['host_events'] = host_events
     with (raw / 'sandbox.json').open('w', encoding='utf-8') as stream:
         msb('inspect', NAME, '--format', 'json', stdout=stream)
     shutil.copyfile(ROOT / 'deployment/provenance.json', raw / 'provenance.json')
@@ -652,6 +905,9 @@ def export():
     provider_proxy_traffic = export_provider_proxy_traffic(raw)
     if provider_proxy_traffic is not None:
         manifest['provider_proxy_traffic'] = provider_proxy_traffic
+    # Only immutable segments are prunable: the active stream is still being
+    # written, and `prune` re-checks each hash before it deletes anything.
+    manifest['prunable'] = prunable_segments((host_events, provider_proxy_traffic))
     shutil.copyfile(ROOT / 'deployment/sandbox.yaml', raw / 'sandbox.yaml')
     sys.path.insert(0, str(ROOT / 'deployment'))
     import export_traces
@@ -665,7 +921,71 @@ def export():
                 hashes[str(path.relative_to(output))] = hashlib.file_digest(stream, 'sha256').hexdigest()
     manifest['sha256'] = hashes
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
-    print(json.dumps({'export': str(output), 'table_rows': counts, 'training': manifest['training']}, indent=2))
+    return {'export': str(output), 'table_rows': counts, 'training': manifest['training']}
+
+
+def verify_export(output):
+    """Load an export manifest and verify every artifact it lists.
+
+    Refuses anything a deletion could not be undone from: a missing or unreadable
+    manifest, a listed artifact that is gone, or one whose bytes changed.
+    """
+    path = output / 'manifest.json'
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f'Export has no manifest: {output}')
+    try:
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f'Export manifest is unreadable: {exc}') from None
+    if not isinstance(manifest, dict):
+        raise RuntimeError(f'Export manifest is not an object: {path}')
+    hashes = manifest.get('sha256')
+    if not isinstance(hashes, dict) or not hashes:
+        raise RuntimeError(f'Export manifest lists no artifact hashes: {path}')
+    for relative, expected in hashes.items():
+        if not isinstance(relative, str) or Path(relative).is_absolute() or '..' in Path(relative).parts:
+            raise RuntimeError(f'Export manifest lists an unsafe path: {relative!r}')
+        artifact = output / relative
+        if artifact.is_symlink() or not artifact.is_file():
+            raise RuntimeError(f'Export artifact is missing: {relative}')
+        with artifact.open('rb') as stream:
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
+                raise RuntimeError(f'Export artifact does not match its manifest: {relative}')
+    return manifest
+
+
+def prune(export_id, dry_run=False):
+    """Delete the immutable stream segments one verified export captured.
+
+    This is the only deletion path; nothing prunes automatically. A segment goes
+    only when the export's manifest verifies and the file still holds exactly the
+    bytes that export copied, so a stream that grew afterwards keeps its data. Only
+    rotated segments are eligible: the active streams are still being written.
+    """
+    if not re.fullmatch(r'[0-9A-Za-z][0-9A-Za-z._-]*', export_id):
+        raise RuntimeError(f'Not an export id: {export_id!r}')
+    output = ROOT / 'exports' / export_id
+    if output.is_symlink() or not output.is_dir():
+        raise RuntimeError(f'Export not found: {output}')
+    manifest = verify_export(output)
+    targets = []
+    for entry in manifest.get('prunable') or []:
+        source = entry.get('source') if isinstance(entry, dict) else None
+        if not isinstance(source, str) or not any(Path(source).match(p) for p in PRUNABLE):
+            raise RuntimeError(f'Export manifest lists an unprunable source: {source!r}')
+        path = ROOT / source
+        if path.is_symlink() or not path.is_file():
+            continue  # already pruned, or never a regular file
+        with path.open('rb') as stream:
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != entry.get('sha256'):
+                continue  # the stream grew after the export; this file is not fully captured
+        targets.append(path)
+    if not dry_run:
+        for path in targets:
+            path.unlink()
+    print(json.dumps({'export': str(output), 'dry_run': dry_run,
+                      'delete': [str(path.relative_to(ROOT)) for path in targets]}, indent=2))
+    return targets
 
 
 def main():
@@ -674,6 +994,11 @@ def main():
     for name in ('stop', 'status', 'export', 'primary'):
         sub.add_parser(name)
     sub.add_parser('build', help='Rebuild the guest binary, skills and scripts that /dist carries')
+    image = sub.add_parser('image-build',
+                           help='Build the image tag sandbox.yaml names as <tag>-candidate; no VM change')
+    image.add_argument('--replace', action='store_true',
+                       help='after the candidate passes, keep the current image as <tag>-prev-<id12> '
+                            'and move <tag> onto the candidate')
     boot = sub.add_parser('start', help='Start the VM, optionally through an OpenVPN profile')
     boot.add_argument('--vpn', metavar='PROFILE',
                       help='OpenVPN .ovpn/.conf to bring up before capture; egress is refused if the tunnel drops')
@@ -684,12 +1009,18 @@ def main():
     grow.add_argument('--yes', action='store_true', help='confirm that the VM root disk is recreated')
     run = sub.add_parser('exec', help='Execute an adaptable guest command and record its output')
     run.add_argument('command', nargs=argparse.REMAINDER)
+    cut = sub.add_parser('prune', help='Delete the stream segments a verified export captured')
+    cut.add_argument('export_id', help='export directory name under exports/')
+    cut.add_argument('--dry-run', action='store_true',
+                     help='list what would be deleted and change nothing')
     args = parser.parse_args()
     if args.action == 'start':
         start(args.vpn, args.state_quota_gb)
     elif args.action == 'build':
         build_guest_dist(force=True)
         print(json.dumps({'guest_dist': str(GUEST_DIST), 'stale': guest_dist_stale()}))
+    elif args.action == 'image-build':
+        image_build(args.replace)
     elif args.action == 'resize-state':
         resize_state(args.gb, args.yes)
     elif args.action == 'stop':
@@ -708,6 +1039,8 @@ def main():
         return execute(args.command)
     elif args.action == 'export':
         export()
+    elif args.action == 'prune':
+        prune(args.export_id, args.dry_run)
     elif args.action == 'primary':
         primary()
     return 0

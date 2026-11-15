@@ -18,9 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
-	"github.com/andybalholm/brotli"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
 
 // ---- fixtures ----------------------------------------------------------
@@ -156,6 +157,17 @@ func testTask(t *testing.T, d *db.DB) *db.Task {
 		t.Fatalf("create task: %v", err)
 	}
 	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	// Every probe asks the network policy before it dials, so the fixture task
+	// authorizes the destinations the fixtures probe. 127.0.0.2 is deliberately
+	// absent: the exclusion tests prove an operator exclusion keeps it
+	// uncontacted, and a rule matching it would decide before that exclusion.
+	for _, pattern := range []string{"127.0.0.1", "203.0.113.7"} {
+		if _, err := d.AddPolicyRule(t.Context(), task.ID, netpolicy.Rule{
+			Effect: "include", Pattern: pattern, Authorized: true,
+		}, "operator"); err != nil {
+			t.Fatalf("authorize %s: %v", pattern, err)
+		}
+	}
 	return task
 }
 
@@ -181,8 +193,10 @@ func loadAsset(t *testing.T, as *db.AssetStore, id int64) *db.Asset {
 	return rows[0]
 }
 
-func staticRoute(proxyURL, caFile string) Options {
-	return Options{Workers: 2, Proxy: proxyURL, CAFile: caFile}
+// staticRoute is the probe route every fixture uses: a fixed masking proxy and
+// the network policy, which each probe asks before it dials.
+func staticRoute(d *db.DB, proxyURL, caFile string) Options {
+	return Options{Workers: 2, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)}
 }
 
 // ---- behaviors ---------------------------------------------------------
@@ -209,7 +223,7 @@ func TestEnrichProbePersistsResultThroughMaskingProxy(t *testing.T) {
 	defer origin.Close()
 
 	id := upsertSite(t, as, task.ID, origin.URL+"/")
-	engine := New(as, staticRoute(proxyURL, caFile))
+	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
 	engine.ProbeSite(task.ID, id, origin.URL+"/")
 	engine.Wait()
@@ -268,7 +282,7 @@ func TestEnrichSkipsExcludedTarget(t *testing.T) {
 	}
 
 	id := upsertSite(t, as, task.ID, origin.URL+"/admin")
-	engine := New(as, staticRoute(proxyURL, caFile))
+	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
 	engine.ProbeSite(task.ID, id, origin.URL+"/admin")
 	engine.Wait()
@@ -309,7 +323,7 @@ func TestEnrichChecksRedirectDestinations(t *testing.T) {
 		defer origin.Close()
 
 		id := upsertSite(t, as, task.ID, origin.URL+"/start")
-		engine := New(as, staticRoute(proxyURL, caFile))
+		engine := New(as, staticRoute(d, proxyURL, caFile))
 		defer engine.Close()
 		engine.ProbeSite(task.ID, id, origin.URL+"/start")
 		engine.Wait()
@@ -337,7 +351,7 @@ func TestEnrichChecksRedirectDestinations(t *testing.T) {
 		defer origin.Close()
 
 		id := upsertSite(t, as, task.ID, origin.URL+"/hop")
-		engine := New(as, staticRoute(proxyURL, caFile))
+		engine := New(as, staticRoute(d, proxyURL, caFile))
 		defer engine.Close()
 		engine.ProbeSite(task.ID, id, origin.URL+"/hop")
 		engine.Wait()
@@ -370,7 +384,7 @@ func TestEnrichFailsClosedWithoutMaskingProxy(t *testing.T) {
 	defer origin.Close()
 
 	id := upsertSite(t, as, task.ID, origin.URL+"/")
-	engine := New(as, staticRoute(deadProxyURL(t), foreignCA(t)))
+	engine := New(as, staticRoute(d, deadProxyURL(t), foreignCA(t)))
 	defer engine.Close()
 	engine.ProbeSite(task.ID, id, origin.URL+"/")
 	engine.Wait()
@@ -399,7 +413,7 @@ func TestEnrichTrustsOnlyTheEgressCA(t *testing.T) {
 	defer origin.Close()
 
 	id := upsertSite(t, as, task.ID, origin.URL+"/")
-	engine := New(as, staticRoute(proxyURL, foreignCA(t)))
+	engine := New(as, staticRoute(d, proxyURL, foreignCA(t)))
 	defer engine.Close()
 	engine.ProbeSite(task.ID, id, origin.URL+"/")
 	engine.Wait()
@@ -428,7 +442,7 @@ func TestEnrichHTTPDisabledWithoutConfiguredProxy(t *testing.T) {
 	defer origin.Close()
 
 	id := upsertSite(t, as, task.ID, origin.URL+"/")
-	engine := New(as, Options{Workers: 2})
+	engine := New(as, Options{Workers: 2, Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	engine.ProbeSite(task.ID, id, origin.URL+"/")
 	engine.Wait()
@@ -452,7 +466,7 @@ func TestEnrichDropsJobsWithoutTaskContext(t *testing.T) {
 	_ = d
 	proxyURL, caFile, gate := startMaskingProxy(t)
 
-	engine := New(as, staticRoute(proxyURL, caFile))
+	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
 	engine.ProbeSite(0, 1, "https://127.0.0.1/")
 	engine.ResolveDomain(0, 1, "task-less.invalid")
@@ -541,7 +555,7 @@ func TestEnrichTruncatedBodyDoesNotStoreCapAsLength(t *testing.T) {
 	}))
 	defer big.Close()
 	id := upsertSite(t, as, task.ID, big.URL+"/big")
-	engine := New(as, staticRoute(proxyURL, caFile))
+	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
 	engine.ProbeSite(task.ID, id, big.URL+"/big")
 	engine.Wait()
@@ -604,9 +618,9 @@ func (l *observationLog) all() []Observation {
 }
 
 // Every redirect hop is observed uniformly, exact bodies are offered as
-// Complete, and a body that is over the cap is NOT offered as a body at all (a
-// prefix would be bound later as if it were the whole response).
-func TestEnrichObservesEveryHopAndNeverOffersAPrefix(t *testing.T) {
+// Complete, and a body over the cap is offered as the prefix that was read with
+// the response's full length — never as if the prefix were the whole response.
+func TestEnrichObservesEveryHopAndMarksAnOverCapBodyPartial(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
 	proxyURL, caFile, _ := startMaskingProxy(t)
@@ -619,14 +633,17 @@ func TestEnrichObservesEveryHopAndNeverOffersAPrefix(t *testing.T) {
 		http.Redirect(w, r, final.URL+"/landing", http.StatusFound)
 	}))
 	defer hop.Close()
+	// Over the observation cap but under the probe's 1 MiB read cap, so the whole
+	// body is read and its length is exact whether the response declares it or
+	// not.
+	bigBody := "<title>Big</title>" + strings.Repeat("x", 400<<10)
 	big := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, "<title>Big</title>")
-		io.WriteString(w, strings.Repeat("x", 2<<20))
+		io.WriteString(w, bigBody)
 	}))
 	defer big.Close()
 
 	var log observationLog
-	engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile, Observe: log.add})
+	engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile, Observe: log.add, Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 
 	hopID := upsertSite(t, as, task.ID, hop.URL+"/start")
@@ -648,8 +665,14 @@ func TestEnrichObservesEveryHopAndNeverOffersAPrefix(t *testing.T) {
 	engine.Wait()
 	all := log.all()
 	last := all[len(all)-1]
-	if last.Status != http.StatusOK || last.Complete || last.ResponseBody != "" {
-		t.Fatalf("an over-cap body must be Complete=false with no body offered, got %+v", last)
+	if last.Status != http.StatusOK || last.Complete || last.Failed {
+		t.Fatalf("an over-cap body must be Complete=false, got %+v", last)
+	}
+	if len(last.ResponseBody) != maxObservedBody || !strings.HasPrefix(last.ResponseBody, "<title>Big</title>") {
+		t.Fatalf("an over-cap body must offer the prefix that was read, got %d bytes", len(last.ResponseBody))
+	}
+	if last.DeclaredLength != int64(len(bigBody)) {
+		t.Fatalf("declared length = %d, want the full body size %d", last.DeclaredLength, len(bigBody))
 	}
 }
 
@@ -663,7 +686,7 @@ func TestEnrichObservesTransportFailureWithoutCredentials(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer origin.Close()
 	var log observationLog
-	engine := New(as, Options{Workers: 1, Proxy: dead, CAFile: foreignCA(t), Observe: log.add})
+	engine := New(as, Options{Workers: 1, Proxy: dead, CAFile: foreignCA(t), Observe: log.add, Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	id := upsertSite(t, as, task.ID, origin.URL+"/")
 	engine.ProbeSite(task.ID, id, origin.URL+"/")
@@ -694,7 +717,7 @@ func TestEnrichRefusesTasksThatAreNotLive(t *testing.T) {
 		io.WriteString(w, "<title>Reached</title>")
 	}))
 	defer origin.Close()
-	engine := New(as, staticRoute(proxyURL, caFile))
+	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
 
 	for name, stop := range map[string]func(*db.Task) error{
@@ -731,7 +754,7 @@ func TestEnrichResumedTaskCanRetryRefusedProbe(t *testing.T) {
 	defer origin.Close()
 	target := origin.URL + "/resume"
 	id := upsertSite(t, as, task.ID, target)
-	engine := New(as, staticRoute(proxyURL, caFile))
+	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
 	if err := d.SetPaused(task.ID, true); err != nil {
 		t.Fatal(err)
@@ -769,7 +792,7 @@ func TestEnrichDeletionWhileProbeInFlightCannotRecreateAsset(t *testing.T) {
 	defer origin.Close()
 	url := origin.URL + "/slow"
 	id := upsertSite(t, as, task.ID, url)
-	engine := New(as, staticRoute(proxyURL, caFile))
+	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
 
 	engine.ProbeSite(task.ID, id, url)
@@ -839,7 +862,7 @@ func TestEnrichDecodesContentEncodings(t *testing.T) {
 			}))
 			defer origin.Close()
 			var obs observationLog
-			engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile, Observe: obs.add})
+			engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile, Observe: obs.add, Authorizer: netpolicy.NewAuthorizer(d)})
 			defer engine.Close()
 			url := origin.URL + "/" + coding
 			id := upsertSite(t, as, task.ID, url)
@@ -878,7 +901,7 @@ func TestEnrichBoundsDecompressedBody(t *testing.T) {
 		w.Write(wire)
 	}))
 	defer origin.Close()
-	engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile})
+	engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	url := origin.URL + "/bomb"
 	id := upsertSite(t, as, task.ID, url)

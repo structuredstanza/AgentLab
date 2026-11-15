@@ -139,10 +139,11 @@ func NewShellOpen() CoreTool {
 		}
 		workDir := ""
 		var env []string
+		var toolUseID string
 		if tc != nil {
-			workDir, env = tc.WorkingDir, tc.Env
+			workDir, env, toolUseID = tc.WorkingDir, tc.Env, tc.ToolUseID
 		}
-		s, err := m.openSession(a.Command, workDir, env, a.Rows, a.Cols, mode, pr)
+		s, err := m.openSession(a.Command, workDir, env, a.Rows, a.Cols, mode, pr, toolUseID)
 		if err != nil {
 			return Errorf("Failed to open session: " + err.Error()), nil
 		}

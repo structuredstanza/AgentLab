@@ -2,9 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/execbox"
 )
 
 func listToolsText(t *testing.T, in string) string {
@@ -38,5 +44,47 @@ func TestListToolsFiltersByQuery(t *testing.T) {
 	empty := listToolsText(t, `{"query":"zzz-no-such-tool"}`)
 	if !strings.Contains(empty, "no tool matches") {
 		t.Fatalf("an empty result is not explained:\n%s", empty)
+	}
+}
+
+// publishedArtifact describes the file the supervisor published, and reports
+// nothing at all for a manifest that was never installed: a row with no install
+// must not claim a path, a size or a digest.
+func TestPublishedArtifact(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(execbox.ToolboxEnv, root)
+
+	if got := publishedArtifact("never-installed"); got != nil {
+		t.Fatalf("publishedArtifact for an absent tool = %+v, want nil", got)
+	}
+	if got := publishedArtifact("/usr/bin/absolute"); got != nil {
+		t.Fatalf("publishedArtifact for an absolute program = %+v, want nil", got)
+	}
+
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("#!/bin/sh\necho fixture\n")
+	path := filepath.Join(bin, "fixture")
+	if err := os.WriteFile(path, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := publishedArtifact("fixture")
+	if got == nil {
+		t.Fatal("publishedArtifact for a published tool = nil")
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256(body))
+	if got.Path != path || got.Size != int64(len(body)) || got.SHA256 != want || got.InstalledAt == "" {
+		t.Fatalf("publishedArtifact = %+v, want path %s size %d sha %s and a time", got, path, len(body), want)
+	}
+
+	// A replaced binary must be re-digested rather than reported from the cache.
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho replaced\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if replaced := publishedArtifact("fixture"); replaced.SHA256 == got.SHA256 {
+		t.Fatalf("publishedArtifact kept the stale digest %s after the file changed", replaced.SHA256)
 	}
 }

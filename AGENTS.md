@@ -17,7 +17,7 @@ Next.js SPA (embedded) → /api/* → server.Handler() mux → Manager/Task/Engi
 ```
 
 - **Entry points**: `m1nervac0nsole/cmd/m1nervac0nsole/main.go` (`run()` at :48) and the same binary's `egress-proxy` subcommand (`cmd/m1nervac0nsole/egress.go`). Wiring order: `server.NewManager` → `server.New` → `srv.Handler()`.
-- **Two outbound paths**: worker/tool traffic goes through the recording MITM proxy (`traffic/`, `-proxy`, default `127.0.0.1:8788`); traffic the backend generates itself (asset enrichment probes, MCP handshakes) goes through the masking `egress-proxy` (`egress/`, `-addr`, default `127.0.0.1:8888`), which owns the uTLS Chrome fingerprint, the header set, the CA and the per-host rate cap. It probes the target before answering `CONNECT` (cached per authority, `egress/liveness.go`) and labels every failure it produced with `X-M1nervac0nsole-Egress`, so a tunnel is never established to a host it could not reach and a proxy 502 is never stored as the target's answer. `M1NERVAC0NSOLE_EGRESS_PROXY` / `M1NERVAC0NSOLE_EGRESS_CA` configure the client side; with neither, enrichment probes fail closed rather than dialling direct.
+- **One outbound HTTP boundary** (see `m1nervac0nsole/docs/design/network-layer.md`): tool traffic goes through the recording proxy (`traffic/`, `-proxy`, default `127.0.0.1:8788`), whose origin side is the `gateway/` transport — it authorizes from a backend-issued `netpolicy` session before dialling, resolves and pins the address, runs a uTLS Chrome handshake with strict verification, applies the operator exit, and tags its own failures with `X-M1nervac0nsole-Gateway`. The proxy URL carries the run's credential (`netpolicy.ProxyURL`); a request without one is refused, never dialled direct. Tool processes run unprivileged in their own network namespace via `execbox/`, which admits only the gateway and the resolver. The masking `egress-proxy` (`egress/`, default `127.0.0.1:8888`) survives for asset-enrichment probes only and is pending retirement; `M1NERVAC0NSOLE_EGRESS_PROXY` / `M1NERVAC0NSOLE_EGRESS_CA` configure it, and with neither, enrichment probes fail closed rather than dialling direct.
 - **Per task**: `Engine.Run` (`server/engine.go:783`) starts 1 planner loop + N worker loops (`workers` setting, default 3) + deadline coordinator. Planner is the sole intent producer; workers claim one intent, execute real tools, write facts/assets/findings back. When only a human can unblock the engagement the planner calls `report_blocked`, which parks the task in `needs_operator` with a `blocked_reason` until the operator resumes it.
 - **Dual graph**: global asset graph (`db/assets.go`, shared, program-computed hierarchy) and per-task exploration graph (`db/exploration.go`, goals/intents/facts/findings), joined by `exploration_anchors`.
 - **Memory**: `db/knowledge.go` (full-text knowledge base, scopes `global|environment|company|task`), `db/reflection.go` + `db/reflect_engine.go` (per-task reflection pool, engine-derived at intent and task end), `db/scrub.go` (credential and target-identifier scrubbing on every write). Agents use `recall` / `knowledge_add` / `reflect` (`agent/tools_memory.go`); `server/memory.go` builds the start-of-task block (adopted `environment` entries always included) and the per-round provider (`M1NERVAC0NSOLE_MEMORY=off|inject`). Agent writes are task-private candidates, generalized on write; only an owner promotes. See `RSI.md`.
@@ -30,18 +30,20 @@ Next.js SPA (embedded) → /api/* → server.Handler() mux → Manager/Task/Engi
 
 | Path | Purpose |
 |---|---|
-| `m1nervac0nsole/cmd/m1nervac0nsole/` | Binary entry + `egress-proxy` subcommand |
+| `m1nervac0nsole/cmd/m1nervac0nsole/` | Binary entry + `egress-proxy` and `execbox serve\|probe` subcommands |
 | `m1nervac0nsole/server/` | HTTP API, `Manager`, `Engine`, LLM wiring, auth, scheduler |
 | `m1nervac0nsole/agent/` | LLM roles, prompts, tool surface, provider construction |
 | `m1nervac0nsole/db/` | PostgreSQL stores + embedded `schema.sql` (idempotent, advisory-locked migration) |
 | `m1nervac0nsole/traffic/`, `intercept/`, `guard/`, `scope/` | Recording MITM proxy; tool-call safety pipeline |
+| `m1nervac0nsole/netpolicy/`, `gateway/`, `execbox/` | Session identity and destination authorization; the origin transport every recorded request dials through; the privileged supervisor that runs each tool session unprivileged in its own namespaces |
 | `m1nervac0nsole/egress/`, `enrich/`, `limits/`, `useragent/` | Masking egress proxy (identity, CA, rate gate); engine-side asset auto-completion; shared outbound identity |
 | `m1nervac0nsole/llmpool/`, `llmrec/`, `nativeproxy/`, `mcphttp/` | LLM transport decorators, host proxy client, MCP clients |
-| `m1nervac0nsole/manifest/` | Declarative TOML tool manifests + `builtin/*.toml` |
+| `m1nervac0nsole/manifest/` | Declarative TOML tool manifests: `builtin/*.toml` (embedded) overlaid at run time by the `tool_manifests` table (Toolbox page) |
 | `m1nervac0nsole/third_party/norma/` | Vendored agent SDK (separate module `github.com/structuredstanza/norma`, from BaaRai/Norma v0.4.6 plus local changes) |
+| `m1nervac0nsole/third_party/go-mitmproxy/` | Pinned go-mitmproxy v1.9.2 copy plus the `OriginTransport` hook; `PATCH` names the base tag and every hunk. Bumping upstream is a three-way merge, never a copy |
 | `m1nervac0nsole/web/` | Next.js App Router frontend (`src/app`, `src/lib`, `src/components`) |
 | `m1nervac0nsole/skills/`, `docs/` | Agent skills, design docs |
-| `deployment/` | Guest `Dockerfile`(+`.toolchain`), `sandbox.yaml`, `guest-start.py`, `export_traces.py`, host proxy (`cliproxy/`), and `guest-dist/` (the host build mounted read-only at `/dist`, generated by `./lab build`) |
+|`deployment/`|Guest `Dockerfile`(+`.toolchain`), `sandbox.yaml`, `guest-start.py`, `export_traces.py`, `verify_capture.py`, `verify_completeness.py`, host proxy (`cliproxy/`), and `guest-dist/` (the host build mounted read-only at `/dist`, generated by `./lab build`); `README.md` is the deployment reference|
 | `tests/` | Umbrella runner + Python suites (black-box Go suites are in `m1nervac0nsole/tests/go/`) |
 | `.github/` | GitHub Actions workflows (ci, web, docs, external-links, release) and issue/PR templates; jobs run from `m1nervac0nsole/` |
 | `m1nervac0nsole/graphify-out/` | Generated knowledge graph of `m1nervac0nsole/` (gitignored; query it, don't rebuild) |
@@ -105,14 +107,15 @@ cd m1nervac0nsole && M1NERVAC0NSOLE_COMPRESS=off ./build.sh --target linux/amd64
 - `m1nervac0nsole/config/config.go` — `config.json` + `M1NERVAC0NSOLE_CONFIG` / `M1NERVAC0NSOLE_PG_DSN` / `M1NERVAC0NSOLE_SKILL_DIR`; no built-in DSN fallback, startup fails loudly.
 - `deployment/provenance.json` — machine-rewritten by `./lab primary`; never hand-edit.
 - `deployment/sandbox.yaml`, `deployment/guest-start.py`, `deployment/export_traces.py` — VM definition, guest supervision, training export.
-- `m1nervac0nsole/graphify-out/graph.json` + `GRAPH_REPORT.md` — prebuilt graph (10.8k nodes / 62.3k edges / 512 communities), **generated and gitignored**, so it is absent from a fresh clone. Query with `graphify query "<question>"`, `graphify path "A" "B"`, `graphify explain "X"`; rebuild with `graphify update m1nervac0nsole`.
+- `m1nervac0nsole/docs/system-reference.md` and `deployment/README.md` — the as-built system and deployment references. Keep them current when behaviour changes; they are the map, not a policy.
+- `m1nervac0nsole/graphify-out/graph.json` + `GRAPH_REPORT.md` — prebuilt graph (13.3k nodes / 76.0k edges / 496 communities), **generated and gitignored**, so it is absent from a fresh clone. Query with `graphify query "<question>"`, `graphify path "A" "B"`, `graphify explain "X"`; rebuild with `graphify update m1nervac0nsole`.
 
 ## Runtime/Tooling Preferences
 
 - **Go 1.26.x** (`go.mod` pins 1.26.3; the proxy module pins 1.26.10). `CGO_ENABLED=0` everywhere; SQLite is pure-Go `modernc.org/sqlite`. No `golangci-lint`, `gofmt` gate, or `go.work`.
 - **Node 22** for CI/web (lockfile needs ≥22.22.2); npm with `package-lock.json` (lockfileVersion 3). No Bun, pnpm, yarn, or root `package.json`.
 - **Python 3.13** host venv (`.venv`, uv-created) holding only `microsandbox==0.7.11`; all host/deployment scripts are stdlib-only. Guest image uses Debian bookworm `python3`.
-- **PostgreSQL 16** required; **Docker** only for building the guest image (`DOCKER_BUILDKIT=0`, host lacks buildx); **KVM** for the microsandbox VM.
+- **PostgreSQL 16** required; **Docker** for building the guest image (`./lab image-build`; buildx is installed and `docker build` uses BuildKit); **KVM** for the microsandbox VM.
 - Detections suites and the provider-proxy suite need Docker/network and are outside the default Go loop.
 
 ## Testing & QA
@@ -121,14 +124,14 @@ cd m1nervac0nsole && M1NERVAC0NSOLE_COMPRESS=off ./build.sh --target linux/amd64
 - **Python**: stdlib `unittest`; `tests/python/{test_lab,test_guest_start,test_export_traces}.py` load scripts by path (`SourceFileLoader` / `sys.path`), synthesize fixtures inline, and touch no deployment state.
 - **Web**: Vitest + jsdom + Testing Library; all tests live in `m1nervac0nsole/web/tests/` (mirrors `src/`, imports via `@/…`; `vitest.config.ts` includes only `tests/**/*.test.ts(x)`); `vi.mock` for `next-intl`, `sonner`, `@/lib/api`. Go white-box tests stay beside their package because they call unexported symbols; everything that can be black-box is central (`m1nervac0nsole/tests/go/`, `tests/python/`, `m1nervac0nsole/web/tests/`).
 - **Coverage**: none configured anywhere — quality gates are pass/fail (`go vet`, `go test`, `build:static`, `biome check`, `check-cjk.py`, `check-doc-links.py`).
-- **Verification beyond unit tests**: `python3 deployment/verify_capture.py` (host `tshark` required) and `python3 deployment/verify_reasoning.py` (starts the local model).
+- **Verification beyond unit tests**: `python3 deployment/verify_capture.py` (host `tshark` required; drives the authenticated custom-tool test endpoint, so it needs no credential), `python3 deployment/verify_completeness.py` (nonces through HTTP, SSE, a 6 MiB body and a WebSocket, plus a keylog fixture; runs its own isolated gateway and recorder, so it needs no credential and changes no policy), and `python3 deployment/verify_reasoning.py` (starts the local model).
 
 ## Traps
 
 - **Root `.gitignore` is deny-by-default** (`/*` plus a short whitelist). Only `README.md`, `AGENTS.md`, `lab`, `deployment/`, `m1nervac0nsole/`, `.github/` and `tests/` are published; `.audit/`, `.upstream-work/`, `state/`, `exports/`, `secrets/` and the empty root `skills/` stay untracked by design; search tools honoring gitignore silently miss them — pass `gitignore: false`.
 - **Do not edit vendored/pinned trees as first-party**: `m1nervac0nsole/third_party/norma/` (nested module), `deployment/cliproxy/` (upstream clone + `core.patch`), `.upstream-work/CLIProxyAPI/` (its own `AGENTS.md`/`CLAUDE.md` are not repo policy). The norma tree carries local changes, so an SDK bump is a three-way merge (`git merge-file` with the old upstream tag as base), never a copy; upstream tests are not vendored.
 - **Generated, never hand-edit**: `server/webui/dist/`, `web/out/`, `web/.next/`, `dist/`, `next-env.d.ts`, `tsconfig.tsbuildinfo`, `skills/privesc/reference/{gtfobins,lolbas}.json`, `deployment/guest-dist/`.
-- **The guest runs the host build, not the image**: `lab start` rebuilds `deployment/guest-dist/` (binary, skills, guest scripts) when any source is newer, mounts it read-only at `/dist`, and the supervisor copies the binary and syncs skills into `/state/skills` from it. A change reaches the VM on the next `./lab start`; the image's baked copies are only the fallback for a sandbox created before the mount. Never swap artifacts into the guest by hand — see `deployment/guest-dist` staleness in `lab` (`guest_dist_stale`).
+- **The guest runs the host build, not the image**: `lab start` rebuilds `deployment/guest-dist/` (binary, skills, guest scripts) when any source is newer, mounts it read-only at `/dist`, and the supervisor copies the binary and syncs skills into `/state/skills` from it. But `lab start` only launches the supervisor when `/api/health` fails, so on a healthy sandbox it updates `/dist` and leaves the running binary alone — a change reaches the VM only after `./lab stop && ./lab start`. The image's baked copies are only the fallback for a sandbox created before the mount. Never swap artifacts into the guest by hand — see `deployment/guest-dist` staleness in `lab` (`guest_dist_stale`).
 - **`web/.gitignore` ignores `*.sh`** inside `web/`; new scripts there are silently untracked.
 - **Secrets and large local data** — never read, print, or copy: `secrets/`, `jwt.key`, `proxy-state/` (secret-bearing strace), `vpn-profiles/`, `.env`, `state/` (PostgreSQL, pcap, strace), `exports/`, `microsandbox/`, root `*.tar.gz` capture archives.
 - **The guard prefix is a neutral platform-control marker** (`[platform control - not target defense]` in `guard/guard.go`); the m1nervac0nsole-branded forensic string was removed and nothing checks it automatically. Keep the wording stable: agents rely on it to tell a platform block from a target-side defense.

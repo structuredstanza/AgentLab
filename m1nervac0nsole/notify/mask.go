@@ -98,6 +98,11 @@ func (e *ErrDestinationChangedWithoutCredentials) Error() string {
 // is only valid for the old address. We deliberately do not "automatically discard the credential" here — for optional credential fields
 // (webhook headers, email password), that would silently turn into "auth is gone but the endpoint still returns 200,"
 // which is harder to troubleshoot than an error. Better to make the operator enter it once more.
+//
+// One exception, because otherwise the address could not be edited at all: when the destination key is itself a credential
+// (the webhook URL carries its token) and the caller replaced it with a real value, the masked echoes of the other credentials
+// are dropped rather than kept or rejected. They were the old address's credentials, the caller cannot restate a value the API
+// only ever showed masked, and carrying them over is exactly what this guard exists to prevent.
 func PrepareConfigUpdate(kind string, stored, incoming map[string]any) (map[string]any, error) {
 	channel, ok := Get(kind)
 	if !ok {
@@ -137,8 +142,23 @@ func PrepareConfigUpdate(kind string, stored, incoming map[string]any) (map[stri
 		return MergeConfig(stored, incoming), nil
 	}
 
+	// A destination key that is itself a credential (the webhook URL carries its
+	// token) was replaced by a real value: the caller decided the address, and
+	// the credentials that belonged to the old address are void with it. They
+	// are dropped below instead of carried over; refusing instead would make the
+	// address uneditable, because the UI can only echo a credential back masked.
+	addressCredentialReplaced := false
+	for _, key := range changed {
+		for _, secret := range secrets {
+			if key == secret {
+				addressCredentialReplaced = true
+			}
+		}
+	}
+
 	// The address changed: require an explicit decision for each credential key.
 	var missing []string
+	var dropped []string
 	for _, key := range secrets {
 		raw, present := incoming[key]
 		if !present {
@@ -146,13 +166,21 @@ func PrepareConfigUpdate(kind string, stored, incoming map[string]any) (map[stri
 			continue
 		}
 		if s, isStr := raw.(string); isStr && IsMasked(s) {
+			if addressCredentialReplaced {
+				dropped = append(dropped, key)
+				continue
+			}
 			missing = append(missing, key)
 		}
 	}
 	if len(missing) > 0 {
 		return nil, &ErrDestinationChangedWithoutCredentials{Changed: changed, Missing: missing}
 	}
-	return MergeConfig(stored, incoming), nil
+	merged := MergeConfig(stored, incoming)
+	for _, key := range dropped {
+		delete(merged, key)
+	}
+	return merged, nil
 }
 
 // rejectMaskedInContainers rejects submissions that embed the mask sentinel inside non-string structures.

@@ -152,6 +152,9 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	mainDir := ensureRunDir(m.workDir, taskID, 0)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
 	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir), def)
+	// The gateway accepts no anonymous request, so both the Bash env and WebFetch
+	// carry this run's session credential, never the bare address.
+	proxy := runProxyURL(ctx, m.proxyAddr)
 	opts := agentcore.Options{
 		Provider:        m.prov,
 		SystemPrompt:    system,
@@ -161,7 +164,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		UnlockSet:       def.Unlock,
 		PermissionMode:  permission.ModeBypass,
 		EnableWebFetch:  true, // Go through the recording proxy to leave a trace; load the proxy CA to verify the HTTPS certificates re-signed by MITM
-		WebFetchProxy:   m.proxyAddr,
+		WebFetchProxy:   proxy,
 		WebFetchCACert:  m.proxyCACert,
 		// Web search (optional). ddgs requires no key; brave-free requires BraveKey; tavily requires TavilyKey.
 		// WebSearchProxy is a standalone egress proxy (http/https/socks5), unrelated to the MITM proxy that records traffic; if empty, connect directly.
@@ -173,8 +176,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		DeepSeekSearchAPIKey:  m.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   m.webSearch.DeepSeekModel,
 		WebSearchProxy:        m.webSearch.Proxy,
-		BashEnv:               proxyEnv(m.proxyAddr, m.proxyCACert), // Bash subcommands go through the proxy and trust the CA by default
-		WorkingDir:            mainDir,                              // Working directory for this task: <workDir>/tasks/<taskID>
+		BashEnv:               ProxyEnv(proxy, m.proxyCACert), // Bash subcommands go through the proxy and trust the CA by default
+		WorkingDir:            mainDir,                        // Working directory for this task: <workDir>/tasks/<taskID>
 		ToolOutputDir:         cmdOutDir(mainDir),
 		MaxTurns:              m.maxTurns,                             // 0 = unlimited (configurable in agent management)
 		Compaction:            compactionConfig(m.compactionWindow()), // long chats stay within the window

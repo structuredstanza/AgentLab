@@ -12,18 +12,20 @@ import (
 // fakeConn answers CDP from a table and emits scripted events, so every driver
 // behaviour is testable without a browser.
 type fakeConn struct {
-	mu       sync.Mutex
-	calls    []fakeCall
-	replies  map[string]any
-	handle   func(method string, params json.RawMessage) (any, bool, error)
-	emitOn   map[string][]fakeEvent
-	handlers []func(string, json.RawMessage)
-	dead     bool
+	mu              sync.Mutex
+	calls           []fakeCall
+	replies         map[string]any
+	handle          func(method string, params json.RawMessage) (any, bool, error)
+	emitOn          map[string][]fakeEvent
+	handlers        []func(string, json.RawMessage)
+	sessionHandlers map[string][]func(string, json.RawMessage)
+	dead            bool
 }
 
 type fakeCall struct {
-	Method string
-	Params json.RawMessage
+	Session string
+	Method  string
+	Params  json.RawMessage
 }
 
 type fakeEvent struct {
@@ -34,7 +36,8 @@ type fakeEvent struct {
 func newFakeConn() *fakeConn {
 	return &fakeConn{
 		replies: map[string]any{
-			"Runtime.enable": map[string]any{},
+			"Runtime.enable":       map[string]any{},
+			"Target.setAutoAttach": map[string]any{},
 			"Page.getNavigationHistory": map[string]any{
 				"currentIndex": 0,
 				"entries": []any{
@@ -51,10 +54,18 @@ func newFakeConn() *fakeConn {
 }
 
 func (f *fakeConn) Send(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	return f.send(ctx, "", method, params)
+}
+
+func (f *fakeConn) SendSession(ctx context.Context, sessionID, method string, params any) (json.RawMessage, error) {
+	return f.send(ctx, sessionID, method, params)
+}
+
+func (f *fakeConn) send(ctx context.Context, session, method string, params any) (json.RawMessage, error) {
 	raw, _ := json.Marshal(params)
 
 	f.mu.Lock()
-	f.calls = append(f.calls, fakeCall{Method: method, Params: raw})
+	f.calls = append(f.calls, fakeCall{Session: session, Method: method, Params: raw})
 	if f.dead {
 		f.mu.Unlock()
 		return nil, fmt.Errorf("fake: %w", errTransport)
@@ -90,10 +101,35 @@ func (f *fakeConn) On(fn func(method string, params json.RawMessage)) {
 	f.mu.Unlock()
 }
 
+func (f *fakeConn) OnSession(sessionID string, fn func(method string, params json.RawMessage)) {
+	f.mu.Lock()
+	if f.sessionHandlers == nil {
+		f.sessionHandlers = map[string][]func(string, json.RawMessage){}
+	}
+	f.sessionHandlers[sessionID] = append(f.sessionHandlers[sessionID], fn)
+	f.mu.Unlock()
+}
+
 func (f *fakeConn) emit(method string, params any) {
 	raw, _ := json.Marshal(params)
 	f.mu.Lock()
 	handlers := append([]func(string, json.RawMessage){}, f.handlers...)
+	f.mu.Unlock()
+	for _, fn := range handlers {
+		fn(method, raw)
+	}
+}
+
+// emitSession delivers an event from one target session the way the pipe does:
+// to the handlers registered for that session, and to the page handlers only
+// when the session has none.
+func (f *fakeConn) emitSession(sessionID, method string, params any) {
+	raw, _ := json.Marshal(params)
+	f.mu.Lock()
+	handlers := append([]func(string, json.RawMessage){}, f.handlers...)
+	if scoped := f.sessionHandlers[sessionID]; len(scoped) > 0 {
+		handlers = append([]func(string, json.RawMessage){}, scoped...)
+	}
 	f.mu.Unlock()
 	for _, fn := range handlers {
 		fn(method, raw)
@@ -112,6 +148,19 @@ func (f *fakeConn) callsOf(method string) []fakeCall {
 	var out []fakeCall
 	for _, call := range f.calls {
 		if call.Method == method {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// callsOn is callsOf restricted to one target session; "" is the page.
+func (f *fakeConn) callsOn(session, method string) []fakeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []fakeCall
+	for _, call := range f.calls {
+		if call.Method == method && call.Session == session {
 			out = append(out, call)
 		}
 	}

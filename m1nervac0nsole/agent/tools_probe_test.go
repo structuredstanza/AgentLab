@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
 
 func callTCPProbe(t *testing.T, ts *ToolSet, payload map[string]any) map[string]any {
@@ -65,8 +68,24 @@ func TestTCPProbeRecordsLiveness(t *testing.T) {
 	}
 	defer d.Exec(`DELETE FROM assets WHERE ip = $1`, ip)
 
+	// A probe is outbound contact, so the task's network policy decides it.
+	task, err := d.CreateTask("tcp probe fixture", "authorize the probed address", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(task.ID)
+	if _, err := d.AddPolicyRule(t.Context(), task.ID, netpolicy.Rule{
+		Effect: "include", Pattern: ip, Authorized: true,
+	}, "operator"); err != nil {
+		t.Fatalf("authorize %s: %v", ip, err)
+	}
+	oldAuth := NetPolicyAuthorizer
+	t.Cleanup(func() { NetPolicyAuthorizer = oldAuth })
+	NetPolicyAuthorizer = netpolicy.NewAuthorizer(d)
+
 	ts := NewToolSet(nil, "worker")
 	ts.SetAssetStore(as, d.Companies())
+	ts.SetTaskID(task.ID)
 
 	// Reserve a port on the target address, then release it so nothing listens.
 	ln, err := net.Listen("tcp", ip+":0")
@@ -112,6 +131,77 @@ func TestTCPProbeRecordsLiveness(t *testing.T) {
 	ports := openPorts(t, d, id)
 	if len(ports) != 1 || ports[0]["provenance"] != db.PortProvenanceProbe {
 		t.Fatalf("a successful probe must record the port as probe-derived: %v", ports)
+	}
+}
+
+// tcp_probe is a direct dial, so the task's network policy decides it before the
+// socket is opened: a destination no authorized rule covers is never contacted,
+// and neither is any destination when no authorizer is wired.
+func TestTCPProbeRefusesUnauthorizedDestination(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	as := d.Assets()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			accepted <- struct{}{}
+			c.Close()
+		}
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+	payload := map[string]any{"host": "127.0.0.1", "port": port}
+
+	// A bare task: no authorized rule, which is the state a task is in until an
+	// operator approves one.
+	task, err := d.CreateTask("tcp probe policy", "no authorized rule", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(task.ID)
+
+	oldAuth := NetPolicyAuthorizer
+	t.Cleanup(func() { NetPolicyAuthorizer = oldAuth })
+
+	for _, tc := range []struct {
+		name    string
+		auth    netpolicy.Authorizer
+		authorz bool
+	}{
+		{"no authorized rule", netpolicy.NewAuthorizer(d), false},
+		{"no authorizer", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.authorz {
+				if _, err := d.AddPolicyRule(t.Context(), task.ID, netpolicy.Rule{
+					Effect: "include", Pattern: "127.0.0.1", Authorized: true,
+				}, "operator"); err != nil {
+					t.Fatalf("authorize: %v", err)
+				}
+			}
+			NetPolicyAuthorizer = tc.auth
+			ts := NewToolSet(nil, "worker")
+			ts.SetAssetStore(as, d.Companies())
+			ts.SetTaskID(task.ID)
+			raw, _ := json.Marshal(payload)
+			res, err := ts.tcpProbe().Call(context.Background(), raw, nil)
+			if err != nil {
+				t.Fatalf("tcp_probe: %v", err)
+			}
+			if !res.IsError || !strings.Contains(res.Flatten(), "refused") {
+				t.Fatalf("an unauthorized probe was not refused: %q", res.Flatten())
+			}
+			select {
+			case <-accepted:
+				t.Fatal("tcp_probe dialled a destination the network policy did not authorize")
+			case <-time.After(200 * time.Millisecond):
+			}
+		})
 	}
 }
 

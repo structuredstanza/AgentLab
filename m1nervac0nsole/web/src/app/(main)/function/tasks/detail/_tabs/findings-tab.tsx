@@ -162,8 +162,17 @@ export function FindingsTab({ taskId }: { taskId: string }) {
           // Keep the last successful snapshot during transient refresh failures.
         });
     };
+    // The findings list carries every evidence body, so it is refetched only
+    // while the task can still produce one; a finished task is loaded once.
+    const tick = async () => {
+      const running = await api
+        .task(taskId)
+        .then((task) => task.status === "running")
+        .catch(() => false);
+      if (active && running) load();
+    };
     load();
-    const t = setInterval(load, 3000);
+    const t = setInterval(() => void tick(), 3000);
     return () => {
       active = false;
       clearInterval(t);

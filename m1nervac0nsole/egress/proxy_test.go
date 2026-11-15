@@ -217,8 +217,8 @@ func TestProxyRelaysPlaintextThroughConnect(t *testing.T) {
 }
 
 // The gate runs before the CONNECT is answered, so a refused plaintext tunnel
-// is refused at CONNECT and the origin is never reached. The relay keeps its
-// own check for a gate decision that changes between the two.
+// is refused at CONNECT and the origin is never reached. The per-request gate
+// check inside the tunnel is what catches a decision that changes afterwards.
 func TestRelayedTunnelHonoursTheGate(t *testing.T) {
 	var hits atomic.Int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +237,57 @@ func TestRelayedTunnelHonoursTheGate(t *testing.T) {
 	br := bufio.NewReader(conn)
 	if line, _ := br.ReadString('\n'); !strings.Contains(line, "403") {
 		t.Fatalf("CONNECT reply = %q, want a 403 refusal", line)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("origin was reached %d times despite the refusal", hits.Load())
+	}
+}
+
+// pathDeny allows the CONNECT, which carries no path, and refuses every request
+// inside the tunnel, so only a per-request gate check can stop it.
+type pathDeny struct{}
+
+func (pathDeny) Allow(_ context.Context, _ string, path string) (bool, string) {
+	if path == "" {
+		return true, ""
+	}
+	return false, "path out of scope"
+}
+
+// A plaintext tunnel is forwarded request by request, so the gate sees each
+// request's path. Relaying the tunnel as opaque bytes after the CONNECT check
+// let a path-scoped refusal through.
+func TestPlaintextTunnelGatesEachRequest(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	}))
+	defer origin.Close()
+	authority := strings.TrimPrefix(origin.URL, "http://")
+
+	p := newTestProxy(t, pathDeny{})
+	conn, err := net.Dial("tcp", p.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, "CONNECT "+authority+" HTTP/1.1\r\nHost: "+authority+"\r\n\r\n")
+	br := bufio.NewReader(conn)
+	if line, _ := br.ReadString('\n'); !strings.Contains(line, "200") {
+		t.Fatalf("CONNECT reply = %q, want 200", line)
+	}
+	for {
+		l, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read the CONNECT headers: %v", err)
+		}
+		if l == "\r\n" {
+			break
+		}
+	}
+	io.WriteString(conn, "GET /secret HTTP/1.1\r\nHost: "+authority+"\r\n\r\n")
+	if line, _ := br.ReadString('\n'); !strings.Contains(line, "403") {
+		t.Fatalf("tunneled request reply = %q, want a 403 refusal", line)
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("origin was reached %d times despite the refusal", hits.Load())

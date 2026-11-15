@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { mergeActivities } from "@/lib/activity-merge";
 import { api } from "@/lib/api";
@@ -16,13 +16,19 @@ export function useConversationTail(conversationId: number | null) {
   const [messages, setMessages] = useState<Activity[]>([]);
   const [running, setRunning] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // Older steps exist above the loaded page; the pane pages them in on demand.
+  const [hasMore, setHasMore] = useState(false);
   const cursor = useRef(0);
+  const earliest = useRef(0);
+  const loadingEarlier = useRef(false);
 
   useEffect(() => {
     cursor.current = 0;
+    earliest.current = 0;
     setMessages([]);
     setRunning(false);
     setLoaded(false);
+    setHasMore(false);
     if (conversationId == null) return;
     let live = true;
     api
@@ -31,6 +37,8 @@ export function useConversationTail(conversationId: number | null) {
         if (!live) return;
         setMessages((current) => mergeActivities(r.items, current));
         cursor.current = Math.max(cursor.current, r.cursor);
+        earliest.current = r.items.length ? r.items[0].seq : 0;
+        setHasMore(r.hasMore);
         // A load must not cancel a run the caller already started (a just-sent turn).
         setRunning((current) => current || r.running);
         setLoaded(true);
@@ -69,5 +77,24 @@ export function useConversationTail(conversationId: number | null) {
     };
   }, [running, conversationId]);
 
-  return { messages, running, loaded, setRunning };
+  // One older page, prepended. Without it a thread past TAIL_PAGE silently loses
+  // its beginning and the pane looks like it simply started mid-sentence.
+  const loadEarlier = useCallback(async () => {
+    if (conversationId == null || loadingEarlier.current) return;
+    loadingEarlier.current = true;
+    try {
+      const r = await api.conversationHistory(conversationId, earliest.current, TAIL_PAGE);
+      if (r.items.length) {
+        setMessages((prev) => mergeActivities(r.items, prev));
+        earliest.current = r.items[0].seq;
+      }
+      setHasMore(r.hasMore);
+    } catch {
+      /* transient: the control stays available for a retry */
+    } finally {
+      loadingEarlier.current = false;
+    }
+  }, [conversationId]);
+
+  return { messages, running, loaded, setRunning, hasMore, loadEarlier };
 }

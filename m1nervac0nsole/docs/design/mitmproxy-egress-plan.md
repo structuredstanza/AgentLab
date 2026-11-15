@@ -2,6 +2,8 @@
 
 # Recording proxy x egress proxy: diagnosis and plan
 
+> **Superseded (2026-11-14).** The recorder-to-masker chain this document diagnoses no longer exists: the recording proxy owns the origin transport itself (`gateway/`, `traffic.OpenWithTransport`), so there is one interception boundary and one exit, and no second proxy to tunnel through. Every recorded request must carry a session credential the backend issues for a purpose, task and policy revision; an absent or unknown credential is refused, with no anonymous session and no direct fallback. Read this as the diagnosis record for why the chain was replaced, not as the current path. The masking proxy survives only for asset-enrichment probes and is pending retirement.
+
 Status: diagnosed, not fixed. Reproduced in the lab guest on 2026-11-13.
 
 ## Symptom

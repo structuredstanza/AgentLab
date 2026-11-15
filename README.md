@@ -92,17 +92,19 @@ After provisioning, run these commands from the repository root:
 
 ```sh
 ./lab build                         # Build the embedded UI, binary, skills and guest scripts
+./lab image-build                   # Build and capability-check the configured image as a candidate
 ./lab start                         # Start the VM and capture services
 ./lab start --vpn /path/to/lab.ovpn  # ...or start through an OpenVPN profile (one start, not both)
 ./lab status
 ./lab exec -- python3 -c 'print("guest execution")'
 ./lab export                        # Export recorded data for private review
+./lab prune <export-id>             # Delete only what a verified export contains
 ./lab stop                          # Graceful shutdown and capture finalization
 ```
 
 `lab start` refreshes the host-built application through a read-only `/dist` mount. Change source and rebuild/restart; do not manually replace guest binaries. Use `./lab --help` for the command interface. A lab-provisioned UI is published on `http://127.0.0.1:8787`; credentials are local deployment state, not a public default login.
 
-To check a running lab end to end, run `python3 deployment/verify_capture.py` (needs host `tshark`) against a completed capture, and `python3 deployment/verify_reasoning.py` (starts the local model) for a reasoning round trip. Both are manual and read-only.
+To check a running lab end to end, run `python3 deployment/verify_capture.py` (needs host `tshark`; it drives the authenticated custom-tool test endpoint, so it needs no credential), `python3 deployment/verify_completeness.py` (nonces through HTTP, SSE, a large body and a WebSocket, plus a keylog fixture; it runs its own isolated gateway and recorder, so it needs no credential and changes no policy) and `python3 deployment/verify_reasoning.py` (starts the local model) for a reasoning round trip. All three are manual and read-only.
 
 ## Capture, privacy and limitations
 
@@ -112,7 +114,7 @@ Important boundaries:
 
 - **Raw captures and exports are sensitive.** Prompts, credentials, target data, OAuth callback material and provider capabilities can appear in recordings, and an export is credential-bearing by design so it stays faithful to the database it captured. Keep runtime state and raw exports private, and redact before sharing.
 - **Redaction is heuristic.** Training exports are not guaranteed free of secrets or personal data. Review and minimize them before sharing or training.
-- **Only exposed reasoning is available.** Provider summaries and opaque replay state are not hidden chain-of-thought, and encrypted TLS in packet captures does not become plaintext automatically.
+- **Only exposed reasoning is available.** Provider summaries and opaque replay state are not hidden chain-of-thought. Encrypted TLS in a packet capture is decryptable only with the keylog the capture session writes beside it, and that keylog travels with the export.
 - **Capture is not tamper-proof.** Online file/packet copies are not atomic machine checkpoints; guest root can affect guest-side recordings. Export hashes detect later changes, not the authenticity of the original run.
 - **Masking is not anonymity.** Providers still see their own account/client identities and submitted content. Proxy behavior, scope checks and approval rules do not replace authorization or operator judgment.
 - **Memory is curated, not self-validating.** Curator proposals stay task-private until an operator promotes them. A stored lesson is not proof that a technique works on another target.

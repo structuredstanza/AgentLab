@@ -100,7 +100,17 @@ func (l *loop) execOne(use llm.ContentBlock, emitProgress func(tool.ProgressInfo
 	// toolCtx carries the run's MaxDuration deadline, so a tool that overruns the
 	// wall-clock budget is interrupted here (the turn loop then enters wrap-up). During
 	// the wrap-up phase toolCtx is the live parent ctx, so settlement tools run freely.
-	res, err := t.Call(l.toolCtx, input, tc)
+	callCtx := l.toolCtx
+	if l.in.Hooks != nil && use.Name == tool.ExecuteExtraToolName {
+		// The deferred invoker runs another tool. That call is its own tool call,
+		// so it must pass the same gate under the inner tool's name; otherwise the
+		// hook only ever sees "ExecuteExtraTool" and a rule written for the inner
+		// tool never fires.
+		callCtx = tool.WithPreToolHook(callCtx, func(name string, in []byte) (bool, string, []byte) {
+			return l.in.Hooks.PreToolUse(l.ctx, name, in)
+		})
+	}
+	res, err := t.Call(callCtx, input, tc)
 	if err != nil {
 		res = tool.Errorf("Error: " + err.Error())
 	}

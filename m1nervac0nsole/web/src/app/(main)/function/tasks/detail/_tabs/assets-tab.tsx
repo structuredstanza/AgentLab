@@ -350,10 +350,10 @@ function AddTaskAssetsSheet({
 
 export function AssetsTab({ taskId }: { taskId: string }) {
   const t = useTranslations("taskDetail.assetsTab");
-  const [rows, setRows] = React.useState<Asset[]>([]);
-  const [total, setTotal] = React.useState(0);
+  // Rows and totals are keyed by type tab: one shared pair let a tab render the
+  // previous tab's rows under its own headers until its fetch landed.
+  const [pages, setPages] = React.useState<Partial<Record<NewAssetType, { rows: Asset[]; total: number }>>>({});
   const [counts, setCounts] = React.useState<Record<string, number>>({});
-  const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState<NewAssetType>("root_domain");
   const [page, setPage] = React.useState(0);
   const [size, setSize] = React.useState(50);
@@ -366,12 +366,10 @@ export function AssetsTab({ taskId }: { taskId: string }) {
   const [removing, setRemoving] = React.useState(false);
   const assetsRequestRef = React.useRef(0);
   const dslMode = query.trim() !== "";
-
-  React.useEffect(() => {
-    setPage(0);
-    setRows([]);
-    setLoaded(false);
-  }, []);
+  const shown = pages[tab];
+  const rows = shown?.rows ?? [];
+  const total = shown?.total ?? 0;
+  const loaded = shown !== undefined;
 
   // Switching type tabs resets the search (DSL fields differ per type; matches
   // the global asset view).
@@ -402,8 +400,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
           api.assetCounts(taskId),
         ]);
         if (!active || assetsRequestRef.current !== request) return;
-        setRows(current.assets);
-        setTotal(current.total);
+        setPages((prev) => ({ ...prev, [tab]: { rows: current.assets, total: current.total } }));
         setCounts(nextCounts ?? {});
         setDslError("");
       } catch (reason) {
@@ -411,15 +408,13 @@ export function AssetsTab({ taskId }: { taskId: string }) {
         const message = String((reason as Error)?.message ?? reason);
         if (dsl) {
           setDslError(message);
-          setRows([]);
-          setTotal(0);
+          setPages((prev) => ({ ...prev, [tab]: { rows: [], total: 0 } }));
         } else {
           toast.error(t("loadError", { message }));
         }
       } finally {
         if (active && assetsRequestRef.current === request) {
           setLoading(false);
-          setLoaded(true);
         }
       }
     };
@@ -439,9 +434,9 @@ export function AssetsTab({ taskId }: { taskId: string }) {
   }, [page, size, total]);
 
   const refresh = React.useCallback(() => {
-    setLoaded(false);
+    setPages((prev) => ({ ...prev, [tab]: undefined }));
     setRefreshKey((current) => current + 1);
-  }, []);
+  }, [tab]);
 
   const remove = async () => {
     if (!removeTarget) return;

@@ -16,6 +16,7 @@ import (
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/enrich"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	actool "github.com/structuredstanza/norma/tool"
 )
 
@@ -105,6 +106,13 @@ func TestInsertAssetsEnrichesPersistedServiceThroughMaskingProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.DeleteTask(task.ID)
+	// The probe asks the network policy before it dials, so the fixture task
+	// authorizes the origin it probes.
+	if _, err := d.AddPolicyRule(t.Context(), task.ID, netpolicy.Rule{
+		Effect: "include", Pattern: "127.0.0.1", Authorized: true,
+	}, "operator"); err != nil {
+		t.Fatalf("authorize the fixture origin: %v", err)
+	}
 	proxyURL, caFile := startMaskingProxyForTest(t)
 
 	var mu sync.Mutex
@@ -119,7 +127,7 @@ func TestInsertAssetsEnrichesPersistedServiceThroughMaskingProxy(t *testing.T) {
 	url := origin.URL + "/wired"
 	defer d.Exec(`DELETE FROM assets WHERE url=$1 OR domain='127.0.0.1'`, url)
 
-	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Proxy: proxyURL, CAFile: caFile})
+	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	ts := NewToolSet(nil, "worker")
 	ts.SetAssetStore(d.Assets(), d.Companies())
@@ -167,7 +175,7 @@ func TestInsertAssetsWithoutTaskDoesNotProbe(t *testing.T) {
 	url := origin.URL + "/notask"
 	defer d.Exec(`DELETE FROM assets WHERE url=$1 OR domain='127.0.0.1'`, url)
 
-	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Proxy: proxyURL, CAFile: caFile})
+	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	ts := NewToolSet(nil, "worker")
 	ts.SetAssetStore(d.Assets(), d.Companies())
@@ -216,7 +224,7 @@ func TestInsertAssetsExcludedHostIsNotProbed(t *testing.T) {
 	if _, err := d.Assets().AddAgentScope(task.ID, "ip", "127.0.0.2", "operator excluded it", "manual", "exclude"); err != nil {
 		t.Fatal(err)
 	}
-	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Proxy: proxyURL, CAFile: caFile})
+	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	ts := NewToolSet(nil, "worker")
 	ts.SetAssetStore(d.Assets(), d.Companies())

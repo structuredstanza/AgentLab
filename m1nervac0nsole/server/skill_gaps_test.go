@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +32,7 @@ INSERT INTO skill_usage(skill,agent_key,task_id,found) VALUES
 		t.Fatal(err)
 	}
 
-	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
+	s := newFixtureServer(t, m)
 	token, err := signJWT(s.jwtKey)
 	if err != nil {
 		t.Fatal(err)

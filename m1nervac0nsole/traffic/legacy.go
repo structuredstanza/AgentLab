@@ -145,11 +145,22 @@ func normalizeArchiveSide(head string, body []byte, hash string, expected int) (
 		}
 		head = parsed
 	}
-	if hash == "" && len(body) != expected {
+	// A partial capture keeps the response's full length in resp_len and stores
+	// only the prefix it captured, labelled in the head: an external probe over
+	// the capture cap, or a streamed body whose bytes were not all kept. Without
+	// that label a short body is corruption, not a partial capture.
+	if hash == "" && len(body) != expected && !(len(body) < expected && labelledPartial(head)) {
 		return "", nil, "", fmt.Errorf("archived traffic body incomplete: expected %d bytes, read %d", expected, len(body))
 	}
 	if hash != "" && (!blobHashRe.MatchString(hash) || len(body) > expected) {
 		return "", nil, "", errors.New("invalid archived traffic body reference")
 	}
 	return head, body, hash, nil
+}
+
+// labelledPartial reports whether a stored head says its body is not the whole
+// response. Both markers keep the declared full length in resp_len, so the
+// length alone cannot tell a partial capture from a truncated import.
+func labelledPartial(head string) bool {
+	return strings.Contains(head, partialMarker) || strings.Contains(head, streamedMarker)
 }

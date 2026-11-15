@@ -18,6 +18,33 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 supervisor = importlib.util.module_from_spec(spec)
 loader.exec_module(supervisor)
 
+# Stands in for the m1nervac0nsole binary's execbox subcommands: serve creates the
+# socket and waits for SIGTERM, probe prints a capability report and exits with
+# its verdict. FAKE_SERVE_EXIT makes serve fail, FAKE_PROBE_OK=0 makes probe fail.
+FAKE_BINARY = '''#!/usr/bin/env python3
+import json, os, signal, sys, time
+args = sys.argv[1:]
+mode = args[1] if len(args) > 1 else ""
+def opt(name):
+    return args[args.index(name) + 1] if name in args else ""
+if mode == "serve":
+    if os.environ.get("FAKE_SERVE_EXIT"):
+        sys.exit(1)
+    socket = opt("-socket")
+    open(socket, "w").close()
+    def stop(*_):
+        os.unlink(socket)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, stop)
+    while True:
+        time.sleep(0.05)
+if mode == "probe":
+    ok = os.environ.get("FAKE_PROBE_OK", "1") == "1"
+    print(json.dumps({"isolation": ok, "checked": ["netns"], "missing": [] if ok else ["netns"]}))
+    sys.exit(0 if ok else 1)
+sys.exit(2)
+'''
+
 
 class SkillSyncTests(unittest.TestCase):
     """Skills come from the host build, but UI-created ones must survive."""
@@ -97,6 +124,8 @@ class SupervisorCleanupTests(unittest.TestCase):
                  mock.patch.object(supervisor.signal, 'signal'), \
                  mock.patch.object(supervisor, 'prepare_dirs'), \
                  mock.patch.object(supervisor, 'Session', return_value=self.session), \
+                 mock.patch.object(supervisor, 'start_execbox',
+                                   side_effect=lambda sess, binary: self.child()), \
                  mock.patch.object(supervisor, 'log'):
                 yield
         finally:
@@ -310,10 +339,12 @@ class VpnSupervisionTests(unittest.TestCase):
         tcpd = mock.Mock()
         tcpd.poll.return_value = None
         sess = mock.Mock()
+        sess.tls = '/state/captures/fixture/tls'
         sess.m = {'capture': {'status': 'running'}, 'm1nervac0nsole': {}, 'postgres': {'status': 'not_started'},
                   'egress': {'status': 'starting'}}
         with mock.patch.object(supervisor, 'start_vpn', return_value=vpn), \
              mock.patch.object(supervisor, 'start_egress', return_value=mock.Mock(**{'poll.return_value': None})), \
+             mock.patch.object(supervisor, 'start_execbox', return_value=mock.Mock(**{'poll.return_value': None})), \
              mock.patch.object(supervisor, 'start_tcpdump', return_value=tcpd), \
              mock.patch.object(supervisor, 'start_app', return_value=app), \
              mock.patch.object(supervisor, 'pg_bindir', return_value='/nonexistent'), \
@@ -367,6 +398,22 @@ class AppEnvTests(unittest.TestCase):
             self.assertIn(key, env, f'{key} missing: the agent cannot be told the ceiling')
             self.assertTrue(env[key].isdigit(), f'{key}={env[key]!r} is not a number')
 
+    def test_the_capture_reserve_reaches_the_recorder(self):
+        env = supervisor.app_env('postgresql://fixture', 'pw')
+        self.assertEqual(env.get('M1NERVAC0NSOLE_CAPTURE_RESERVE_MB'),
+                         str(supervisor.CAPTURE_RESERVE_MB),
+                         'the recorder would fall back to its own default reserve')
+        self.assertEqual(env.get('M1NERVAC0NSOLE_CAPTURE_RESERVE_PCT'),
+                         str(supervisor.CAPTURE_RESERVE_PCT),
+                         'the recorder would stop at a different floor than the ring')
+
+    def test_the_gateway_keylog_is_inside_the_capture_session(self):
+        env = supervisor.app_env('postgresql://fixture', 'pw', '/state/captures/x/tls/keys.log')
+        self.assertEqual(env.get('SSLKEYLOGFILE'), '/state/captures/x/tls/keys.log',
+                         'the captured pcap would stay ciphertext without the gateway keylog')
+        self.assertNotIn('SSLKEYLOGFILE', supervisor.app_env('postgresql://fixture', 'pw'),
+                         'a keylog must never be written outside a capture session')
+
 class RingSizingTests(unittest.TestCase):
     """The pcap ring must never be able to fill the volume it writes to.
 
@@ -410,10 +457,35 @@ class RingSizingTests(unittest.TestCase):
     def test_reserve_is_a_share_of_the_volume_above_the_floor(self):
         small = supervisor.ring_reserve_mb(self._statvfs(2048, 4096))
         huge = supervisor.ring_reserve_mb(self._statvfs(140_000, 150_000))
-        self.assertEqual(small, supervisor.RING_RESERVE_MB)
+        self.assertEqual(small, supervisor.CAPTURE_RESERVE_MB)
         self.assertEqual(huge, 150_000 // 5)
         self.assertGreater(huge, small,
                            'a big volume must keep more headroom for Postgres and exports')
+
+    def test_env_reserve_reaches_the_ring_and_the_manifest(self):
+        with mock.patch.dict(os.environ, {'AGENTLAB_CAPTURE_RESERVE_MB': '4096',
+                                          'AGENTLAB_CAPTURE_RESERVE_PCT': '50'}):
+            module = self._fresh_module()
+            self.assertEqual(module.ring_reserve_mb(self._statvfs(8192, 8192)), 4096)
+            self.assertEqual(module.ring_reserve_mb(self._statvfs(200_000, 200_000)), 100_000)
+            self.assertEqual(module.CAPTURE_LIMITS['reserve_mb'], 4096)
+            self.assertEqual(module.CAPTURE_LIMITS['reserve_pct'], 50)
+            self.assertIn('50%', module.CAPTURE_LIMITS['reserve'])
+
+    def test_bad_reserve_env_falls_back_and_logs(self):
+        for raw in ('0', '-1', 'abc'):
+            with mock.patch.dict(os.environ, {'AGENTLAB_CAPTURE_RESERVE_MB': raw}):
+                with mock.patch.object(supervisor, 'log') as log:
+                    self.assertEqual(supervisor.capture_reserve(),
+                                     (supervisor.CAPTURE_RESERVE_MB_DEFAULT,
+                                      supervisor.CAPTURE_RESERVE_PCT_DEFAULT), raw)
+                    log.assert_called_once()
+        for raw in ('0', '100', 'abc'):
+            with mock.patch.dict(os.environ, {'AGENTLAB_CAPTURE_RESERVE_PCT': raw}):
+                with mock.patch.object(supervisor, 'log') as log:
+                    self.assertEqual(supervisor.capture_reserve()[1],
+                                     supervisor.CAPTURE_RESERVE_PCT_DEFAULT, raw)
+                    log.assert_called_once()
 
     def test_ring_never_exceeds_the_env_ceiling(self):
         # A 200 GB volume would fit 1250 segments, but the operator's ceiling wins.
@@ -464,6 +536,95 @@ class RingSizingTests(unittest.TestCase):
             with mock.patch.object(supervisor, 'log') as log:
                 self.assertEqual(supervisor.ring_ceiling_segments(), 500)
                 log.assert_not_called()
+
+
+class ExecboxSupervisorTests(unittest.TestCase):
+    """The execution boundary is a gate: a start that cannot isolate must fail."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for name, value in {
+            'CAPTURES': self.root / 'captures',
+            'RUNTIME': self.root / 'runtime',
+            'STATUS_PATH': self.root / 'status.json',
+            'EXECBOX_SOCKET_DIR': self.root / 'run',
+            'EXECBOX_SOCKET': self.root / 'run' / 'execbox.sock',
+            'EXECBOX_WORKSPACES': f'{self.root}/state/tasks,{self.root}/state/sessions',
+            'EXECBOX_TIMEOUT': 5,
+        }.items():
+            patch = mock.patch.object(supervisor, name, value if name == 'EXECBOX_TIMEOUT' else str(value))
+            patch.start()
+            self.addCleanup(patch.stop)
+        (self.root / 'runtime').mkdir()
+        self.session = supervisor.Session()
+        self.binary = self.root / 'm1nervac0nsole'
+        self.binary.write_text(FAKE_BINARY)
+        self.binary.chmod(0o755)
+
+    def reap(self, pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def test_start_gates_on_the_probe_and_stop_uses_sigterm(self):
+        p = supervisor.start_execbox(self.session, str(self.binary))
+        self.addCleanup(self.reap, p.pid)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        box = self.session.m['execbox']
+        self.assertEqual(box['status'], 'running', box)
+        self.assertIn('"isolation": true', box['probe'])
+        self.assertTrue(Path(supervisor.EXECBOX_SOCKET).exists())
+        self.assertTrue((Path(self.session.logs) / 'execbox.log').exists())
+        for root in supervisor.EXECBOX_WORKSPACES.split(','):
+            self.assertTrue(Path(root).is_dir(), f'{root} was not created for the session boundary')
+
+        supervisor.stop_execbox(self.session, p)
+        self.assertEqual(p.returncode, 0, 'the supervisor must exit cleanly on SIGTERM')
+        self.assertEqual(self.session.m['execbox']['status'], 'stopped')
+        self.assertFalse(Path(supervisor.EXECBOX_SOCKET).exists())
+
+    def test_failed_probe_fails_the_start_and_leaves_no_supervisor(self):
+        with mock.patch.dict(os.environ, {'FAKE_PROBE_OK': '0'}):
+            with self.assertRaises(supervisor.Fatal) as caught:
+                supervisor.start_execbox(self.session, str(self.binary))
+        self.assertIn('execbox probe failed', str(caught.exception))
+        pid = self.session.m['execbox']['pid']
+        self.assertIsNone(proc_alive(pid), 'a refused start left the supervisor running')
+        self.assertEqual(self.session.m['execbox']['status'], 'stopped')
+
+    def test_supervisor_that_exits_during_start_fails_loudly(self):
+        with mock.patch.dict(os.environ, {'FAKE_SERVE_EXIT': '1'}):
+            with self.assertRaises(supervisor.Fatal) as caught:
+                supervisor.start_execbox(self.session, str(self.binary))
+        self.assertIn('exited during start', str(caught.exception))
+        self.assertIn('execbox.log', str(caught.exception))
+
+    def test_shutdown_stops_the_boundary_after_the_app(self):
+        app = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+        self.addCleanup(self.reap, app.pid)
+        p = supervisor.start_execbox(self.session, str(self.binary))
+        self.addCleanup(self.reap, p.pid)
+        with mock.patch.object(supervisor, 'pg_stop', return_value=(0, 'stopped')):
+            supervisor.shutdown(self.session, app, None, None, execbox=p)
+        self.assertIsNotNone(app.poll(), 'the app survived shutdown')
+        self.assertIsNotNone(p.poll(), 'the execution boundary survived shutdown')
+        self.assertEqual(self.session.m['execbox']['status'], 'stopped')
+
+
+def proc_alive(pid):
+    """True while pid exists and is not a reaped child, else None."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    try:
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return True
+    return None if reaped == pid else True
 
 
 if __name__ == '__main__':

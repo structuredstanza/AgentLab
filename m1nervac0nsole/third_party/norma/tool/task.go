@@ -72,10 +72,11 @@ type Task struct {
 	OutputPath  string
 
 	// internal, guarded by Manager.mu
-	backgrounded bool          // surfaced as a background task: notify on exit
-	notified     bool          // completion already enqueued into pending
-	oversize     bool          // terminated by the size watchdog
+	backgrounded bool // surfaced as a background task: notify on exit
+	notified     bool // completion already enqueued into pending
+	oversize     bool // terminated by the size watchdog
 	cmd          *exec.Cmd
+	sess         ExecSession   // set when a host executor started the process
 	done         chan struct{} // closed by watch when the process exits
 }
 
@@ -90,15 +91,15 @@ func (t *Task) info() TaskInfo {
 
 // TaskInfo is an immutable snapshot of a task for safe reads outside the lock.
 type TaskInfo struct {
-	ID          string
-	Kind        TaskKind
-	Command     string
-	Description string
-	Status      TaskStatus
-	ExitCode    int
-	StartTime   time.Time
-	EndTime     time.Time
-	OutputPath  string
+	ID           string
+	Kind         TaskKind
+	Command      string
+	Description  string
+	Status       TaskStatus
+	ExitCode     int
+	StartTime    time.Time
+	EndTime      time.Time
+	OutputPath   string
 	Backgrounded bool
 }
 
@@ -126,13 +127,25 @@ func (n Notification) String() string {
 
 // SpawnSpec describes a process to launch in the background.
 type SpawnSpec struct {
-	Command     string
+	Command string
+	// Argv, when non-empty, is executed directly instead of Command through the
+	// shell. It lets a caller that already holds an argument vector avoid
+	// re-quoting it.
+	Argv        []string
 	Description string
 	Kind        TaskKind
 	WorkingDir  string
 	// Env holds extra "KEY=VALUE" entries layered onto the process environment for
 	// this command (see ToolContext.Env). Empty still applies nonInteractiveEnv.
 	Env []string
+	// TTY asks the executor for a pseudo-terminal; Rows and Cols size it.
+	TTY        bool
+	Rows, Cols int
+	// toolUseID is the tool_use id of the call that spawned this process, when
+	// the host records per-process evidence. Empty records nothing.
+	//
+	// Local addition for AgentLab per-call process evidence.
+	toolUseID string
 }
 
 // nonInteractiveEnv are defaults every spawned shell gets, whether or not the
@@ -227,6 +240,15 @@ func baseTaskDir() string { return filepath.Join(os.TempDir(), "norma") }
 // NewManager creates the per-session task directory and garbage-collects stale
 // directories left by previous sessions.
 func NewManager(sessionID string) (*Manager, error) {
+	return NewManagerWithContext(context.Background(), sessionID)
+}
+
+// NewManagerWithContext creates the manager with a host-supplied root context.
+// Background tasks and PTY shells outlive the turn that started them but not the
+// run, and a host that confines tool processes reads the run's identity from this
+// context: the executor takes the session from it, never from the spawned
+// program's arguments.
+func NewManagerWithContext(root context.Context, sessionID string) (*Manager, error) {
 	if sessionID == "" {
 		sessionID = "default"
 	}
@@ -235,7 +257,10 @@ func NewManager(sessionID string) (*Manager, error) {
 		return nil, err
 	}
 	cleanStaleSessions(baseTaskDir(), sessionID)
-	ctx, cancel := context.WithCancel(context.Background())
+	if root == nil {
+		root = context.Background()
+	}
+	ctx, cancel := context.WithCancel(root)
 	return &Manager{
 		tasks:      map[string]*Task{},
 		sessions:   map[string]*ptySession{},
@@ -329,6 +354,31 @@ func (m *Manager) Spawn(spec SpawnSpec) (*Task, error) {
 	if kind == "" {
 		kind = KindBash
 	}
+	if ex := currentExecutor(); ex != nil {
+		sess, err := ex.Run(WithExecIdentity(m.rootCtx, ExecIdentity{ToolUseID: spec.toolUseID, RunDir: spec.WorkingDir}), spec)
+		if err != nil {
+			_ = f.Close()
+			_ = os.Remove(outPath)
+			return nil, err
+		}
+		t := &Task{
+			ID:          id,
+			Kind:        kind,
+			Command:     spec.Command,
+			Description: spec.Description,
+			Status:      TaskRunning,
+			StartTime:   time.Now(),
+			OutputPath:  outPath,
+			sess:        sess,
+			done:        make(chan struct{}),
+		}
+		m.mu.Lock()
+		m.tasks[id] = t
+		m.order = append(m.order, id)
+		m.mu.Unlock()
+		go m.watchExec(t, sess, f)
+		return t, nil
+	}
 	shell, flags := shellCmd()
 	cmd := exec.CommandContext(m.rootCtx, shell, append(flags, spec.Command)...)
 	cmd.Dir = spec.WorkingDir
@@ -393,6 +443,41 @@ func (m *Manager) watch(t *Task, f *os.File) {
 	m.mu.Unlock()
 }
 
+// watchExec streams an executor-started process into its output file and
+// records the exit status, mirroring watch for the direct-spawn path.
+func (m *Manager) watchExec(t *Task, sess ExecSession, f *os.File) {
+	stop := make(chan struct{})
+	go m.watchSize(t, stop)
+
+	_, _ = io.Copy(f, sess)
+	err := sess.Wait()
+	close(stop)
+	_ = f.Close()
+
+	m.mu.Lock()
+	if t.Status == TaskRunning { // not pre-empted by Kill / watchdog
+		code := sess.ExitCode()
+		switch {
+		case err == nil && code == 0:
+			t.Status = TaskCompleted
+			t.ExitCode = 0
+		case err == nil:
+			t.Status = TaskFailed
+			t.ExitCode = code
+		default:
+			t.Status = TaskFailed
+			t.ExitCode = -1
+		}
+	}
+	t.EndTime = time.Now()
+	close(t.done)
+	if t.backgrounded && !t.notified && (t.Status == TaskCompleted || t.Status == TaskFailed) {
+		t.notified = true
+		m.pending = append(m.pending, m.notifFor(t))
+	}
+	m.mu.Unlock()
+}
+
 // watchSize terminates a task whose output file grows past the cap.
 func (m *Manager) watchSize(t *Task, stop chan struct{}) {
 	ticker := time.NewTicker(2 * time.Second)
@@ -421,7 +506,12 @@ func (m *Manager) terminate(t *Task, status TaskStatus, oversize bool) {
 	t.Status = status
 	t.oversize = oversize
 	proc := t.cmd.Process
+	sess := t.sess
 	m.mu.Unlock()
+	if sess != nil {
+		sess.Kill()
+		return
+	}
 	if proc != nil {
 		treeKill(proc)
 	}

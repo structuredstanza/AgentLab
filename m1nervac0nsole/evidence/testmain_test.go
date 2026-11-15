@@ -1,35 +1,25 @@
 package evidence
 
 import (
-	"context"
 	"os"
 	"testing"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/internal/testlock"
 )
 
-// Initialize an explicitly configured fresh database before taking the same
-// suite lock as db, agent and server. Hold it on one pinned connection.
+// TestMain initializes an explicitly configured fresh database (schema included)
+// before taking the same cross-package suite lock (testlock.LockKey) that db,
+// agent and server hold, so the suite never runs its schema init unlocked.
 func TestMain(m *testing.M) {
-	if os.Getenv("M1NERVAC0NSOLE_PG_DSN") == "" {
+	dsn := os.Getenv("M1NERVAC0NSOLE_PG_DSN")
+	if dsn == "" {
 		os.Exit(m.Run())
 	}
-	os.Exit(runEvidenceSuite(m))
-}
-func runEvidenceSuite(m *testing.M) int {
-	pg, err := db.Open(os.Getenv("M1NERVAC0NSOLE_PG_DSN"))
+	pg, err := db.Open(dsn)
 	if err != nil {
 		panic(err)
 	}
-	defer pg.Close()
-	conn, err := pg.Conn(context.Background())
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-	if _, err = conn.ExecContext(context.Background(), `SELECT pg_advisory_lock(7337741002)`); err != nil {
-		panic(err)
-	}
-	defer conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(7337741002)`)
-	return m.Run()
+	pg.Close()
+	os.Exit(testlock.Run(dsn, m.Run))
 }

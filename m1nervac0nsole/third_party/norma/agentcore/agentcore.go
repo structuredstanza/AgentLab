@@ -210,6 +210,13 @@ type Options struct {
 	// env var disables them for every session; this field is the per-session equivalent.
 	DisableBackgroundTasks bool
 
+	// RootContext is the parent of the context background tasks and PTY shells run
+	// under. They outlive the turn that started them but not the run, so a host
+	// that confines tool processes puts the run's execution identity here: the
+	// installed executor reads it from the context, never from the child's
+	// arguments. Nil means context.Background().
+	RootContext context.Context
+
 	// NonStreaming runs every model call as a single non-streaming request
 	// (Provider.Complete) instead of a token stream. The host still receives the
 	// same event sequence (text/thinking/tool_use/usage), just delivered when the
@@ -324,7 +331,7 @@ func NewSession(opts Options) *Session {
 	// control it. Disabled by the global AGENT_CORE_DISABLE_BACKGROUND_TASKS env var
 	// or by setting Options.DisableBackgroundTasks for this session only.
 	if !tool.BackgroundTasksDisabled() && !opts.DisableBackgroundTasks {
-		if mgr, err := tool.NewManager(s.sessionID); err == nil {
+		if mgr, err := tool.NewManagerWithContext(opts.RootContext, s.sessionID); err == nil {
 			s.tasks = mgr
 			tools = append(tools, tool.NewTaskOutput(), tool.NewTaskStop(), tool.NewTaskList(), tool.NewMonitor())
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"sync"
 )
 
 // builtinFS holds the manifests shipped with the binary.
@@ -31,6 +32,31 @@ func LoadBuiltin() *Set {
 		return &Set{byID: map[string]*Manifest{}}
 	}
 	return set
+}
+
+// builtinSources maps each shipped manifest id to its raw TOML. It is keyed by
+// the id inside the file, not the file name, so renaming a file cannot make a
+// built-in unreachable by the id the catalog shows.
+var builtinSources = sync.OnceValue(func() map[string]string {
+	out := map[string]string{}
+	entries, _ := fs.ReadDir(builtinFS, "builtin")
+	for _, e := range entries {
+		data, err := fs.ReadFile(builtinFS, "builtin/"+e.Name())
+		if err != nil {
+			continue
+		}
+		if m, err := Parse(string(data)); err == nil {
+			out[m.ID] = string(data)
+		}
+	}
+	return out
+})
+
+// BuiltinSource returns the embedded TOML text of a built-in manifest, so an
+// editor can start from it and "reset to built-in" has something to restore.
+func BuiltinSource(id string) (string, bool) {
+	text, ok := builtinSources()[id]
+	return text, ok
 }
 
 // loadFS parses every *.toml in dir within fsys.

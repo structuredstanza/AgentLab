@@ -62,6 +62,68 @@ func TestRecordExternalStoresLikeProxyTraffic(t *testing.T) {
 	}
 }
 
+// A partial capture keeps the prefix it was handed, the response's full declared
+// length, and a marker saying the body is not the whole response; a complete
+// capture stores its exact body and no marker.
+func TestRecordExternalStoresPartialBodyWithDeclaredLength(t *testing.T) {
+	tr, _ := openTraffic(t)
+	const declared = 4 << 20
+	prefix := strings.Repeat("P", maxInlineBody)
+	if err := tr.RecordExternal(ExternalExchange{
+		Method:          "GET",
+		URL:             "https://api.example.com/partial",
+		Status:          200,
+		ResponseHeaders: map[string]string{"content-type": "text/plain"},
+		ResponseBody:    prefix,
+		Partial:         true,
+		RespLen:         declared,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.RecordExternal(ExternalExchange{
+		Method:          "GET",
+		URL:             "https://api.example.com/complete",
+		Status:          200,
+		ResponseHeaders: map[string]string{"content-type": "text/plain"},
+		ResponseBody:    "exact",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, _, err := tr.Page(PageQuery{Query: "partial", RespMin: -1, RespMax: -1}, 0, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("partial page = %d rows, err=%v", len(rows), err)
+	}
+	if rows[0].RespLen != declared {
+		t.Fatalf("resp_len = %d, want the declared %d", rows[0].RespLen, declared)
+	}
+	_, resp, err := tr.Get(rows[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp, partialMarker) {
+		t.Fatalf("partial response head lacks the marker: %q", clip(resp, 300))
+	}
+	if !strings.Contains(resp, prefix) {
+		t.Fatal("the prefix that was captured was not stored")
+	}
+
+	rows, _, err = tr.Page(PageQuery{Query: "complete", RespMin: -1, RespMax: -1}, 0, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("complete page = %d rows, err=%v", len(rows), err)
+	}
+	if rows[0].RespLen != len("exact") {
+		t.Fatalf("complete resp_len = %d, want %d", rows[0].RespLen, len("exact"))
+	}
+	_, resp, err = tr.Get(rows[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(resp, partialMarker) || !strings.HasSuffix(resp, "\n\nexact") {
+		t.Fatalf("a complete capture must be stored exactly as before: %q", clip(resp, 300))
+	}
+}
+
 func TestRecordExternalRejectsBadInput(t *testing.T) {
 	tr, _ := openTraffic(t)
 	cases := []ExternalExchange{

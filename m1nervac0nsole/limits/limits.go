@@ -129,6 +129,30 @@ func (l *Limiter) reservePerMin(m *manifest.Manifest, params map[string]string) 
 	return perMin
 }
 
+// ClampThreads caps a manifest's declared thread count at the per-target
+// concurrency ceiling, in place, and reports the value it replaced.
+//
+// Threads are not concurrency units. A 50-thread scan under a cap of three is
+// one run holding 50 workers, so counting threads as slots would make the run
+// wait for 47 slots that cannot exist, and not counting them lets one scan
+// exceed the operator's per-target ceiling by 47. Clamping the parameter makes
+// the run honour the intent instead: at most three workers against one host.
+func (l *Limiter) ClampThreads(m *manifest.Manifest, params map[string]string) (from, to int, clamped bool) {
+	if m == nil || m.Limits.Unit != manifest.RateThreads || params == nil {
+		return 0, 0, false
+	}
+	limit := l.policy.MaxConcurrentPerTarget
+	if limit <= 0 {
+		return 0, 0, false
+	}
+	declared, err := strconv.Atoi(strings.TrimSpace(params[m.Limits.Param]))
+	if err != nil || declared <= limit {
+		return 0, 0, false
+	}
+	params[m.Limits.Param] = strconv.Itoa(limit)
+	return declared, limit, true
+}
+
 // Acquire blocks until the target has room for one more run, and returns the
 // function that releases it. The release is idempotent, so a deferred call plus
 // an explicit one cannot double-count.

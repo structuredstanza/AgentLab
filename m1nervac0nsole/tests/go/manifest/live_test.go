@@ -24,7 +24,7 @@ func TestLiveDigAgainstLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, err := m.Resolve("localhost", params)
+	args, err := m.Resolve("localhost", params, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestLiveNmapAgainstLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, err := m.Resolve("127.0.0.1", params)
+	args, err := m.Resolve("127.0.0.1", params, "")
 	if err != nil {
 		t.Fatal(err)
 	}

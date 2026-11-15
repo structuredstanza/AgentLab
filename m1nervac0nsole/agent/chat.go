@@ -125,6 +125,9 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	ctx = intercept.WithToolAliases(ctx, def.ToolAliases)
 
 	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir), def)
+	// The gateway accepts no anonymous request, so both the Bash env and WebFetch
+	// carry this run's session credential, never the bare address.
+	proxy := runProxyURL(ctx, c.proxyAddr)
 	opts := agentcore.Options{
 		Provider:        c.prov,
 		SystemPrompt:    system,
@@ -134,7 +137,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		UnlockSet:       def.Unlock,
 		PermissionMode:  permission.ModeBypass,
 		EnableWebFetch:  true, // Go through the recording proxy to leave a trace; load the proxy CA to verify the HTTPS certificates re-signed by MITM
-		WebFetchProxy:   c.proxyAddr,
+		WebFetchProxy:   proxy,
 		WebFetchCACert:  c.proxyCACert,
 		// Web search (optional). ddgs requires no key; brave-free requires BraveKey; tavily requires TavilyKey.
 		// WebSearchProxy is a standalone egress proxy (http/https/socks5), unrelated to the MITM proxy that records traffic; if empty, connect directly.
@@ -146,7 +149,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		DeepSeekSearchAPIKey:  ws.DeepSeekAPIKey,
 		DeepSeekSearchModel:   ws.DeepSeekModel,
 		WebSearchProxy:        ws.Proxy,
-		BashEnv:               proxyEnv(c.proxyAddr, c.proxyCACert), // Bash subcommands go through the proxy and trust the CA by default
+		BashEnv:               ProxyEnv(proxy, c.proxyCACert), // Bash subcommands go through the proxy and trust the CA by default
 		WorkingDir:            sessionWorkDir,
 		MaxTurns:              maxTurns,
 		MaxDuration:           maxDuration,

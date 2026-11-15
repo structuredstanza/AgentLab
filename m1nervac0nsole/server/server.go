@@ -208,6 +208,10 @@ type Server struct {
 	archiveWG   sync.WaitGroup
 	side        *sideQuestionState
 	asks        askState
+
+	// manifestLive is the effective tool-manifest catalog (built-ins plus stored
+	// templates), reloaded after each write; see manifest_tools.go.
+	manifestLive liveManifestSet
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.
@@ -317,6 +321,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		seedPrompts(m.pg)          // Seed the built-in agent default prompt bodies into agent_prompts (only when empty)
 		// P2 cross-task orchestration tools, seeded into the tools table (bindable per agent).
 		s.seedOrchestrationTools()
+		if err := s.reloadManifests(ctx); err != nil {
+			log.Printf("[manifests] load stored templates: %v", err) // the built-ins stay live
+		}
 		if err := s.seedFindingRetester(); err != nil {
 			log.Printf("[retester] seed: %v", err)
 		}
@@ -696,6 +703,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("POST /api/auth/logout", s.authLogout)
 
 	// Scoped read-only API tokens for external agent harnesses (E4).
 	mux.HandleFunc("POST /api/tokens", s.createAPIToken)
@@ -796,6 +804,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/scope/rules", s.taskScopeRuleAdd)
 	mux.HandleFunc("DELETE /api/tasks/{id}/scope/rules/{rid}", s.taskScopeRuleDelete)
 	mux.HandleFunc("PUT /api/tasks/{id}/scope/rules/{rid}", s.taskScopeRuleUpdate)
+	// Task policy: the operator's authorization surface (network-boundary plan B).
+	// A rule is a grant only after it is approved here, and every change moves the
+	// task's policy revision so cached verdicts and pooled connections stop being
+	// trusted.
+	mux.HandleFunc("GET /api/tasks/{id}/policy", s.taskPolicy)
+	mux.HandleFunc("POST /api/tasks/{id}/policy/rules", s.taskPolicyRuleAdd)
+	mux.HandleFunc("POST /api/tasks/{id}/policy/rules/{rid}/authorize", s.taskPolicyRuleAuthorize)
+	mux.HandleFunc("POST /api/tasks/{id}/policy/rules/{rid}/revoke", s.taskPolicyRuleRevoke)
+	mux.HandleFunc("GET /api/tasks/{id}/policy/cert-exceptions", s.taskCertExceptions)
+	mux.HandleFunc("POST /api/tasks/{id}/policy/cert-exceptions", s.taskCertExceptionAdd)
+	mux.HandleFunc("DELETE /api/tasks/{id}/policy/cert-exceptions/{eid}", s.taskCertExceptionDelete)
 	mux.HandleFunc("GET /api/tasks/{id}/goals", s.listGoals)                       // Target management: list all targets for this task
 	mux.HandleFunc("POST /api/tasks/{id}/goals", s.addGoal)                        // Goal management: manually add a goal (revive task)
 	mux.HandleFunc("PATCH /api/tasks/{id}/goals/{gid}", s.editGoal)                // Goal management: modify a goal (revive task)
@@ -949,8 +968,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/python/detect", s.pgDetectPython)
 	mux.HandleFunc("POST /api/tools/{key}/reset", s.pgResetTool)
 	mux.HandleFunc("POST /api/tools/{key}/preview", s.previewToolManifest)
-	// MCP CRUD
 	mux.HandleFunc("GET /api/tool-manifests", s.listToolManifests)
+	mux.HandleFunc("POST /api/tool-manifests", s.saveToolManifest)
+	mux.HandleFunc("DELETE /api/tool-manifests/{id}", s.deleteToolManifest)
+	mux.HandleFunc("POST /api/tool-manifests/{id}/install", s.installToolManifest)
+	// MCP CRUD
 	mux.HandleFunc("GET /api/mcp", s.pgListMCP)
 	mux.HandleFunc("POST /api/mcp", s.pgSaveMCP)
 	mux.HandleFunc("DELETE /api/mcp/{id}", s.pgDeleteMCP)
@@ -1024,7 +1046,7 @@ func (s *Server) Handler() http.Handler {
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
 	// frontend (public — auth is enforced client-side and on the API). With the
 	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := cors(s.requireAuth(mux))
+	api := cors(dropAuthCookie(s.requireAuth(mux)))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	// /mcp authenticates with its own scoped API token, never the admin JWT, so it
@@ -1543,11 +1565,13 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// When the key comes from the saved profile, the request may not redirect it:
+	// When the key comes from a saved profile, the request may not redirect it:
 	// a caller-supplied base_url with no key of its own would otherwise deliver a
-	// stored provider credential to an arbitrary host. Testing a different
-	// endpoint is still possible, but only with a key supplied for it.
-	if authProfile != nil && strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(authProfile.BaseURL) != "" {
+	// stored provider credential to an arbitrary host. An empty stored base_url
+	// means the provider default endpoint, not "use whatever the form sent".
+	// Testing a different endpoint is still possible, but only with a key
+	// supplied for it.
+	if authProfile != nil && strings.TrimSpace(req.APIKey) == "" {
 		cfg.BaseURL = strings.TrimRight(strings.TrimSpace(authProfile.BaseURL), "/")
 	}
 	// An omitted streaming flag follows the profile's saved choice, as the field
@@ -1575,8 +1599,14 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		testProfileID = authProfile.ID
 	} else if cfg.NeedsAPIKey() {
 		if cfg.APIKey == "" {
+			// Same rule for the global runtime key: it is borrowed, so it goes to
+			// the endpoint stored with it (an empty stored base_url is that
+			// provider's default), never to the request's base_url.
 			s.cfgMu.Lock()
 			cfg.APIKey = s.llmCfg.APIKey
+			if cfg.APIKey != "" {
+				cfg.BaseURL = strings.TrimRight(strings.TrimSpace(s.llmCfg.BaseURL), "/")
+			}
 			s.cfgMu.Unlock()
 		}
 		if cfg.APIKey == "" {
@@ -2304,6 +2334,7 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "finding not found")
 		return
 	}
+	s.resolveFindingEvidence(f)
 	assets := s.resolveAssetIDs(f.AssetIDs)
 	dto := s.withScreenshots(findingFromDB(f, assets), f.Screenshots)
 	if contextTaskID := strings.TrimSpace(r.URL.Query().Get("context_task")); contextTaskID != "" {
@@ -2368,6 +2399,11 @@ func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	// An export is a deliberate download, not a list: carry the spilled bodies
+	// so the Markdown/JSON/zip output shows the evidence the row points at.
+	for _, f := range fs {
+		s.resolveFindingEvidence(f)
 	}
 
 	stage, err := os.MkdirTemp("", "m1nervac0nsole-finding-export-")
@@ -2574,6 +2610,7 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "finding not found")
 		return
 	}
+	s.resolveFindingEvidence(f)
 	writeJSON(w, 200, s.withScreenshots(findingFromDB(f, s.resolveAssetIDs(f.AssetIDs)), f.Screenshots))
 }
 
@@ -3341,6 +3378,7 @@ func (s *Server) getTraffic(w http.ResponseWriter, r *http.Request) {
 	size := atoiDefault(q.Get("size"), 100)
 	ex, matched, _ := tr.Page(traffic.PageQuery{
 		Host:    q.Get("host"),
+		TaskID:  int64(atoiDefault(q.Get("task_id"), 0)),
 		Method:  q.Get("method"),
 		Query:   q.Get("q"),
 		Body:    q.Get("body"),
@@ -3546,10 +3584,6 @@ func (s *Server) settingsPayload() map[string]any {
 		// Experimental feature: noa model-driven context compression (default off). When enabled, the four agent types integrated with the platform are handled by noa
 		// taking over context compression, replacing built-in compaction; read once per run, affecting runs started afterward.
 		"noa_compaction": s.m.NoaCompactionEnabled(),
-		// Browser surface: "mcp" (the Playwright server) or "native" (the
-		// built-in driver). Read at tool assembly, so a change applies to the
-		// next run.
-		"browser_driver": s.m.BrowserDriver(),
 		// Global items for vulnerability IM push. Channels are independent resources, managed via /api/notify/*;
 		// only the three items that apply to all channels are kept here.
 		"notify_enabled":             s.m.pg.GetBool(settingNotifyEnabled, true),
@@ -3623,8 +3657,6 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ConstraintsInjectWorker  *bool `json:"constraints_inject_worker"`
 		// Experimental feature: noa context compression switch (off by default); read per run, takes effect for runs started afterward, no need to rebuild the agent.
 		NoaCompaction *bool `json:"noa_compaction"`
-		// Browser surface: "mcp" or "native". Applies to the next run.
-		BrowserDriver *string `json:"browser_driver"`
 		// Global settings for vulnerability IM push. All three are read once per round by the delivery engine, so changes take effect immediately.
 		// No need to rebuild the agent or restart.
 		NotifyEnabled    *bool   `json:"notify_enabled"`
@@ -3644,12 +3676,6 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if req.ConstraintsInjectWorker != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectWorker, *req.ConstraintsInjectWorker); err != nil {
 			writeErr(w, 500, err.Error())
-			return
-		}
-	}
-	if req.BrowserDriver != nil {
-		if err := s.m.SetBrowserDriver(*req.BrowserDriver); err != nil {
-			writeErr(w, 400, err.Error())
 			return
 		}
 	}
@@ -3948,6 +3974,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := context.WithCancelCause(s.ctx)
+	// The main agent is a task-bound chat: it runs as testing under this task, so
+	// a process it starts belongs to the task's boundary.
+	ctx = taskSessionContext(ctx, s.m, t.ID)
 	ctx = intercept.WithReviewContext(ctx, "", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: req.Message})
 	s.chatBusy[t.ID] = true
 	s.chatCancel[t.ID] = cancel
@@ -4109,6 +4138,8 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	findings, _ := t.Store.ListByKind(db.KindFinding, 1000) // Pure vulnerability (the fact is an independent KindFact and does not go into the report)
+	tid, _ := strconv.ParseInt(t.ID, 10, 64)
+	s.resolveReportEvidence(tid, findings)
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
 		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
@@ -4172,6 +4203,25 @@ func corsWith(allowed map[string]bool, next http.Handler) http.Handler {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(204)
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// authCookieName is the cookie the Next.js route guard (web/src/proxy.ts) checks.
+// The UI stores a non-secret marker in it, so the name survives for the guard
+// only: no API handler reads it and the JWT never travels in it.
+const authCookieName = "m1nervac0nsole_token"
+
+// dropAuthCookie strips cookies from /api requests before authentication runs,
+// except on the read-only SSE GETs that authenticate with the HttpOnly stream
+// cookie (see streamCookieName in auth.go). Everything else must carry the JWT
+// explicitly — bearer header, or ?token= for non-browser SSE clients — so a
+// stale or planted cookie can never authenticate a mutation for CSRF to reach.
+func dropAuthCookie(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !sseCookieAllowed(r) {
+			r.Header.Del("Cookie")
 		}
 		next.ServeHTTP(w, r)
 	})

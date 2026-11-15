@@ -10,7 +10,7 @@ function captureHarness(bodies) {
   const sent = [];
   const chrome = {
     storage: {
-      local: { get: async () => ({ serverUrl: "http://fixture.invalid///", token: "fixture-token" }) },
+      local: { get: async () => ({ serverUrl: "http://fixture.invalid///", token: "fixture-token" }), set: async () => {} },
       session: { set: async () => {} },
     },
     tabs: { query: async () => [{ id: 7 }] },
@@ -31,6 +31,10 @@ function captureHarness(bodies) {
   };
   const context = {
     chrome,
+    // the worker loads its queue helpers with importScripts; run them in the same context
+    importScripts(file) {
+      vm.runInContext(readFileSync(new URL(`../m1nervac0nsole/extension/${file}`, import.meta.url), "utf8"), context);
+    },
     async fetch(url, options) {
       const payload = JSON.parse(options.body);
       sent.push({ url, method: options.method, headers: { ...options.headers }, payload });

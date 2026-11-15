@@ -1,3 +1,4 @@
+# Rendered by ./lab: each ROOT placeholder becomes the checkout's absolute path.
 [Unit]
 Description=AgentLab native provider proxy (CLIProxyAPI host)
 After=network-online.target
@@ -5,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/mnt/Research/AgentLab/dist
-ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/mnt/Research/AgentLab/proxy-state/home LANG=C.UTF-8 /usr/bin/strace -ff -ttt -T -yy -s256 -A -e trace=process,file,network -o /mnt/Research/AgentLab/proxy-state/network/proxy /mnt/Research/AgentLab/dist/provider-proxy -listen 127.0.0.1:8788 -data /mnt/Research/AgentLab/proxy-state -token-file /mnt/Research/AgentLab/secrets/native-proxy-token
+WorkingDirectory=@ROOT@/dist
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME="@ROOT@/proxy-state/home" LANG=C.UTF-8 /usr/bin/strace -ff -ttt -T -yy -s256 -A -e trace=process,file,network -o "@ROOT@/proxy-state/network/proxy" "@ROOT@/dist/provider-proxy" -listen 127.0.0.1:8788 -data "@ROOT@/proxy-state" -token-file "@ROOT@/secrets/native-proxy-token"
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

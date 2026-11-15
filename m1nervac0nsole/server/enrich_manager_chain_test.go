@@ -16,6 +16,7 @@ import (
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/enrich"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/traffic"
 )
 
@@ -75,7 +76,7 @@ func TestManagerEnrichmentWithCaptureOnAndTLSOrigins(t *testing.T) {
 	}
 	raddr := ln.Addr().String()
 	_ = ln.Close()
-	tr, err := traffic.Open(t.TempDir(), raddr)
+	tr, err := traffic.OpenWithTransport(t.TempDir(), raddr, nil)
 	if err != nil {
 		t.Fatalf("open traffic store: %v", err)
 	}
@@ -85,7 +86,13 @@ func TestManagerEnrichmentWithCaptureOnAndTLSOrigins(t *testing.T) {
 		pg: pg, assets: as, traffic: tr, trafficOn: true,
 		enrichMask: "http://" + mask.Addr(), enrichMaskCA: filepath.Join(edir, "ca.pem"),
 	}
-	engine := enrich.New(as, enrich.Options{Workers: 1, Proxy: m.enrichMask, CAFile: m.enrichMaskCA, Observe: m.observeEnrichment})
+	// Enrichment asks the network policy before it dials: authorize the fixture origins.
+	for _, pattern := range []string{"localhost", "127.0.0.1"} {
+		if _, err := pg.AddPolicyRule(t.Context(), task.ID, netpolicy.Rule{Effect: "include", Pattern: pattern, Authorized: true}, "operator"); err != nil {
+			t.Fatalf("authorize %s: %v", pattern, err)
+		}
+	}
+	engine := enrich.New(as, enrich.Options{Workers: 1, Proxy: m.enrichMask, CAFile: m.enrichMaskCA, Observe: m.observeEnrichment, Authorizer: netpolicy.NewAuthorizer(pg)})
 	defer engine.Close()
 
 	var mu sync.Mutex
@@ -153,10 +160,12 @@ func TestManagerEnrichmentWithCaptureOnAndTLSOrigins(t *testing.T) {
 		}
 	})
 
-	t.Run("an over-cap body is probed but not stored as evidence", func(t *testing.T) {
+	t.Run("an over-cap body is stored as a partial exchange", func(t *testing.T) {
+		// Over the 256 KiB observation cap, under the probe's 1 MiB read cap, so
+		// the full length is exact.
+		bigBody := "<title>Big Page</title>" + strings.Repeat("x", 400<<10)
 		big := origin(func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, "<title>Big Page</title>")
-			io.WriteString(w, strings.Repeat("x", 2<<20))
+			io.WriteString(w, bigBody)
 		})
 		defer big.Close()
 		defer as.DeleteByHost("127.0.0.1")
@@ -165,8 +174,26 @@ func TestManagerEnrichmentWithCaptureOnAndTLSOrigins(t *testing.T) {
 		if title != "Big Page" || status == nil {
 			t.Fatalf("big page not enriched: title=%q status=%v", title, status)
 		}
-		if got := count() - before; got != 0 {
-			t.Fatalf("a partial body was stored in the traffic store (%d new exchanges)", got)
+		if got := count() - before; got != 1 {
+			t.Fatalf("an over-cap probe must leave one exchange, got %d", got)
+		}
+		rows, _, err := tr.Page(traffic.PageQuery{RespMin: -1, RespMax: -1}, 0, 1)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("load the recorded exchange: %d rows, err=%v", len(rows), err)
+		}
+		if rows[0].RespLen != len(bigBody) {
+			t.Fatalf("resp_len = %d, want the declared %d", rows[0].RespLen, len(bigBody))
+		}
+		_, resp, err := tr.Get(rows[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(resp, "body not captured in full: partial") {
+			t.Fatalf("the partial marker is missing: %q", resp)
+		}
+		_, body, ok := strings.Cut(resp, "\n\n")
+		if !ok || len(body) != 256<<10 {
+			t.Fatalf("stored body = %d bytes, want the 256 KiB prefix", len(body))
 		}
 	})
 

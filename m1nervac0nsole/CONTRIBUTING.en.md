@@ -71,12 +71,13 @@ docker run --rm -v "$PWD":/src -w /src \
 #### DB integration tests (postgres required)
 
 The `go test ./agent/` above **quietly skips the DB integration tests** that only run when
-connected to PostgreSQL. Six packages — `agent`, `config`, `db`, `evidence`, `llmrec`,
-`server` — contain tests that require a real database; if there is no `M1NERVAC0NSOLE_PG_DSN`
-environment variable and no `database` entry in the config file, those tests are skipped with
-`--- SKIP` and the package still ends in `ok`. As a result, if you fix one of these six
-packages and verify without a DSN, **it can pass locally (ok) while the PR's `go-db` job
-fails.**
+connected to PostgreSQL. Nine packages — `agent`, `config`, `db`, `enrich`, `evidence`, `guard`,
+`intercept`, `llmrec`, `server` (the `go-db` matrix in
+[`../.github/workflows/ci.yml`](../.github/workflows/ci.yml)) — contain tests that require a real
+database; if there is no `M1NERVAC0NSOLE_PG_DSN` environment variable and no `database` entry in
+the config file, those tests are skipped with `--- SKIP` and the package still ends in `ok`. As a
+result, if you fix one of these nine packages and verify without a DSN, **it can pass locally
+(ok) while the PR's `go-db` job fails.**
 
 To run these tests locally, bring up PostgreSQL and pass `M1NERVAC0NSOLE_PG_DSN`. The example below
 launches the same `postgres:16-alpine` as CI on an isolated network, reusing the named volumes
@@ -91,7 +92,7 @@ docker run -d --name m1nervac0nsole-pg --network m1nervac0nsole-db \
 until docker exec m1nervac0nsole-pg pg_isready -U m1nervac0nsole -d m1nervac0nsole >/dev/null 2>&1; do sleep 1; done
 
 # 2) Pass the DSN to run the DB integration packages (the DSN host is the container name).
-#    To run only the package you fixed, replace ./agent/ with config, db, evidence, llmrec, or server.
+#    To run only the package you fixed, replace ./agent/ with that package.
 docker run --rm --network m1nervac0nsole-db -v "$PWD":/src -w /src \
   -v m1nervac0nsole-gomod:/go/pkg/mod -v m1nervac0nsole-gocache:/root/.cache/go-build \
   -e M1NERVAC0NSOLE_PG_DSN='postgres://m1nervac0nsole:m1nervac0nsole@m1nervac0nsole-pg:5432/m1nervac0nsole?sslmode=disable' \
@@ -101,7 +102,7 @@ docker run --rm --network m1nervac0nsole-db -v "$PWD":/src -w /src \
 docker rm -f m1nervac0nsole-pg && docker network rm m1nervac0nsole-db
 ```
 
-CI's `go-db` job **isolates each of these six packages with its own postgres** and forces them
+CI's `go-db` job **isolates each of these nine packages with its own postgres** and forces them
 to run before merge ([`../.github/workflows/ci.yml`](../.github/workflows/ci.yml)). If you changed a DB integration package, we
 recommend verifying that package directly with the method above before you open the PR.
 
@@ -112,8 +113,9 @@ cd web
 npm ci
 npm run dev          # dev server
 npm run build        # production build
+npm run test -- --run # unit tests (merge gate; vitest)
 npm run build:static # static-export build (merge gate; includes TypeScript type checking)
-npm run check        # Biome lint/format check (informational; not a merge gate yet, due to pre-existing debt)
+npm run check        # Biome lint/format/a11y check (merge gate; must report zero errors)
 npm run check:fix    # auto-fix
 ```
 
@@ -147,20 +149,18 @@ docker compose up -d     # start m1nervac0nsole + postgres → http://localhost:
 2. **Fork** the repository and create a topic branch. Prefix the branch name with the nature of
    the change, as in `feat/...`, `fix/...`, `docs/...`, `i18n/...`.
 3. Write the change and **run the relevant verification yourself.** For a Go change, make the
-   `build`/`vet`/`test` above pass. For a web change, make `npm run build:static` pass (it also
-   performs the merge gate and the TypeScript type checking). `npm run check` (Biome) still has
-   pre-existing lint debt inherited from upstream and is not a merge gate yet — `web.yml` runs it
-   only as an informational step — so you do not need to make all of it pass. Instead, just
-   confirm that **your change does not add new errors** (when you commit, `lint-staged`
-   automatically applies `biome check --write` to the files you staged). If you changed
-   documentation (`.md`), run `python3 -I scripts/check-doc-links.py` to confirm that in-repo
-   link/image references and document anchor (`#heading`) links are not broken. Anchors are built
-   from headings into slugs with the same rule as GitHub and matched, so if you change a heading's
-   text without also fixing the anchor links that pointed to it, it is caught here (CI's `docs`
-   workflow enforces the same check as a merge gate). This check is also wired as the `docs` hook in
-   the module root's [`.pre-commit-config.yaml`](.pre-commit-config.yaml), so if you run
-   `pre-commit install` it runs automatically on every commit (it uses only the Python standard
-   library and no network, so it finishes without Docker).
+   `build`/`vet`/`test` above pass. For a web change, make `npm run test -- --run`,
+   `npm run build:static` (which also type-checks) and `npm run check` (Biome) pass: `web.yml`
+   runs all three as merge gates, and Biome must report no errors (when you commit,
+   `lint-staged` automatically applies `biome check --write` to the files you staged). If you
+   changed documentation (`.md`), run `python3 -I scripts/check-doc-links.py` to confirm that
+   in-repo link/image references and document anchor (`#heading`) links are not broken. Anchors
+   are built from headings into slugs with the same rule as GitHub and matched, so if you change a
+   heading's text without also fixing the anchor links that pointed to it, it is caught here (CI's
+   `docs` workflow enforces the same check as a merge gate). This check is also wired as the
+   `docs` hook in the module root's [`.pre-commit-config.yaml`](.pre-commit-config.yaml), so if
+   you run `pre-commit install` it runs automatically on every commit (it uses only the Python
+   standard library and no network, so it finishes without Docker).
 4. **Open a PR.** Follow the [PR template](../.github/PULL_REQUEST_TEMPLATE.md) for the title and
    description, and write what you changed, why, and how you verified it. If you changed the UI,
    attach screenshots.

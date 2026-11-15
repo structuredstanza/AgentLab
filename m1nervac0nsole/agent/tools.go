@@ -14,9 +14,31 @@ import (
 	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	acperm "github.com/structuredstanza/norma/permission"
 	actool "github.com/structuredstanza/norma/tool"
 )
+
+// NetPolicyAuthorizer decides whether a backend-side dial may reach a
+// destination. It is the same authorizer the gateway asks, assigned once at
+// startup (server/assembly.go); nil refuses every dial, because a destination no
+// policy answered for is not authorized.
+var NetPolicyAuthorizer netpolicy.Authorizer
+
+// authorizeDial asks the network policy whether this task may reach one
+// destination. The session is backend-internal: it carries the task, so the
+// authorizer judges the task's own authorized rules, and no revision, so a
+// policy change is observed on the next call.
+func authorizeDial(ctx context.Context, taskID int64, d netpolicy.Destination) netpolicy.Decision {
+	if taskID <= 0 {
+		return netpolicy.Decision{Stage: netpolicy.StagePolicy, Reason: "no task context to check the destination against"}
+	}
+	if NetPolicyAuthorizer == nil {
+		return netpolicy.Decision{Stage: netpolicy.StagePolicy, Reason: "no network-policy authorizer is configured"}
+	}
+	s := netpolicy.Session{ID: "dial:" + strconv.FormatInt(taskID, 10), TaskID: taskID, Purpose: netpolicy.PurposeTesting}
+	return NetPolicyAuthorizer.Authorize(ctx, s, d)
+}
 
 // normalizeDirection fingerprints summaries while ignoring case, whitespace, and changing digits.
 func normalizeDirection(summary string) string {
@@ -2347,6 +2369,10 @@ const (
 // unreachable in graph_overview until a later successful probe clears it, which
 // is how the planner stops re-dispatching checks against a host already known
 // to be dark.
+//
+// A direct dial is contact, so the task's network policy authorizes the
+// destination first: a task with no authorized rule covering the host and port
+// is refused instead of probed.
 func (t *ToolSet) tcpProbe() actool.CoreTool {
 	return writeTool("tcp_probe",
 		"Check whether a TCP port on a host actually accepts a connection, by dialling it directly (no HTTP proxy). Use this instead of a proxied curl/nc for availability: a proxy answers CONNECT before it dials the target, so through it a dead host still looks open. Reports connected / refused / timed-out / dns-failure, and records the result as target liveness (a failure marks the host unreachable in graph_overview until a later successful probe clears it). A successful probe also records the port with provenance=probe on the host's IP asset.",
@@ -2374,6 +2400,12 @@ func (t *ToolSet) tcpProbe() actool.CoreTool {
 			timeout := tcpProbeTimeout
 			if a.Timeout > 0 {
 				timeout = min(time.Duration(a.Timeout)*time.Second, tcpProbeMaxTimeout)
+			}
+			// A direct dial is contact with the target, so the task's network
+			// policy decides it before the socket is opened: an unauthorized (or
+			// unknown) destination is not probed, and its liveness is not written.
+			if dec := authorizeDial(ctx, t.taskID, netpolicy.Destination{Host: host, Port: a.Port, Protocol: "tcp"}); !dec.Allow {
+				return actool.Errorf("tcp_probe refused: " + dec.Reason), nil
 			}
 			started := time.Now()
 			conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(a.Port)))

@@ -11,7 +11,7 @@ api_token = { type = "string", label = "WPScan API token", description = "Option
 
 [command]
 program = "wpscan"
-args = ["--url", "{{ target.value }}", "--format", "json", "--no-banner", "--no-update", "-e", "{{ params.enumerate }}", "{{ params.api_token | --api-token }}", "--user-agent", "{{ useragent }}", "--proxy", "{{ proxy }}"]
+args = ["--url", "{{ target.value }}", "--format", "json", "--no-banner", "--no-update", "-e", "{{ params.enumerate }}", "{{ params.api_token | --api-token }}", "--user-agent", "{{ useragent }}", "{{ proxy | --proxy }}"]
 timeout_seconds = 1800
 
 [emit]

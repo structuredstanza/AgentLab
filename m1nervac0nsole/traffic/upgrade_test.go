@@ -68,7 +68,7 @@ VALUES(?,'GET /x','','HTTP 200','legacy body')`, row[0]); err != nil {
 	}
 
 	// ---- New version takeover
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatalf("the new version cannot open the old database: %v", err)
 	}
@@ -136,7 +136,7 @@ VALUES(?,'GET /x','','HTTP 200','legacy body')`, row[0]); err != nil {
 // the old binary simply goes back to never returning them.
 func TestDowngradeToOldBinary(t *testing.T) {
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

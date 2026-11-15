@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatCommand } from "@/app/(main)/system/toolbox/page";
+import { formatCommand } from "@/app/(main)/system/toolbox/_components/template-sheet";
 
 describe("formatCommand", () => {
   it("leaves ordinary arguments bare", () => {

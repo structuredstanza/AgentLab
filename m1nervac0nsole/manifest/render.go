@@ -2,13 +2,16 @@ package manifest
 
 import (
 	"fmt"
-	"github.com/structuredstanza/AgentLab/m1nervac0nsole/useragent"
-	"os"
 	"strconv"
 	"strings"
+
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/useragent"
 )
 
-// Resolve renders a manifest's command into a concrete argv.
+// Resolve renders a manifest's command into a concrete argv. proxy is the
+// gateway URL the run's tool environment carries, credential included; it is
+// what `{{ proxy }}` and `{{ proxyhost }}` render, and empty renders nothing
+// rather than an invented address.
 //
 // The template language is intentionally tiny: `{{ target.value }}`,
 // `{{ params.name }}`, and the two argument forms `{{ params.name | -flag }}`
@@ -23,14 +26,15 @@ import (
 // is the behaviour an operator expects and the behaviour a shell would break.
 // For the same reason a flag and its value are separate arguments: one
 // "-sV true" element is a single unknown option to the tool, not a flag.
-func (m *Manifest) Resolve(targetValue string, values map[string]string) ([]string, error) {
+func (m *Manifest) Resolve(targetValue string, values map[string]string, proxy string) ([]string, error) {
 	bools := make(map[string]bool)
 	for name, p := range m.Params {
 		bools[name] = p.Type == ParamBool
 	}
+	proxy = strings.TrimSpace(proxy)
 	args := make([]string, 0, len(m.Command.Args))
 	for _, tmpl := range m.Command.Args {
-		rendered, err := renderArg(tmpl, targetValue, values, bools)
+		rendered, err := renderArg(tmpl, targetValue, values, bools, proxy)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", m.ID, err)
 		}
@@ -86,7 +90,7 @@ func contains(list []string, want string) bool {
 //     substituted in place, and if any resolves empty the whole element is
 //     dropped — `-{{ x }}` with an empty x must not become a bare "-", which
 //     several tools read as a real flag.
-func renderArg(tmpl, targetValue string, values map[string]string, bools map[string]bool) ([]string, error) {
+func renderArg(tmpl, targetValue string, values map[string]string, bools map[string]bool, proxy string) ([]string, error) {
 	if !strings.Contains(tmpl, "{{") {
 		return []string{tmpl}, nil
 	}
@@ -99,7 +103,7 @@ func renderArg(tmpl, targetValue string, values map[string]string, bools map[str
 		// `name?` renders the value alone and vanishes when empty.
 		if strings.HasSuffix(inner, "?") {
 			expr := strings.TrimSpace(strings.TrimSuffix(inner, "?"))
-			v, err := lookup(expr, targetValue, values)
+			v, err := lookup(expr, targetValue, values, proxy)
 			return []string{v}, err
 		}
 
@@ -107,7 +111,7 @@ func renderArg(tmpl, targetValue string, values map[string]string, bools map[str
 		if idx := strings.Index(inner, "|"); idx >= 0 {
 			expr := strings.TrimSpace(inner[:idx])
 			flag := strings.TrimSpace(inner[idx+1:])
-			v, err := lookup(expr, targetValue, values)
+			v, err := lookup(expr, targetValue, values, proxy)
 			if err != nil {
 				return nil, err
 			}
@@ -130,7 +134,7 @@ func renderArg(tmpl, targetValue string, values map[string]string, bools map[str
 			return []string{flag, v}, nil
 		}
 
-		v, err := lookup(inner, targetValue, values)
+		v, err := lookup(inner, targetValue, values, proxy)
 		return []string{v}, err
 	}
 
@@ -150,7 +154,7 @@ func renderArg(tmpl, targetValue string, values map[string]string, bools map[str
 		end += start
 		b.WriteString(rest[:start])
 		expr := strings.TrimSpace(rest[start+2 : end])
-		v, err := lookup(expr, targetValue, values)
+		v, err := lookup(expr, targetValue, values, proxy)
 		if err != nil {
 			return nil, err
 		}
@@ -163,8 +167,9 @@ func renderArg(tmpl, targetValue string, values map[string]string, bools map[str
 	return []string{b.String()}, nil
 }
 
-// lookup resolves `target.value` or `params.name`.
-func lookup(expr, targetValue string, values map[string]string) (string, error) {
+// lookup resolves `target.value`, `proxy`, `proxyhost`, `useragent` or
+// `params.name`.
+func lookup(expr, targetValue string, values map[string]string, proxy string) (string, error) {
 	switch expr {
 	case "target.value":
 		return targetValue, nil
@@ -172,17 +177,15 @@ func lookup(expr, targetValue string, values map[string]string) (string, error) 
 		// The engagement's outbound proxy. A tool that ignores the proxy
 		// environment variables still needs it passed as a flag, or its traffic
 		// leaves with the tool's own TLS fingerprint.
-		if v := strings.TrimSpace(os.Getenv("M1NERVAC0NSOLE_EGRESS_PROXY")); v != "" {
-			return v, nil
-		}
-		return "http://127.0.0.1:8888", nil
+		return proxy, nil
 	case "proxyhost":
 		// Same proxy without the scheme, for tools that take host[:port] only.
-		v := strings.TrimSpace(os.Getenv("M1NERVAC0NSOLE_EGRESS_PROXY"))
-		if v == "" {
-			v = "http://127.0.0.1:8888"
+		// Any scheme is stripped, not just http(s): a socks5 exit is configured
+		// with one too, and leaving it in would hand the tool a URL as a host.
+		if _, rest, ok := strings.Cut(proxy, "://"); ok {
+			return rest, nil
 		}
-		return strings.TrimPrefix(strings.TrimPrefix(v, "http://"), "https://"), nil
+		return proxy, nil
 	case "useragent":
 		// The engagement's outbound identity. A tool with its own User-Agent flag
 		// is given the same string the proxy would have set, so a run that
@@ -202,3 +205,8 @@ func lookup(expr, targetValue string, values map[string]string) (string, error) 
 	}
 	return "", fmt.Errorf("unknown placeholder %q (expected target.value, useragent, proxy, or params.<name>)", expr)
 }
+
+// gatewayProxy is gone: the address a manifest tool is given is the run's own
+// proxy URL, passed to Resolve. A process-wide one cannot carry the per-session
+// credential the gateway requires, and a manifest run with no session renders no
+// proxy rather than a bare address the gateway would refuse.

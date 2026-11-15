@@ -10,7 +10,9 @@ import (
 )
 
 // maxObservedBody caps the response body handed to Options.Observe, matching the
-// browser-ingest cap, so one probe cannot bloat the traffic store.
+// browser-ingest cap, so one probe cannot bloat the traffic store. Bytes past the
+// cap are not offered, but the observation still reports the response's full
+// length, so the prefix is never mistaken for the whole body.
 const maxObservedBody = 256 << 10
 
 // Observation is one request/response exchange between the engine's client and
@@ -30,11 +32,15 @@ type Observation struct {
 	ResponseHeaders map[string]string
 	// Complete is true only when the whole response body was read, matched any
 	// declared length, and fit within maxObservedBody. ResponseBody is then the
-	// exact body. When Complete is false (and Failed is false) ResponseBody is
-	// empty: a prefix is never offered as if it were the response, because a
-	// consumer (evidence binding) would take its length for the real size.
-	Complete     bool
-	ResponseBody string
+	// exact body. When Complete is false (and Failed is false) ResponseBody is the
+	// first maxObservedBody bytes that were read, and DeclaredLength is the
+	// response's full length, or -1 when the response never stated one and the
+	// read did not reach the end: a consumer must take the size from
+	// DeclaredLength, never from len(ResponseBody), so a stored prefix cannot pass
+	// for the whole response.
+	Complete       bool
+	DeclaredLength int64
+	ResponseBody   string
 }
 
 // observingTransport reports every round trip made through base. Redirect hops
@@ -67,7 +73,7 @@ func (t *observingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	resp.Body = &observedBody{
 		ReadCloser: resp.Body,
 		declared:   declared,
-		fire: func(complete bool, body string) {
+		fire: func(complete bool, full int64, body string) {
 			o := Observation{
 				Method:          req.Method,
 				URL:             req.URL.String(),
@@ -77,8 +83,10 @@ func (t *observingTransport) RoundTrip(req *http.Request) (*http.Response, error
 				RequestHeaders:  flattenHeader(req.Header),
 				ResponseHeaders: flattenHeader(resp.Header),
 				Complete:        complete,
+				DeclaredLength:  full,
 			}
-			if complete && !proxyFailure {
+			// The proxy's own error page is never offered as the target's body.
+			if !proxyFailure {
 				o.ResponseBody = body
 			}
 			t.observe(o)
@@ -92,7 +100,7 @@ func (t *observingTransport) RoundTrip(req *http.Request) (*http.Response, error
 type observedBody struct {
 	io.ReadCloser
 	declared int64 // resp.ContentLength; <0 = unknown
-	fire     func(complete bool, body string)
+	fire     func(complete bool, declared int64, body string)
 	once     sync.Once
 	buf      []byte
 	total    int64
@@ -125,9 +133,24 @@ func (b *observedBody) Close() error {
 	b.once.Do(func() {
 		complete := b.eof && !b.readErr && b.total <= maxObservedBody &&
 			(b.declared < 0 || b.total == b.declared)
-		b.fire(complete, string(b.buf))
+		b.fire(complete, b.fullLength(), string(b.buf))
 	})
 	return err
+}
+
+// fullLength is the response's full body length: what the response declared when
+// that covers everything read, else what was measured once the read reached the
+// end, else -1. A body over the cap or cut short still reports its real size, so
+// the stored prefix is never taken for the whole response.
+func (b *observedBody) fullLength() int64 {
+	switch {
+	case b.declared >= b.total:
+		return b.declared
+	case b.eof:
+		return b.total
+	default:
+		return -1
+	}
 }
 
 func flattenHeader(h http.Header) map[string]string {

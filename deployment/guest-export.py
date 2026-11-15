@@ -1,5 +1,8 @@
 #!/usr/bin/python3
-"""Stream task/capture files as tar; snapshot live SQLite in the writer's kernel."""
+"""Stream task/capture files and the egress and PostgreSQL logs as tar.
+
+Live SQLite is snapshotted in the writer's kernel.
+"""
 import io
 import json
 import os
@@ -11,14 +14,28 @@ import tarfile
 import tempfile
 import time
 
+STATE = Path('/state')
+ROOTS = [(STATE / 'm1nervac0nsole', 'application'),
+         (STATE / 'captures', 'captures')]
+# Only these two logs are exported from the runtime tree. The egress CA directory
+# beside them holds the CA private key, so /state/runtime is never copied whole.
+EXTRA_FILES = [(STATE / 'runtime/logs/egress.log', 'logs/egress.log'),
+               (STATE / 'runtime/logs/postgres/postgres.log', 'logs/postgres.log')]
+
+
+def add_stream(archive, stream, arcname):
+    """Add an already-open regular file with a private mode."""
+    info = archive.gettarinfo(fileobj=stream, arcname=arcname)
+    info.mode = 0o600
+    archive.addfile(info, stream)
+
 
 def main():
     skipped = []
     started = time.time_ns()
     with tempfile.TemporaryDirectory(prefix='agentlab-export-') as tmp:
         with tarfile.open(fileobj=sys.stdout.buffer, mode='w|', dereference=False) as archive:
-            for root, prefix in [(Path('/state/m1nervac0nsole'), 'application'),
-                                 (Path('/state/captures'), 'captures')]:
+            for root, prefix in ROOTS:
                 for directory, dirs, files in os.walk(root, followlinks=False):
                     for name in list(dirs):
                         path = Path(directory) / name
@@ -51,9 +68,20 @@ def main():
                                 archive.add(backup, arcname=arcname, recursive=False)
                                 backup.unlink()
                             else:
-                                info = archive.gettarinfo(fileobj=stream, arcname=arcname)
-                                info.mode = 0o600
-                                archive.addfile(info, stream)
+                                add_stream(archive, stream, arcname)
+            for path, arcname in EXTRA_FILES:
+                if path.is_symlink():
+                    skipped.append({'path': str(path), 'reason': 'symlink'})
+                    continue
+                if not path.exists():
+                    skipped.append({'path': str(path), 'reason': 'missing'})
+                    continue
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, 'rb') as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        skipped.append({'path': str(path), 'reason': 'non-regular file'})
+                        continue
+                    add_stream(archive, stream, arcname)
             body = json.dumps({'started_at_ns': started, 'finished_at_ns': time.time_ns(),
                                'skipped': skipped, 'sqlite': 'online backup inside guest',
                                'filesystem': 'online copy, not an atomic machine checkpoint'}).encode()

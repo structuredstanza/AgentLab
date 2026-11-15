@@ -187,7 +187,6 @@
       "tasks": "Tasks",
       "tokens": "API tokens",
       "toolbox": "Toolbox",
-      "tools": "Tools",
       "traffic": "Traffic",
       "workspace": "Workspace",
       "memory": "Memory"
@@ -349,17 +348,20 @@
       }
     },
     "plan": {
-      "title": "Plan drafting",
-      "taskPrefix": "Task {id}.",
-      "proposesOnly": "The drafter proposes goals, seed intents, hints and scope rules. Nothing reaches the task until you apply it.",
-      "empty": "No plan drafted yet. Describe the engagement and ask for a plan.",
+      "chat": {
+        "title": "Plan drafting",
+        "taskPrefix": "Task {id}.",
+        "proposesOnly": "The drafter proposes goals, seed intents, hints and scope rules. Nothing reaches the task until you apply it.",
+        "empty": "No plan drafted yet. Describe the engagement and ask for a plan.",
+        "placeholder": "Describe the engagement plan you want drafted...",
+        "send": "Send",
+        "stop": "Stop",
+        "sendFailed": "Could not send: {msg}",
+        "stopFailed": "Could not stop: {msg}",
+        "loadEarlier": "Load earlier messages"
+      },
       "scopeEntry": "Draft scope rules",
       "scopeStarter": "Here is our program policy; propose the scope rules for this task:",
-      "placeholder": "Describe the engagement plan you want drafted...",
-      "send": "Send",
-      "stop": "Stop",
-      "sendFailed": "Could not send: {msg}",
-      "stopFailed": "Could not stop: {msg}",
       "loading": "Loading drafts...",
       "noDraft": "No draft yet. The drafter's proposal appears here for review.",
       "preview": {
@@ -711,6 +713,19 @@
         "notePlaceholder": "why (optional)",
         "save": "Save",
         "cancel": "Cancel",
+        "approve": "Approve",
+        "revoke": "Revoke",
+        "authorizeFailed": "Could not change this rule's authorization",
+        "state": {
+          "authorized": "authorized",
+          "pending": "not yet authorizing",
+          "restriction": "restriction"
+        },
+        "stateHint": {
+          "authorized": "Approved: the gateway lets this task reach the pattern.",
+          "pending": "Not yet authorizing: the gateway still refuses this pattern until you approve it.",
+          "restriction": "A restriction binds without approval; it is never a grant."
+        },
         "empty": "No test scope. Once added, it can serve as the denominator for asset coverage."
       },
       "heartbeat": {
@@ -1761,7 +1776,8 @@
       "toolCount": "{count} tools",
       "adjust": "Adjust scope",
       "dialogTitle": "Interception scope",
-      "dialogDesc": "Only tools with interception enabled go through rule matching; other tools pass straight through"
+      "dialogDesc": "Only tools with interception enabled go through rule matching; other tools pass straight through",
+      "loadFailed": "Could not load the interception scope: {error}. Saving is disabled until it loads, so a failed load cannot clear the configured scope."
     },
     "tab": {
       "rules": "Interception rules",
@@ -2036,6 +2052,7 @@
     "errorCount": "{count} errors",
     "loading": "Loading…",
     "loadOlder": "Load older logs",
+    "loadOlderFailed": "Could not load older logs",
     "empty": "No logs."
   },
   "mcpPage": {
@@ -2109,38 +2126,54 @@
   },
   "toolboxPage": {
     "title": "Toolbox",
-    "subtitle": "The command-line tools the agents can dispatch, with the exact argv each one runs. Preview only: agents run them, and the scope guard and rate gate apply then.",
+    "subtitle": "Command templates, custom tools and agent tool bindings in one place. Templates are previewed here; agents run them, and the scope guard and rate gate apply then.",
     "search": "Search tools",
+    "tabCatalog": "Catalog",
+    "tabAgentTools": "Agent tools",
+    "tabCurator": "Curator",
+    "newTemplate": "New template",
+    "newCustom": "New custom tool",
     "loading": "Loading...",
+    "loadFailed": "Could not load the toolbox: {msg}",
+    "retry": "Retry",
+    "catalogMatched": "{shown} / {total} matched; click a card to preview, edit or install",
+    "catalogTotal": "{total} total; click a card to preview, edit or install",
+    "catalogEmpty": "Nothing in the catalog yet. Create a template or a custom tool.",
     "empty": "No tool matches",
-    "selectTool": "Select a tool to preview its command.",
+    "sourceBuiltin": "Built-in",
+    "sourceModified": "Modified",
+    "sourceCustom": "Custom template",
     "notInstalled": "not installed",
     "accepts": "accepts: {kinds}",
     "target": "Target",
     "targetPlaceholder": "host, IP, CIDR or URL",
     "default": "default {value}",
     "preview": "Command preview",
-    "previewHint": "Enter a target to see the command."
-  },
-  "toolsPage": {
-    "title": "Tools",
-    "subtitle": "System tool descriptions and bindings, plus custom tools (command/script/http)",
-    "searchPlaceholder": "Search tool name, description, agent…",
-    "tabSystem": "System tools",
-    "tabCustom": "Custom tools",
+    "previewHint": "Enter a target to see the command.",
+    "templateSheetDesc": "Preview the command for a target, or edit the TOML. Saving applies to new runs immediately.",
+    "tomlLabel": "Template (TOML)",
+    "templateSaved": "Saved template \"{id}\"",
+    "templateDeleted": "Template deleted",
+    "templateReset": "Restored \"{id}\" to the built-in template",
+    "resetBuiltin": "Reset to built-in",
+    "install": "Install",
+    "installOutput": "Install output",
+    "installVerified": "verified",
+    "installUnverified": "not verified",
+    "installFailed": "install failed",
+    "installNotOnPath": "The script finished, but the binary is not on PATH: nothing was staged under $PREFIX/bin, so there was nothing to publish. Make the install script write the binary there and install again.",
+    "provenanceLabel": "Verification provenance",
+    "provenanceNone": "(the curator records what it verified when it proposes a template)",
+    "artifactLabel": "Published artifact",
     "systemMatched": "{shown} / {total} matched; click a card to edit the description, parameter defaults, and agent bindings",
     "systemTotal": "{total} total; click a card to edit the description, parameter defaults, and agent bindings",
     "systemNoMatch": "No matching system tools",
     "systemEmpty": "(no system tools yet; waiting for the backend seed)",
-    "customMatched": "shell/command/script/http, {shown} / {total} matched; click a card to edit",
-    "customTotal": "shell (bash declaration) / command / script (Python) / http (API), {total} total; click a card to edit",
-    "newCustom": "Create custom tool",
-    "customNoMatch": "No matching custom tools",
-    "customEmpty": "(no custom tools yet; click \"Create custom tool\" at the top right)",
     "editSheetDesc": "Edit the description, parameter defaults, and agent bindings",
     "badgeSystem": "System",
-    "badgeCustom": "Custom",
+    "badgeCustom": "Custom tool",
     "badgeDisabled": "Disabled",
+    "badgeDeferred": "Deferred",
     "callsTitle": "{count} total calls",
     "callsBadge": "{count} calls",
     "noDescription": "(no description)",
@@ -2176,6 +2209,8 @@
     "testParamsError": "The test parameter JSON is malformed",
     "editCustom": "Edit {key}",
     "customSheetDesc": "shell = bash environment declaration (only a name and description are needed; it tells the model it can be called via bash). command/script/http require you to write an execution spec.",
+    "keyLabel": "Key",
+    "methodLabel": "Method",
     "keyPlaceholder": "e.g., nmap_scan",
     "descLabelShort": "Description (passed to the model)",
     "kindLabel": "Type",
@@ -2199,10 +2234,35 @@
     "testSectionLabel": "Test run (uses the current form, not saved)",
     "testParamsPlaceholder": "Example parameter JSON, e.g., '{\"target\":\"example.com\"}'",
     "testRun": "Run test",
-    "testRunning": "Running…",
+    "testRunning": "Running...",
     "noOutput": "(no output)",
     "create": "Create",
-    "delete": "Delete"
+    "delete": "Delete",
+    "chat": {
+      "title": "Tool curator",
+      "proposesOnly": "The tool curator reads the toolbox and proposes templates and custom tools. Nothing is saved until you approve the card, and an install runs only after you approve its own card.",
+      "empty": "Paste a script, a repo URL, docs or --help output and ask the curator to register it.",
+      "placeholder": "Message the tool curator",
+      "send": "Send",
+      "stop": "Stop",
+      "sendFailed": "Could not send: {msg}",
+      "stopFailed": "Could not stop: {msg}",
+      "loadEarlier": "Load earlier messages",
+      "busy": "The curator is still working; wait for it to finish, then ingest again."
+    },
+    "ingest": {
+      "action": "Ingest tool",
+      "title": "Ingest a tool",
+      "desc": "The curator reads the repository or docs, runs the tool's help, drafts a template and proposes it for your approval.",
+      "tool": "Tool / binary name",
+      "toolPlaceholder": "e.g. nikto",
+      "repo": "Repository URL (optional)",
+      "notes": "Notes or pasted docs (optional)",
+      "notesPlaceholder": "Flags to expose, defaults, what to call it, install hints, or paste the README or --help output.",
+      "install": "Install it if it is missing",
+      "cancel": "Cancel",
+      "submit": "Send to the curator"
+    }
   },
   "skillsPage": {
     "title": "Skills",
@@ -2244,6 +2304,7 @@
     "overwriteConfirm": "{msg}\n\nOverwrite the skill with the same name?",
     "uploadFailed": "Upload failed: {msg}",
     "readFileFailed": "Failed to read the file",
+    "discardEdits": "This file has unsaved edits. Discard them and open the other file?",
     "folderCreated": "Created folder: {path}",
     "fileCreated": "Created file: {path}",
     "createFailed": "Creation failed: {msg}",
@@ -3276,13 +3337,6 @@
       "desc": "These features are still under validation and default to off. They may change agent behavior or affect stability, so turn them on only after you understand the impact.<br></br><b>noa context compression</b>: the model compresses long conversation history directly (norma v0.4.0). When on, the four kinds of agents connected to the platform (<b>planner / worker / main agent / conversation</b>) hand off context to noa instead of using the built-in compression, and the raw compression output is kept in the task's working directory for easy review. Changes apply immediately (to runs started afterward) with no need to regenerate the agents. Turning it off restores the built-in compression immediately.",
       "noaLabel": "noa context compression"
     },
-    "browser": {
-      "title": "Browser",
-      "desc": "Which surface the agents drive. <b>Native</b> is the built-in CDP driver: no MCP server, the same snapshot/ref contract, and the live view on the task page. <b>Playwright MCP</b> is the external server. Two surfaces in one prompt is how a model ends up driving two browsers, so only the selected one is offered. Applies to the next run.",
-      "driverLabel": "Driver",
-      "driverNative": "Native (built-in)",
-      "driverMcp": "Playwright MCP"
-    },
     "webSearch": {
       "title": "Web Search",
       "desc": "The <b>master switch + source settings</b> for web search. Only when it is on can you choose <b>web_search</b> usage individually in <b>each agent's settings</b> (it returns only the title/link/summary and does not fetch the body; body collection is handled by WebFetch). Web search <b>does not go through</b> the recording proxy and is independent of Traffic Capture.<br></br>For the source, you can choose among <b>DuckDuckGo (ddgs)</b> (no Key needed), <b>Brave (free tier)</b> (requires a Brave API Key), <b>Tavily</b> (requires a Tavily API Key), and <b>DeepSeek</b> (reuses the current LLM settings). When the master switch is off, each agent's web search switch is unavailable.",
@@ -3729,6 +3783,7 @@
       "nameLabel": "Channel name",
       "namePlaceholder": "Incident response / daily alerts",
       "noFields": "The input form for this channel is not defined yet (no CHANNEL_FIELDS entry in the frontend). Add the entry and try again.",
+      "headersClearedOnUrlChange": "The saved headers belong to the previous address and will be cleared when you save. Re-enter them if the new endpoint needs them.",
       "modeLabel": "Delivery timing",
       "modeRealtime": "Real-time · one message per vulnerability",
       "modeDigest": "Digest · one bundled message per interval",
@@ -4110,7 +4165,8 @@
       "send": "Send",
       "stop": "Stop",
       "sendFailed": "Could not send: {msg}",
-      "stopFailed": "Could not stop: {msg}"
+      "stopFailed": "Could not stop: {msg}",
+      "loadEarlier": "Load earlier messages"
     },
     "tab": {
       "knowledge": "Knowledge",

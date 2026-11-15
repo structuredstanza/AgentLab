@@ -1,5 +1,7 @@
 <!-- Design record (2026-11-13). Browser gate closed; Plan C closed. -->
 
+<!-- Superseded in part (2026-11-14): the Playwright MCP browser and the recorder-to-masker chain described below are retired. The testing browser is the native Chromium driver (`browser/`, `server/browser_registry.go`), the research browser is Obscura (`obscura mcp --stealth`), and the recording proxy owns the origin transport itself (`gateway/`). The masking proxy survives only for asset-enrichment probes and is pending retirement. -->
+
 # Open items: what is left and how to close each
 
 State at the time of writing: `checkpoint/memory-refactor` holds the cutover, the memory refactor, the reviewer fixes, and Plans A and B from the Executioner pull. CI is green on that branch. What follows is the remaining work, in the order it should happen. Detail for C/D/E lives in `local://executioner-implementation-plan.md`; this file adds the gate, the acceptance criteria and the release steps.

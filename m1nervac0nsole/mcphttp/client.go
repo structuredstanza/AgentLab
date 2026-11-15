@@ -210,7 +210,16 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	return c, nil
 }
 
+// readSSEEndpoint reads the POST endpoint the server announces on the SSE stream.
+// A relative endpoint resolves against the configured SSE URL. The result must stay
+// on the configured origin (scheme+host+port): the POST carries the configured
+// headers, so a cross-origin announcement would leak an Authorization token to a
+// server the operator never configured. Such an announcement is refused.
 func readSSEEndpoint(r *bufio.Reader, base string) (string, error) {
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("mcp sse url: %w", err)
+	}
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
@@ -228,15 +237,34 @@ func readSSEEndpoint(r *bufio.Reader, base string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("mcp sse endpoint URL: %w", err)
 		}
-		if !u.IsAbs() {
-			b, err := url.Parse(base)
-			if err != nil {
-				return "", err
-			}
-			candidate = b.ResolveReference(u).String()
+		abs := baseURL.ResolveReference(u)
+		if !sameOrigin(baseURL, abs) {
+			return "", fmt.Errorf("mcp sse endpoint %q is cross-origin to the configured %s://%s; refusing to send configured headers there",
+				candidate, baseURL.Scheme, baseURL.Host)
 		}
-		return candidate, nil
+		return abs.String(), nil
 	}
+}
+
+// sameOrigin reports whether a and b share scheme, host and effective port.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		originPort(a) == originPort(b)
+}
+
+// originPort returns the explicit port, or the scheme default when none is given.
+func originPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	}
+	return ""
 }
 
 func (c *Client) readLegacySSE(r *bufio.Reader) {

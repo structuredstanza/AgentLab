@@ -50,7 +50,7 @@ func newFlow(host, method, path string, reqBody, respBody []byte, opts ...flowOp
 func openTraffic(t *testing.T) (*Traffic, string) {
 	t.Helper()
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,6 +386,11 @@ func TestPageFiltersAndSort(t *testing.T) {
 	tr.record(newFlow("api.example.com", "GET", "/api/admin", nil, make([]byte, 100), status(404)))
 	tr.record(newFlow("api.example.com", "GET", "/api/users/1", nil, make([]byte, 50), status(500)))
 
+	// The zero value must list everything: a caller that sets only Query used to
+	// get resp_len>=0 AND resp_len<=0, which matched nothing.
+	if rows, total, err := tr.Page(PageQuery{}, 0, 100); err != nil || total != 3 || len(rows) != 3 {
+		t.Fatalf("zero-value page = %d rows (total %d), err=%v, want all 3", len(rows), total, err)
+	}
 	// Status class band.
 	if rows, _, err := tr.Page(PageQuery{Status: "4xx", RespMin: -1, RespMax: -1}, 0, 100); err != nil || len(rows) != 1 || rows[0].Status != 404 {
 		t.Fatalf("status=4xx should match 1 row with 404, got %d rows err=%v", len(rows), err)

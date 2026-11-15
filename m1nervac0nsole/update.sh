@@ -36,12 +36,10 @@ update_local(){
   [ -f config.json ] || warn "config.json not found. For the first deployment, use ./install.sh"
   ok "Go: $(go version)"
 
+  # build.sh owns the frontend export, the embed copy and the version stamp
   if command -v npm >/dev/null 2>&1; then
-    info "Rebuilding the frontend static output…"
-    ( cd web && npm ci && npm run build:static )
-    rm -rf server/webui/dist && cp -r web/out server/webui/dist
-    info "Recompiling a single binary with the frontend embedded…"
-    CGO_ENABLED=0 go build -tags embedui -trimpath -o m1nervac0nsole ./cmd/m1nervac0nsole
+    info "Rebuilding the binary and the embedded frontend…"
+    M1NERVAC0NSOLE_OUTPUT="$PWD/m1nervac0nsole" ./build.sh
   else
     warn "npm not found. Compiling the backend only, without the embedded frontend (run the frontend separately with npm run dev)"
     CGO_ENABLED=0 go build -o m1nervac0nsole ./cmd/m1nervac0nsole

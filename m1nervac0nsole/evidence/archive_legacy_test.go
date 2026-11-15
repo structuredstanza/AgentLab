@@ -47,7 +47,7 @@ func TestLegacyArchiveRecordAndBindKeepExactBodies(t *testing.T) {
 	if count, err := s.Traffic.ExportHosts([]string{"old.local"}, archive); err != nil || count != 2 {
 		t.Fatalf("export: %d %v", count, err)
 	}
-	fresh, err := traffic.Open(t.TempDir(), ":0")
+	fresh, err := traffic.OpenWithTransport(t.TempDir(), ":0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

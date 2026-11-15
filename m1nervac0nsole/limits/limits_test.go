@@ -313,3 +313,57 @@ func TestPerTargetCapHoldsUnderGlobalBudget(t *testing.T) {
 		t.Fatal("a second scan on the same target was admitted despite a per-target cap of 1")
 	}
 }
+
+func threadsManifest() *manifest.Manifest {
+	return &manifest.Manifest{
+		ID:     "httpx",
+		Limits: manifest.Limits{Param: "threads", Unit: manifest.RateThreads},
+	}
+}
+
+// A declared thread count is not a concurrency unit: 50 threads under a cap of
+// three is one scan holding 50 workers, so it must run with three rather than
+// wait for 47 slots that cannot exist.
+func TestClampThreadsCapsTheDeclaredCount(t *testing.T) {
+	l := New(Policy{MaxConcurrentPerTarget: 3})
+
+	params := map[string]string{"threads": "50"}
+	from, to, clamped := l.ClampThreads(threadsManifest(), params)
+	if !clamped || from != 50 || to != 3 || params["threads"] != "3" {
+		t.Fatalf("50 threads under a cap of 3: from=%d to=%d clamped=%v params=%v", from, to, clamped, params)
+	}
+
+	// Under the cap, the operator's count stands.
+	params = map[string]string{"threads": "2"}
+	if _, _, clamped := l.ClampThreads(threadsManifest(), params); clamped || params["threads"] != "2" {
+		t.Fatalf("2 threads under a cap of 3 was changed: %v", params)
+	}
+
+	// An rps manifest is a request rate, not a worker count: unchanged.
+	rps := map[string]string{"rate": "50"}
+	if _, _, clamped := l.ClampThreads(rpsManifest(), rps); clamped || rps["rate"] != "50" {
+		t.Fatalf("an rps manifest was clamped: %v", rps)
+	}
+
+	// No per-target cap means nothing to clamp to.
+	uncapped := map[string]string{"threads": "50"}
+	if _, _, clamped := New(Policy{}).ClampThreads(threadsManifest(), uncapped); clamped || uncapped["threads"] != "50" {
+		t.Fatalf("an unset per-target cap clamped a thread count: %v", uncapped)
+	}
+}
+
+// The clamped run is admitted immediately: threads reserve no slots, so a
+// 50-thread scan must not block behind a cap of three.
+func TestClampThreadsAdmitsTheRun(t *testing.T) {
+	l := New(Policy{MaxConcurrentPerTarget: 3, MaxConcurrentTotal: 3, MaxRequestsPerMinute: 100})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	params := map[string]string{"threads": "50"}
+	l.ClampThreads(threadsManifest(), params)
+	release, err := l.Acquire(ctx, "example.com", threadsManifest(), params)
+	if err != nil {
+		t.Fatalf("a clamped 50-thread scan was never admitted: %v", err)
+	}
+	release()
+}

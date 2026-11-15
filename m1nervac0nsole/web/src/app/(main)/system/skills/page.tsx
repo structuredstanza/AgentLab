@@ -506,6 +506,15 @@ export default function SkillsPage() {
     });
   }
 
+  // Selecting another node replaces the editor buffer with the file on disk, so a
+  // dirty buffer is confirmed first. Returns false when the operator kept the edits.
+  function select(next: Selected | null): boolean {
+    const unchanged = selected?.skill === next?.skill && selected?.path === next?.path;
+    if (dirty && !unchanged && !window.confirm(t("discardEdits"))) return false;
+    setSelected(next);
+    return true;
+  }
+
   // ── Inline create ─────────────────────────────────────────────────────────
   function startCreate(skill: string, inDir: string, kind: "file" | "dir") {
     cancelRef.current = false;
@@ -811,11 +820,11 @@ export default function SkillsPage() {
             isSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
           )}
           style={{ paddingLeft: baseIndent + 16 }}
-          onClick={() => setSelected({ skill, path: node.path })}
+          onClick={() => select({ skill, path: node.path })}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              setSelected({ skill, path: node.path });
+              select({ skill, path: node.path });
             }
           }}
         >
@@ -936,14 +945,12 @@ export default function SkillsPage() {
                         isSkillSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
                       )}
                       onClick={() => {
-                        toggleExpanded(s.name);
-                        setSelected({ skill: s.name, path: null });
+                        if (select({ skill: s.name, path: null })) toggleExpanded(s.name);
                       }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          toggleExpanded(s.name);
-                          setSelected({ skill: s.name, path: null });
+                          if (select({ skill: s.name, path: null })) toggleExpanded(s.name);
                         }
                       }}
                     >
@@ -1036,7 +1043,7 @@ export default function SkillsPage() {
             <SkillsOverview
               skills={skills}
               missing={missing}
-              onSelect={(name) => setSelected({ skill: name, path: null })}
+              onSelect={(name) => select({ skill: name, path: null })}
             />
           )}
 

@@ -457,6 +457,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if tc.DeadlineUnix > 0 {
 		settle = wrapupSettlementForTask("planner", nil, clamped)
 	}
+	// The gateway accepts no anonymous request, so both the Bash env and WebFetch
+	// carry this run's session credential, never the bare address.
+	proxy := runProxyURL(ctx, p.proxyAddr)
 	opts := agentcore.Options{
 		Provider:        p.prov,
 		SystemPrompt:    system,
@@ -466,7 +469,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		UnlockSet:       def.Unlock,
 		PermissionMode:  permission.ModeBypass,
 		EnableWebFetch:  true, // Go through the recording proxy to leave a trace; load the proxy CA to verify the HTTPS certificates re-signed by MITM
-		WebFetchProxy:   p.proxyAddr,
+		WebFetchProxy:   proxy,
 		WebFetchCACert:  p.proxyCACert,
 		// Web search (optional). ddgs requires no key; brave-free requires BraveKey; tavily requires TavilyKey.
 		// WebSearchProxy is a standalone egress proxy (http/https/socks5), unrelated to the MITM proxy that records traffic; if empty, connect directly.
@@ -478,8 +481,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		DeepSeekSearchAPIKey:  p.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   p.webSearch.DeepSeekModel,
 		WebSearchProxy:        p.webSearch.Proxy,
-		BashEnv:               proxyEnv(p.proxyAddr, p.proxyCACert), // Bash subcommands go through the proxy and trust the CA by default
-		WorkingDir:            taskDir,                              // Working directory for this task: <workDir>/tasks/<taskID>
+		BashEnv:               ProxyEnv(proxy, p.proxyCACert), // Bash subcommands go through the proxy and trust the CA by default
+		WorkingDir:            taskDir,                        // Working directory for this task: <workDir>/tasks/<taskID>
 		ToolOutputDir:         cmdOutDir(taskDir),
 		MaxTurns:              p.maxTurns, // 0 = unlimited (configurable in agent management)
 		MaxDuration:           maxDur,     // 0 = unlimited; when a deadline is set, = remaining time until the deadline

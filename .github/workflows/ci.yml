@@ -55,6 +55,20 @@ jobs:
           M1NERVAC0NSOLE_BROWSER_INTEGRATION: "1"
           M1NERVAC0NSOLE_CHROMIUM: ${{ steps.chrome.outputs.chrome-path }}
         run: go test ./browser/ -run TestIntegration -count=1 -v
+      # The isolation proof is the one suite that must never pass by skipping:
+      # without root every kernel test reports BLOCKED, so a green run would say
+      # nothing about the boundary. This step runs it as root and fails when a
+      # test skipped, so "the boundary was not exercised" is a red build.
+      - name: go test (execbox kernel · root · fails on skip)
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          sudo env "PATH=$PATH" "HOME=$HOME" "GOPATH=$(go env GOPATH)" "GOMODCACHE=$(go env GOMODCACHE)" "GOCACHE=$(go env GOCACHE)" \
+            go test ./execbox/ ./server/ -run 'TestKernel' -count=1 -v 2>&1 | tee "$log"
+          if grep -q -- '--- SKIP' "$log"; then
+            echo "::error::the execbox kernel tests skipped, so isolation is unproven"
+            exit 1
+          fi
 
   # Takes charge of DB integration tests (notifications, evidence, usage metering, etc.) that only run when a real PostgreSQL is available.
   # Forces the paths the go job above skips (notification channel validation, evidence storage, llm_usage metering, etc.) against a real

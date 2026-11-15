@@ -52,7 +52,7 @@ Current UI with the existing local demo fixtures (`NEXT_PUBLIC_MOCK=1`), not a l
 - **Docker + Compose** — optional, for the container path only; the image is built locally.
 - **LLM endpoint** — an Anthropic or OpenAI API key, or any OpenAI-compatible endpoint set in the UI.
 
-The console drives real tools; install what your engagements need. The container image bundles `nmap`, `ripgrep`, `curl`, `nuclei`, `httpx`, `subfinder`, `katana`, `ffuf`, `dalfox`, `sqlmap`, `bbot`, Playwright and Obscura.
+The console drives real tools; install what your engagements need. The container image bundles `nmap`, `ripgrep`, `curl`, `nuclei`, `httpx`, `subfinder`, `katana`, `ffuf`, `dalfox`, `sqlmap`, `bbot` and Obscura (the research browser). It installs no testing browser: Chromium comes from the guest image (see [Browser roles](#browser-roles)).
 
 The AgentLab root additionally provides a microsandbox VM deployment (`./lab`). That path is site-specific — `deployment/sandbox.yaml` mounts absolute host paths and pins a locally imported image — so it is not a portable installer. On a fresh checkout, use the source build below.
 
@@ -124,9 +124,11 @@ There is a single admin account, `minerva`. Its password is created on the first
 
 Agent output is **requested** in English by the prompts; the server does not rewrite or enforce the model's response language. A capable model follows that instruction more reliably, and short structured fields may still quote the target's own terminology. Reasoning models need a generous `max_tokens`, or internal reasoning can consume the budget and leave the answer empty. OpenAI-family models cap response tokens at 16,384 while OpenAI-compatible requests default higher, so an unchanged profile can fail with `400 (max_tokens is too large)`; set that profile's `max_tokens` to 16,384 or lower.
 
-### Recording and masking proxies
+### The gateway, the recording proxy and the masking proxy
 
-The recording proxy (`-proxy`, default `127.0.0.1:8788`) records the HTTP traffic it carries. The masking proxy is a separate process that rewrites browser identity headers while preserving caller credentials:
+The recording proxy (`-proxy`, default `127.0.0.1:8788`) is the single HTTP interception and origin-transport boundary. It authorizes each request against the task's policy, resolves and pins the origin address, applies the operator exit, speaks the origin TLS handshake with a Chrome uTLS profile, and records what it carried. Every recorded request carries a session credential the backend issues for a purpose, task and policy revision; an absent, unknown or revoked credential is refused, so there is no anonymous session and no direct fallback.
+
+The masking proxy is a separate process that rewrites browser identity headers while preserving caller credentials:
 
 ```sh
 ./m1nervac0nsole egress-proxy -addr 127.0.0.1:8888 -dir "$PWD/data/egress" -rpm 100
@@ -135,7 +137,16 @@ M1NERVAC0NSOLE_EGRESS_PROXY=http://127.0.0.1:8888 \
 M1NERVAC0NSOLE_EGRESS_CA="$PWD/data/egress/ca.pem" ./m1nervac0nsole
 ```
 
-Worker capture falls back to the masker when no operator global proxy is set; an explicit global proxy keeps precedence. Enrichment probes fail closed: without a usable masking URL and CA they do not fall back to direct HTTP. `./dev.sh` starts the masker, the recorder and the backend together and stops only the process groups it created.
+The gateway's exit is the operator's global proxy when one is set and the masking proxy otherwise; an explicit global proxy keeps precedence. Asset-enrichment probes still go through the masker directly and fail closed: without a usable masking URL and CA they do not fall back to direct HTTP. The masking proxy is **pending retirement** — it stays only until the gateway serves those probes, and its `egress-proxy` subcommand and `M1NERVAC0NSOLE_EGRESS_*` settings go with it. `./dev.sh` starts the masker, the recorder and the backend together and stops only the process groups it created.
+
+### Browser roles
+
+Two browsers, two purposes, and no agent can promote itself from one to the other:
+
+- **Research — Obscura.** The `obscura` MCP server (`obscura mcp --stealth`) reads public documentation, repositories, advisories and vendor pages. It needs no task, so chat can use it; it exposes reading and extraction only (no evaluate, cookies, fill or click), and it refuses engagement targets and private, loopback, link-local and metadata addresses, including after a redirect.
+- **Testing — native Chromium.** The `browser_*` tools drive Chromium over CDP (`server/browser_registry.go`, `browser/`) inside a task, under that task's scope, with the live view, upload/download, dialog handling and operator take-over. Unbound chat has no testing browser.
+
+Both reach the network through the gateway, so their traffic is recorded and judged at the same boundary. The testing browser needs the guest deployment: the driver launches Chromium from `M1NERVAC0NSOLE_CHROMIUM`, else `/opt/ms-playwright/current/chrome`, else `/usr/bin/chromium`, and it runs it through the execbox supervisor, which the container image does not provide.
 
 ## System architecture
 
@@ -159,6 +170,8 @@ The masking proxy is **not** a scope firewall: it changes egress identity, not a
 ## Known limits
 
 - English output is a prompt instruction, not a server-enforced guarantee; some role- and context-dependent drift remains, and structured finding fields can mirror the target's terms.
+- Deleting or archiving a task removes only that task's captured exchanges. Rows recorded before attribution and the legacy per-host tree stay until an explicit host or all delete.
+- WebSocket exchanges store a JSONL transcript of both directions, ordered by proxy arrival; control frames (ping/pong) are not observable at that layer.
 - Single admin account, same-origin UI, no multi-tenant roles. Treat it as a single-operator research console, not a shared service.
 - The masking proxy approximates a browser fingerprint; it does not make every protocol fingerprint identical to one.
 - Self-signed targets stay reachable, but failed upstream verification produces a warning; certificate-pinned clients and non-HTTP protocols are not inspectable.

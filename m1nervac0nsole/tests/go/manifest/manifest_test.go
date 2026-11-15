@@ -3,6 +3,7 @@ package manifest_test
 import (
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -75,7 +76,7 @@ func TestCommandTemplatesReferenceDeclaredParams(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, m := range set.All() {
-		if _, err := m.Resolve("example.test", defaultsFor(m)); err != nil {
+		if _, err := m.Resolve("example.test", defaultsFor(m), ""); err != nil {
 			t.Errorf("%s: resolve with defaults: %v", m.ID, err)
 		}
 	}
@@ -102,7 +103,7 @@ func defaultsFor(m *manifest.Manifest) map[string]string {
 func TestFlagAndValueAreSeparateArguments(t *testing.T) {
 	flagWithValue := regexp.MustCompile(`^--?[A-Za-z][\w-]* \S`)
 	for _, m := range manifest.LoadBuiltin().All() {
-		args, err := m.Resolve("example.test", defaultsFor(m))
+		args, err := m.Resolve("example.test", defaultsFor(m), "")
 		if err != nil {
 			t.Fatalf("%s: %v", m.ID, err)
 		}
@@ -122,7 +123,7 @@ func TestBoolParameterIsABareSwitch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		args, err := m.Resolve("10.129.14.7", params)
+		args, err := m.Resolve("10.129.14.7", params, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +141,7 @@ func TestBoolParameterIsABareSwitch(t *testing.T) {
 		}
 	}
 	params, _ := m.Effective(map[string]string{"service": "maybe"})
-	if _, err := m.Resolve("10.129.14.7", params); err == nil {
+	if _, err := m.Resolve("10.129.14.7", params, ""); err == nil {
 		t.Error("a non-boolean value for a bool parameter must be an error")
 	}
 }
@@ -206,7 +207,7 @@ func TestUserAgentFlagCarriesTheEngagementIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", id, err)
 		}
-		args, err := m.Resolve("10.129.14.7", params)
+		args, err := m.Resolve("10.129.14.7", params, "")
 		if err != nil {
 			t.Fatalf("%s resolve: %v", id, err)
 		}
@@ -246,7 +247,7 @@ func TestEveryHTTPToolCarriesTheIdentity(t *testing.T) {
 		// Either an explicit user-agent, or the proxy, which rewrites the header
 		// on the way out. A tool with neither sends its own identity.
 		joined := strings.Join(m.Command.Args, " ")
-		if !strings.Contains(joined, "useragent") && !strings.Contains(joined, "{{ proxy }}") {
+		if !strings.Contains(joined, "useragent") && !strings.Contains(joined, "{{ proxy") {
 			t.Errorf("%s speaks HTTP but passes neither an identity nor the proxy", m.ID)
 		}
 	}
@@ -263,8 +264,39 @@ func TestProxyBypassingToolsPassTheProxyExplicitly(t *testing.T) {
 		if m == nil {
 			t.Fatalf("%s missing", id)
 		}
-		if !strings.Contains(strings.Join(m.Command.Args, " "), "{{ proxy }}") {
+		if !strings.Contains(strings.Join(m.Command.Args, " "), "{{ proxy") {
 			t.Errorf("%s ignores http_proxy; it must be given --proxy", id)
+		}
+	}
+}
+
+// With no proxy configured, no shipped template may leave a dangling flag. A
+// template written "--proxy", "{{ proxy }}" drops the value and keeps the flag,
+// so the tool reads the next argument as its proxy. The flag and the value
+// travel in one element ("{{ proxy | --proxy }}"), so both disappear together.
+// Check every manifest, not one, because the defect lived in the templates.
+func TestNoProxyConfiguredLeavesNoDanglingFlag(t *testing.T) {
+	const gateway = "http://127.0.0.1:8788"
+	// {{ proxy }} renders the URL, {{ proxyhost }} the same without the scheme.
+	values := map[string]bool{gateway: true, strings.TrimPrefix(gateway, "http://"): true}
+
+	for _, m := range manifest.LoadBuiltin().All() {
+		with, err := m.Resolve("example.test", defaultsFor(m), gateway)
+		if err != nil {
+			t.Fatalf("%s with a proxy: %v", m.ID, err)
+		}
+		without, err := m.Resolve("example.test", defaultsFor(m), "")
+		if err != nil {
+			t.Fatalf("%s without a proxy: %v", m.ID, err)
+		}
+		for i := 1; i < len(with); i++ {
+			flag := with[i-1]
+			if !values[with[i]] || !strings.HasPrefix(flag, "-") {
+				continue
+			}
+			if slices.Contains(without, flag) {
+				t.Errorf("%s: %q is left dangling when no proxy is configured: %v", m.ID, flag, without)
+			}
 		}
 	}
 }

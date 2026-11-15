@@ -2,217 +2,204 @@
 
 import * as React from "react";
 
-import { Loader2Icon, SearchIcon, TerminalIcon } from "lucide-react";
+import { PlusIcon, SearchIcon, SparklesIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 
-import { Badge } from "@/components/ui/badge";
+import { CuratorChat } from "@/components/curator-chat";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import type { ToolManifest, ToolPreview } from "@/lib/types";
+import type { Agent, Tool, ToolManifest } from "@/lib/types";
 
-// formatCommand is what the operator reads: the argv exactly as the executor
-// builds it, quoted only where a shell would need it.
-export function formatCommand(program: string, args: string[]): string {
-  const quote = (a: string) => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`);
-  return [program, ...args].map(quote).join(" ");
-}
+import { AgentTools, matchesTool, ToolGridCard } from "./_components/agent-tools";
+import { CustomToolDialog } from "./_components/custom-tool-dialog";
+import { IngestToolDialog } from "./_components/ingest-tool-dialog";
+import { TemplateCard, TemplateSheet } from "./_components/template-sheet";
 
+// The tool curator reads the toolbox freely and proposes templates or custom
+// tools behind an approval card; it never writes on its own.
+const TOOL_CURATOR_AGENT = "toolcurator";
+
+type TabKey = "catalog" | "agent-tools" | "curator";
+
+// ToolboxPage is the one tooling surface: the catalog of command templates and
+// custom tools, the system tools agents are bound to, and the curator that
+// registers new tooling on request.
 export default function ToolboxPage() {
   const t = useTranslations("toolboxPage");
+  const [tab, setTab] = React.useState<TabKey>("catalog");
+  const [tools, setTools] = React.useState<Tool[]>([]);
   const [manifests, setManifests] = React.useState<ToolManifest[]>([]);
+  const [agents, setAgents] = React.useState<Agent[]>([]);
+  const [captureOn, setCaptureOn] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState("");
   const [query, setQuery] = React.useState("");
-  const [selected, setSelected] = React.useState<string | null>(null);
-  const [target, setTarget] = React.useState("");
-  const [params, setParams] = React.useState<Record<string, string>>({});
-  const [preview, setPreview] = React.useState<ToolPreview | null>(null);
-  const [previewError, setPreviewError] = React.useState("");
-  const [previewing, setPreviewing] = React.useState(false);
+  const [templateEdit, setTemplateEdit] = React.useState<ToolManifest | "new" | null>(null);
+  const [customEdit, setCustomEdit] = React.useState<Tool | "new" | null>(null);
+  const [ingestOpen, setIngestOpen] = React.useState(false);
+  const [outbox, setOutbox] = React.useState<{ id: number; text: string } | null>(null);
 
-  React.useEffect(() => {
-    api
-      .toolManifests()
-      .then((list) => {
-        setManifests(list);
-        if (list.length > 0) setSelected(list[0].id);
+  // A failed load must read as a failure: an empty catalog would look like
+  // "nothing is installed" and invite the operator to re-create what exists.
+  const reload = React.useCallback(() => {
+    setLoadError("");
+    Promise.all([api.tools(), api.toolManifests()])
+      .then(([toolRows, manifestRows]) => {
+        setTools(toolRows);
+        setManifests(manifestRows);
       })
-      .catch(() => setManifests([]))
+      .catch((e: Error) => setLoadError(e.message))
       .finally(() => setLoading(false));
   }, []);
-
-  const manifest = manifests.find((m) => m.id === selected) ?? null;
-
   React.useEffect(() => {
-    if (!manifest || !target.trim()) {
-      setPreview(null);
-      setPreviewError("");
-      return;
-    }
-    // Debounce: a keystroke in the target or a parameter should not race.
-    const handle = setTimeout(() => {
-      setPreviewing(true);
-      api
-        .previewTool(manifest.id, target.trim(), params)
-        .then((p) => {
-          setPreview(p);
-          setPreviewError("");
-        })
-        .catch((e: Error) => {
-          setPreview(null);
-          setPreviewError(e.message);
-        })
-        .finally(() => setPreviewing(false));
-    }, 250);
-    return () => clearTimeout(handle);
-  }, [manifest, target, params]);
+    reload();
+    api
+      .agents()
+      .then(setAgents)
+      .catch(() => {
+        /* Ignore lookup failures and keep the default state */
+      });
+    api
+      .settings()
+      .then((s) => setCaptureOn(!!s.traffic_capture))
+      .catch(() => {
+        /* Ignore lookup failures and keep the default state */
+      });
+  }, [reload]);
 
-  const visible = React.useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return manifests;
-    return manifests.filter((m) => `${m.id} ${m.name} ${m.description}`.toLowerCase().includes(q));
-  }, [manifests, query]);
+  const q = query.trim().toLowerCase();
+  const visibleTemplates = manifests.filter(
+    (m) => !q || `${m.id} ${m.name} ${m.description} ${m.category}`.toLowerCase().includes(q),
+  );
+  const customTools = tools.filter((x) => !x.system);
+  const visibleCustom = customTools.filter((x) => matchesTool(x, query));
+  const total = manifests.length + customTools.length;
+  const shown = visibleTemplates.length + visibleCustom.length;
+
+  const failure = (
+    <p role="alert" className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm">
+      {t("loadFailed", { msg: loadError })}{" "}
+      <Button size="sm" variant="outline" onClick={reload}>
+        {t("retry")}
+      </Button>
+    </p>
+  );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
-      <div>
-        <h1 className="font-semibold text-lg">{t("title")}</h1>
-        <p className="text-muted-foreground text-sm">{t("subtitle")}</p>
-      </div>
-
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[320px_1fr]">
-        <div className="flex min-h-0 flex-col gap-2">
-          <div className="relative">
-            <SearchIcon className="absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
-            <Input
-              className="pl-8"
-              placeholder={t("search")}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </div>
-          <ScrollArea className="min-h-0 flex-1 rounded-md border">
-            <div className="divide-y">
-              {loading && <p className="p-3 text-muted-foreground text-sm">{t("loading")}</p>}
-              {!loading && visible.length === 0 && <p className="p-3 text-muted-foreground text-sm">{t("empty")}</p>}
-              {visible.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => {
-                    // Reset the form with the tool: a parameter from the previous
-                    // tool would be rejected by the next one's resolver.
-                    setSelected(m.id);
-                    setParams({});
-                    setPreview(null);
-                    setPreviewError("");
-                  }}
-                  className={`flex w-full flex-col gap-0.5 px-3 py-2 text-left hover:bg-muted/50 ${
-                    m.id === selected ? "bg-muted" : ""
-                  }`}
-                >
-                  <span className="flex items-center gap-2 text-sm">
-                    <TerminalIcon className="size-3.5 text-muted-foreground" />
-                    <code className="font-mono">{m.id}</code>
-                    {!m.available && (
-                      <Badge variant="outline" className="ml-auto text-[10px] text-destructive">
-                        {t("notInstalled")}
-                      </Badge>
-                    )}
-                  </span>
-                  <span className="line-clamp-1 text-muted-foreground text-xs">{m.description}</span>
-                </button>
-              ))}
+    <div className="flex flex-1 flex-col gap-4 md:gap-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-semibold text-lg tracking-tight">{t("title")}</h1>
+          <p className="text-muted-foreground text-xs">{t("subtitle")}</p>
+        </div>
+        {tab !== "curator" && (
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-full max-w-64">
+              <SearchIcon className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="h-8 pl-8 text-sm"
+                aria-label={t("search")}
+                placeholder={t("search")}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
             </div>
-          </ScrollArea>
-        </div>
-
-        <div className="flex min-h-0 flex-col gap-3">
-          {!manifest ? (
-            <p className="text-muted-foreground text-sm">{t("selectTool")}</p>
-          ) : (
-            <>
-              <div className="flex flex-wrap items-center gap-2">
-                <code className="font-mono text-sm">{manifest.id}</code>
-                <Badge variant="secondary">{manifest.category}</Badge>
-                <span className="text-muted-foreground text-xs">
-                  {t("accepts", { kinds: manifest.accepts.join(", ") })}
-                </span>
-              </div>
-              <p className="text-muted-foreground text-sm">{manifest.description}</p>
-
-              <div className="flex flex-col gap-1 text-sm">
-                <span>{t("target")}</span>
-                <Input
-                  aria-label={t("target")}
-                  value={target}
-                  onChange={(e) => setTarget(e.target.value)}
-                  placeholder={t("targetPlaceholder")}
-                />
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                {Object.entries(manifest.params).map(([name, p]) => (
-                  <div key={name} className="flex flex-col gap-1 text-sm">
-                    <span className="flex items-center gap-1">
-                      <code className="font-mono text-xs">{name}</code>
-                      {p.default !== undefined && (
-                        <span className="text-muted-foreground text-xs">{t("default", { value: p.default })}</span>
-                      )}
-                    </span>
-                    {p.type === "enum" ? (
-                      <select
-                        aria-label={name}
-                        className="h-9 rounded-md border bg-transparent px-2 text-sm"
-                        value={params[name] ?? p.default ?? ""}
-                        onChange={(e) => setParams((prev) => ({ ...prev, [name]: e.target.value }))}
-                      >
-                        {(p.options ?? []).map((o) => (
-                          <option key={o} value={o}>
-                            {o}
-                          </option>
-                        ))}
-                      </select>
-                    ) : p.type === "bool" ? (
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={(params[name] ?? p.default ?? "false") === "true"}
-                          onChange={(e) =>
-                            setParams((prev) => ({ ...prev, [name]: e.target.checked ? "true" : "false" }))
-                          }
-                        />
-                        <span className="text-muted-foreground text-xs">{p.description}</span>
-                      </label>
-                    ) : (
-                      <Input
-                        aria-label={name}
-                        value={params[name] ?? ""}
-                        placeholder={p.placeholder ?? p.default ?? ""}
-                        onChange={(e) => setParams((prev) => ({ ...prev, [name]: e.target.value }))}
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div className="rounded-md border bg-muted/30 p-3">
-                <div className="mb-1 flex items-center gap-2 text-muted-foreground text-xs">
-                  {t("preview")}
-                  {previewing && <Loader2Icon className="size-3 animate-spin" />}
-                </div>
-                {previewError ? (
-                  <p className="text-destructive text-sm">{previewError}</p>
-                ) : preview ? (
-                  <pre className="wrap-anywhere font-mono text-xs">{formatCommand(preview.program, preview.args)}</pre>
-                ) : (
-                  <p className="text-muted-foreground text-sm">{t("previewHint")}</p>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+            {tab === "catalog" && (
+              <>
+                <Button size="sm" variant="outline" onClick={() => setTemplateEdit("new")}>
+                  <PlusIcon /> {t("newTemplate")}
+                </Button>
+                <Button size="sm" onClick={() => setCustomEdit("new")}>
+                  <PlusIcon /> {t("newCustom")}
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+        {tab === "curator" && (
+          <Button size="sm" onClick={() => setIngestOpen(true)}>
+            <SparklesIcon /> {t("ingest.action")}
+          </Button>
+        )}
       </div>
+
+      <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)}>
+        <TabsList>
+          <TabsTrigger value="catalog">{t("tabCatalog")}</TabsTrigger>
+          <TabsTrigger value="agent-tools">{t("tabAgentTools")}</TabsTrigger>
+          <TabsTrigger value="curator">{t("tabCurator")}</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="catalog">
+          <section className="border-border border-t pt-3">
+            {loadError ? (
+              failure
+            ) : (
+              <>
+                <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                  <h2 className="font-semibold text-xs">{t("tabCatalog")}</h2>
+                  <span className="text-[11px] text-muted-foreground">
+                    {q ? t("catalogMatched", { shown, total }) : t("catalogTotal", { total })}
+                  </span>
+                </div>
+                {loading ? (
+                  <p className="py-6 text-center text-muted-foreground text-sm">{t("loading")}</p>
+                ) : shown === 0 ? (
+                  <p className="py-6 text-center text-muted-foreground text-sm">{q ? t("empty") : t("catalogEmpty")}</p>
+                ) : (
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {visibleTemplates.map((m) => (
+                      <TemplateCard key={`template-${m.id}`} manifest={m} onClick={() => setTemplateEdit(m)} />
+                    ))}
+                    {visibleCustom.map((tool) => (
+                      <ToolGridCard key={`tool-${tool.key}`} tool={tool} onClick={() => setCustomEdit(tool)} />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        </TabsContent>
+
+        <TabsContent value="agent-tools">
+          {loadError ? (
+            <section className="border-border border-t pt-3">{failure}</section>
+          ) : (
+            <AgentTools tools={tools} agents={agents} captureOn={captureOn} query={query} onChanged={reload} />
+          )}
+        </TabsContent>
+
+        <TabsContent value="curator">
+          <section className="border-border border-t pt-3">
+            <div className="flex h-[70dvh] min-h-96 flex-col border border-border">
+              <CuratorChat agentKey={TOOL_CURATOR_AGENT} i18n="toolboxPage" outbox={outbox} />
+            </div>
+          </section>
+        </TabsContent>
+      </Tabs>
+
+      <IngestToolDialog
+        open={ingestOpen}
+        onClose={() => setIngestOpen(false)}
+        onSubmit={(text) => {
+          setOutbox({ id: Date.now(), text });
+          setIngestOpen(false);
+        }}
+      />
+
+      <TemplateSheet edit={templateEdit} onClose={() => setTemplateEdit(null)} onChanged={reload} />
+
+      <CustomToolDialog
+        edit={customEdit}
+        agents={agents}
+        onClose={() => setCustomEdit(null)}
+        onSaved={() => {
+          setCustomEdit(null);
+          reload();
+        }}
+      />
     </div>
   );
 }

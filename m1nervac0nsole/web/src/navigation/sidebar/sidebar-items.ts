@@ -21,7 +21,6 @@ import {
   Sparkles,
   Target,
   Terminal,
-  Wrench,
 } from "lucide-react";
 
 export interface NavItem {
@@ -84,7 +83,6 @@ export const sidebarItems: NavGroup[] = [
       { id: "llm", title: "LLM", url: "/system/llm", icon: Brain },
       { id: "agents", title: "Agents", url: "/system/agents", icon: Bot },
       { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug },
-      { id: "tools", title: "Tools", url: "/system/tools", icon: Wrench },
       { id: "toolbox", title: "Toolbox", url: "/system/toolbox", icon: Terminal },
       { id: "tokens", title: "API tokens", url: "/system/tokens", icon: KeyRound },
       { id: "notify", title: "Notifications", url: "/system/notify", icon: BellRing },

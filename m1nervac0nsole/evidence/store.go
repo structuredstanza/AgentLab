@@ -117,9 +117,14 @@ func (s *Store) writeBody(r io.Reader, expectedLength int64, expectedHash string
 
 // StageFindingsExport freezes bindings/report versions and makes private body
 // copies before the HTTP response is started. The caller owns and removes dest.
+//
+// The lock covers the metadata read only. copySnapshots is O(total body size),
+// so holding the process-wide evidence lock across it would stall every evidence
+// write for the length of a download; the copied blobs stay readable because
+// they are content-addressed and GC keeps unreferenced files for 24h.
 func (s *Store) StageFindingsExport(ctx context.Context, findings []*db.DBFinding, dest string, copyBodies bool) error {
-	return s.DB.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
-		var snapshots []db.TrafficEvidenceSnapshot
+	var snapshots []db.TrafficEvidenceSnapshot
+	err := s.DB.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
 		for _, f := range findings {
 			list, err := db.FindingTrafficTx(tx, f.ID)
 			if err != nil {
@@ -136,11 +141,12 @@ func (s *Store) StageFindingsExport(ctx context.Context, findings []*db.DBFindin
 				snapshots = append(snapshots, b.Snapshot)
 			}
 		}
-		if copyBodies {
-			return s.copySnapshots(snapshots, dest)
-		}
 		return nil
 	})
+	if err != nil || !copyBodies {
+		return err
+	}
+	return s.copySnapshots(snapshots, dest)
 }
 
 func (s *Store) prepare(ctx context.Context, refs []db.TrafficRef) ([]db.PreparedTrafficEvidence, error) {
@@ -283,8 +289,13 @@ func (s *Store) OpenBody(snapshot db.TrafficEvidenceSnapshot, side string) (*os.
 
 // CopySnapshots is used by both report downloads and portable task archives.
 // The destination owns real copies, never links into either disposable store.
+// The copy runs outside the evidence lock (see StageFindingsExport): it is
+// O(body size) and every blob it reads is still referenced, so GC keeps it.
 func (s *Store) CopySnapshots(ctx context.Context, snapshots []db.TrafficEvidenceSnapshot, dest string) error {
-	return s.DB.WithEvidenceTx(ctx, func(*sql.Tx) error { return s.copySnapshots(snapshots, dest) })
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.copySnapshots(snapshots, dest)
 }
 
 func (s *Store) copySnapshots(snapshots []db.TrafficEvidenceSnapshot, dest string) error {
@@ -418,7 +429,53 @@ AND NOT EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id
 				return err
 			}
 		}
-		return nil
+		// Spilled finding evidence is referenced by findings.evidence_path, not by
+		// a snapshot row: a task delete, or a write whose commit failed, leaves the
+		// file behind. Reap what no row points at after the same grace period.
+		rows, err = tx.Query(`SELECT evidence_path FROM findings WHERE evidence_path <> ''`)
+		if err != nil {
+			return err
+		}
+		referenced := map[string]bool{}
+		for rows.Next() {
+			var path string
+			if err := rows.Scan(&path); err != nil {
+				rows.Close()
+				return err
+			}
+			referenced[filepath.Clean(path)] = true
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		return filepath.WalkDir(filepath.Join(s.Dir, "findings"), func(path string, entry fs.DirEntry, err error) error {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(s.Dir, path)
+			if err != nil {
+				return err
+			}
+			if referenced[rel] {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if now.Sub(info.ModTime()) < 24*time.Hour {
+				return nil
+			}
+			return os.Remove(path)
+		})
 	})
 }
 

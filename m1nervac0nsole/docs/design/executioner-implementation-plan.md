@@ -1,5 +1,7 @@
 <!-- Design record (2026-11-13). Plans A, B, D and E shipped; Plan C closed by its gate. -->
 
+<!-- Superseded in part (2026-11-14): the Playwright MCP browser that Plan B enabled is retired. The testing browser is the native Chromium driver (`browser/`, `server/browser_registry.go`) and the research browser is Obscura (`obscura mcp --stealth`); the Playwright MCP and CLI launchers are no longer installed in either image. Every Playwright MCP reference below describes the retired path. -->
+
 # Implementation plans: features pulled from Executioner
 
 Companion to `docs/design/executioner-pull-plan.md` (what Executioner does and why each item is worth pulling). This file is the build plan. Nothing here is implemented. Paths are under `/mnt/Research/AgentLab/m1nervac0nsole` unless stated. Executioner source for reference: re-clone `structuredstanza/executioner` at c21c844 (the `/tmp` copy is gone); MIT - keep the dbx0 copyright notice in a `NOTICE` entry for any ported file.

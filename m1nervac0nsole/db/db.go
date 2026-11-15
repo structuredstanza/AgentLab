@@ -216,6 +216,8 @@ var builtinAgents = []builtinAgent{
 	{"curator", "Curator", "assistant", "Memory curation assistant: reads the knowledge base and the reflection pool, proposes task-scoped candidates for the operator to promote, and never promotes, retires or deletes anything itself.", nil, false, nil},
 	// Drafter: built-in "plan drafting" assistant. Driven from the chat page; turns an operator's plain-language approach into a draft plan the operator reviews and applies, and never writes to the graph itself.
 	{"drafter", "Plan drafter", "assistant", "Turns a plain-language engagement approach into a draft plan (goals, seed intents, hints, scope rules) that the operator reviews and applies; it never writes to the graph itself.", nil, false, nil},
+	// Tool curator: built-in "toolbox curation" assistant. Driven from the chat page; turns tooling the operator provides (script, repo, docs, a binary) into manifest templates or custom tools, and every save waits for the operator's approval.
+	{"toolcurator", "Tool Curator", "assistant", "Turns tooling the operator provides (a script, a repo, pasted docs, a binary already installed) into Toolbox templates or custom tools; every save waits for the operator's approval and a new custom tool is bound to no agent.", nil, false, nil},
 }
 
 // seedBuiltins inserts the fixed built-in agents and their variable catalog (idempotent).
@@ -257,71 +259,45 @@ ON CONFLICT (agent_id, var_name) DO UPDATE
 		}
 		_ = d.SetSetting("interactive_shell_default_v1", "true")
 	}
-	// Seed the built-in browser (Playwright) MCP once — ENABLED, because workers
-	// need a real browser and the traffic-capture toggle routes it through the
-	// recording proxy (server.Manager.syncBrowserMCPProxy). Insert only if absent
-	// so we never clobber user edits (args/env/visibility) on restart.
-	if _, err := d.Exec(`
-INSERT INTO mcp_servers(name, transport, command, args, env, enabled)
-VALUES ('browser', 'stdio', 'playwright-mcp', $1, '{}', true)
-ON CONFLICT (name) DO NOTHING`,
-		`["--headless","--executable-path","/opt/ms-playwright/current/chrome","--no-sandbox"]`); err != nil {
-		return fmt.Errorf("seed browser mcp: %w", err)
-	}
-	// Older builds seeded that same row DISABLED. Enable it once for those
-	// installs, gated by a settings flag so a later user toggle-off survives every
-	// restart. The flag cannot tell a pre-upgrade deliberate disable from the
-	// untouched seed row (a toggle-off changes only `enabled`), so such a disable
-	// is flipped once by design; the user's next toggle-off is the one that sticks.
-	if v, _, _ := d.GetSetting("browser_mcp_enabled_v1"); v != "true" {
-		if _, err := d.Exec(`UPDATE mcp_servers SET enabled = true WHERE name = 'browser'`); err != nil {
-			return fmt.Errorf("enable browser mcp: %w", err)
-		}
-		_ = d.SetSetting("browser_mcp_enabled_v1", "true")
-	}
-	// The first seed omitted --executable-path, and @playwright/mcp then looks
-	// for the branded "chrome" channel (or a browser revision its own Playwright
-	// build expects), neither of which the guest image ships: every navigation
-	// failed with "Chromium distribution 'chrome' is not found". Point the
-	// seeded row at the image's stable chromium link once; a row that already
-	// names an executable is left alone.
-	if v, _, _ := d.GetSetting("browser_mcp_chromium_v1"); v != "true" {
+	// The Playwright MCP is retired: the native Chromium driver is the only
+	// testing browser and Obscura is the research one. Delete the seeded row and
+	// the visibility rows that pointed at it, once, so an upgraded install stops
+	// offering a second, unmanaged browser route. agent_visibility carries no
+	// foreign key to mcp_servers, so its rows are deleted explicitly. A row the
+	// operator creates again by hand survives: the flag makes this run once.
+	if v, _, _ := d.GetSetting("browser_mcp_removed_v1"); v != "true" {
 		if _, err := d.Exec(`
-UPDATE mcp_servers
-SET args = args || '["--executable-path","/opt/ms-playwright/current/chrome","--no-sandbox"]'::jsonb
-WHERE name = 'browser'
-  AND args @> '["@playwright/mcp"]'::jsonb
-  AND NOT (args @> '["--executable-path"]'::jsonb)`); err != nil {
-			return fmt.Errorf("point browser mcp at chromium: %w", err)
+DELETE FROM agent_visibility
+WHERE resource_kind = 'mcp'
+  AND resource_id IN (SELECT id FROM mcp_servers WHERE name = 'browser')`); err != nil {
+			return fmt.Errorf("remove browser mcp visibility: %w", err)
 		}
-		_ = d.SetSetting("browser_mcp_chromium_v1", "true")
-	}
-	// The first seed spawned `npx @playwright/mcp`, and npx resolves the package
-	// over the network: inside the app every child inherits http_proxy pointing
-	// at the masking egress proxy, so the handshake hung until the caller's
-	// deadline ("connection closed" before the stderr capture landed). The
-	// image installs the same package globally; run its binary directly.
-	if v, _, _ := d.GetSetting("browser_mcp_command_v1"); v != "true" {
-		if _, err := d.Exec(`
-UPDATE mcp_servers
-SET command = 'playwright-mcp',
-    args = (SELECT coalesce(jsonb_agg(e), '[]'::jsonb)
-            FROM jsonb_array_elements(args) e
-            WHERE e <> '"@playwright/mcp"'::jsonb)
-WHERE name = 'browser' AND command = 'npx' AND args @> '["@playwright/mcp"]'::jsonb`); err != nil {
-			return fmt.Errorf("point browser mcp at the global binary: %w", err)
+		if _, err := d.Exec(`DELETE FROM mcp_servers WHERE name = 'browser'`); err != nil {
+			return fmt.Errorf("remove browser mcp: %w", err)
 		}
-		_ = d.SetSetting("browser_mcp_command_v1", "true")
+		_ = d.SetSetting("browser_mcp_removed_v1", "true")
 	}
-	// Seed the Obscura browser MCP (stdio, enabled). It is the lighter
-	// JS-engine alternative to the Chromium MCP; it cannot trust the recording
-	// proxy's CA, so it is never proxy-routed. Insert only if absent.
+	// Seed Obscura, the research browser (stdio, enabled, stealth): reading
+	// public documentation, repositories and advisories is what it is for, and
+	// it is the only browser an unbound chat may drive. Testing a target is the
+	// native Chromium driver's job. Insert only if absent, so a later operator
+	// edit survives every restart.
 	if _, err := d.Exec(`
 INSERT INTO mcp_servers(name, transport, command, args, env, enabled)
 VALUES ('obscura', 'stdio', 'obscura', $1, '{}', true)
 ON CONFLICT (name) DO NOTHING`,
-		`["mcp"]`); err != nil {
+		`["mcp","--stealth"]`); err != nil {
 		return fmt.Errorf("seed obscura mcp: %w", err)
+	}
+	// The first seed ran `obscura mcp` without --stealth. Add it once for those
+	// installs; a row whose args the operator changed is left alone.
+	if v, _, _ := d.GetSetting("obscura_mcp_stealth_v1"); v != "true" {
+		if _, err := d.Exec(`
+UPDATE mcp_servers SET args = '["mcp","--stealth"]'::jsonb
+WHERE name = 'obscura' AND args = '["mcp"]'::jsonb`); err != nil {
+			return fmt.Errorf("enable obscura stealth: %w", err)
+		}
+		_ = d.SetSetting("obscura_mcp_stealth_v1", "true")
 	}
 	// Seed the REA reverse-engineering MCP (stdio, enabled). The rea skill
 	// declares `mcps: rea`, so its tools stay deferred until that skill loads.
@@ -335,8 +311,8 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedBuiltinSkillVisibility(); err != nil {
 		return fmt.Errorf("seed skill visibility: %w", err)
 	}
-	if err := d.seedBrowserMCPVisibility(); err != nil {
-		return fmt.Errorf("seed browser mcp visibility: %w", err)
+	if err := d.seedObscuraMCPVisibility(); err != nil {
+		return fmt.Errorf("seed obscura mcp visibility: %w", err)
 	}
 	if err := d.seedDefaultInterceptRules(); err != nil {
 		return fmt.Errorf("seed intercept rules: %w", err)
@@ -399,36 +375,36 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 // manifest tool, so binding the tool without the skill left the agents to
 // rediscover the ranking by hand — or skip it and reach for Bash.
 //
-// browser goes to those same agents as guidance: the MCP itself is bound
-// directly (see browserMCPAgents) because a skill-gated server was never
-// unlocked in practice.
+// browser goes to those same agents as guidance: the native driver's tools are
+// host tools, bound directly to the executing agents, so the skill is the
+// how-to rather than the gate.
+//
+// obscura goes to the agents that look things up - public documentation,
+// repositories and advisories - including the chat agents, which have no task
+// and therefore no testing browser at all.
 var builtinSkillVisibility = map[string][]string{
 	"api-recon":           {"auto", "pentest", "worker"},
 	"recon-orchestration": {"auto", "pentest", "worker", "planner"},
 	"browser":             {"auto", "pentest", "worker", "planner"},
+	"obscura":             {"auto", "pentest", "worker", "planner", "mainagent", "curator", "toolcurator"},
 }
 
-// browserMCPAgents are the agents that see the Playwright MCP from session start.
-//
-// A server named by a visible skill's `mcps:` is deferred until the model loads
-// that skill. Two measured runs showed it never does: the browser tools were
-// listed in 14 of 15 worker prompts, the skill was visible, and the worker still
-// reached for curl. Binding the server directly puts its tools in the global
-// block, which is what makes the browser reachable in practice; the skill stays
-// as the how-to.
-var browserMCPAgents = []string{"auto", "pentest", "worker", "planner"}
+// obscuraMCPAgents are the agents that see the research browser from session
+// start: every role that reads public material, including the chat agents,
+// which cannot use the testing browser because they carry no task.
+var obscuraMCPAgents = []string{"auto", "pentest", "worker", "planner", "mainagent", "curator", "toolcurator"}
 
-// seedBrowserMCPVisibility binds the seeded browser MCP to the executing agents.
+// seedObscuraMCPVisibility binds the seeded research browser to those agents.
 // Insert-if-absent, like the skill seed: a later toggle-off (enabled=false) is
 // never resurrected on restart.
-func (d *DB) seedBrowserMCPVisibility() error {
-	for _, key := range browserMCPAgents {
+func (d *DB) seedObscuraMCPVisibility() error {
+	for _, key := range obscuraMCPAgents {
 		if _, err := d.Exec(`
 INSERT INTO agent_visibility(agent_id, resource_kind, resource_id, mcp_tool_name, enabled)
 SELECT a.id, 'mcp', m.id, '', true FROM agents a, mcp_servers m
-WHERE a.key=$1 AND m.name='browser'
+WHERE a.key=$1 AND m.name='obscura'
 ON CONFLICT (agent_id, resource_kind, resource_id, mcp_tool_name) DO NOTHING`, key); err != nil {
-			return fmt.Errorf("browser mcp → agent %s: %w", key, err)
+			return fmt.Errorf("obscura mcp → agent %s: %w", key, err)
 		}
 	}
 	return nil

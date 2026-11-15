@@ -13,7 +13,7 @@ data = { type = "string", label = "POST body", placeholder = "id=1&name=x" }
 
 [command]
 program = "sqlmap"
-args = ["-u", "{{ target.value }}", "--batch", "--level", "{{ params.level }}", "--risk", "{{ params.risk }}", "{{ params.data | --data }}", "--user-agent", "{{ useragent }}", "--proxy", "{{ proxy }}"]
+args = ["-u", "{{ target.value }}", "--batch", "--level", "{{ params.level }}", "--risk", "{{ params.risk }}", "{{ params.data | --data }}", "--user-agent", "{{ useragent }}", "{{ proxy | --proxy }}"]
 timeout_seconds = 3600
 
 [emit]

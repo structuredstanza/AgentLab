@@ -1,4 +1,5 @@
 """Behavioral checks for untrusted guest artifact extraction."""
+import contextlib
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -6,8 +7,10 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -62,7 +65,7 @@ class ArtifactSnapshotTests(unittest.TestCase):
 
 
 class ProviderProxyTrafficExportTests(unittest.TestCase):
-    def test_exports_only_private_capture_artifact_and_manifest_correlation(self):
+    def test_exports_every_segment_and_manifest_correlation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             proxy_state = root / 'proxy-state'
@@ -81,6 +84,8 @@ class ProviderProxyTrafficExportTests(unittest.TestCase):
             ]
             capture = ''.join(json.dumps(record) + '\n' for record in records).encode()
             source.write_bytes(capture)
+            rotated = capture_dir / 'native-sse-1763.ndjson'
+            rotated.write_bytes(b'{"Direction":"request"}\n')
             (capture_dir / 'native-sse.ndjson.secret').write_text('sibling-secret')
             (proxy_state / 'replay.key').write_text('replay-secret')
             (proxy_state / 'native-proxy-token').write_text('token-secret')
@@ -92,22 +97,28 @@ class ProviderProxyTrafficExportTests(unittest.TestCase):
             existing_artifact = raw / 'postgres.dump'
             existing_artifact.write_bytes(b'preserved raw artifact')
 
-            with mock.patch.object(lab, 'PROXY_STATE', proxy_state):
+            with mock.patch.object(lab, 'ROOT', root), \
+                    mock.patch.object(lab, 'PROXY_STATE', proxy_state):
                 manifest = lab.export_provider_proxy_traffic(raw)
 
-            artifact = raw / 'provider-proxy-traffic' / 'native-sse.ndjson'
-            self.assertEqual(artifact.read_bytes(), capture)
-            self.assertEqual((artifact.parent.stat().st_mode & 0o777), 0o700)
-            self.assertEqual((artifact.stat().st_mode & 0o777), 0o600)
-            self.assertEqual(manifest['source'], 'proxy-state/captures/native-sse.ndjson')
-            self.assertEqual(manifest['artifact'], 'raw/provider-proxy-traffic/native-sse.ndjson')
-            self.assertEqual(manifest['sha256'], hashlib.sha256(capture).hexdigest())
+            artifacts = raw / 'provider-proxy-traffic'
+            self.assertEqual((artifacts / 'native-sse.ndjson').read_bytes(), capture)
+            self.assertEqual((artifacts / 'native-sse-1763.ndjson').read_bytes(),
+                             b'{"Direction":"request"}\n')
+            self.assertEqual((artifacts.stat().st_mode & 0o777), 0o700)
+            self.assertEqual(((artifacts / 'native-sse.ndjson').stat().st_mode & 0o777), 0o600)
+            self.assertEqual([segment['source'] for segment in manifest['segments']],
+                             ['proxy-state/captures/native-sse-1763.ndjson',
+                              'proxy-state/captures/native-sse.ndjson'])
+            self.assertEqual(manifest['segments'][1]['sha256'], hashlib.sha256(capture).hexdigest())
             self.assertEqual(manifest['correlation_fields'],
                              ['Direction', 'Provider', 'Model', 'Profile', 'SessionID'])
             self.assertNotIn('opaque-session-id', json.dumps(manifest))
             self.assertEqual(
                 sorted(path.relative_to(raw).as_posix() for path in raw.rglob('*')),
-                ['postgres.dump', 'provider-proxy-traffic', 'provider-proxy-traffic/native-sse.ndjson'],
+                ['postgres.dump', 'provider-proxy-traffic',
+                 'provider-proxy-traffic/native-sse-1763.ndjson',
+                 'provider-proxy-traffic/native-sse.ndjson'],
             )
             self.assertEqual(existing_artifact.read_bytes(), b'preserved raw artifact')
 
@@ -191,6 +202,42 @@ class NativeProxyBootstrapTests(unittest.TestCase):
                         lab.start_provider_proxy()
             self.assertEqual(installed.read_text(), 'user-owned service\n')
 
+    def test_checked_in_unit_symlink_is_replaced_by_a_rendered_unit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, home = Path(tmp) / 'lab', Path(tmp) / 'home'
+            root.mkdir()
+            installed = home / '.config/systemd/user/m1nervac0nsole-cliproxy.service'
+            installed.parent.mkdir(parents=True)
+            with self.prepare(root), mock.patch.object(lab.Path, 'home', return_value=home):
+                lab.PROXY_UNIT.write_text('WorkingDirectory=@ROOT@/dist\n')
+                installed.symlink_to(lab.PROXY_UNIT)
+                with mock.patch.object(lab.subprocess, 'run'), mock.patch.object(
+                    lab.urllib.request, 'urlopen',
+                    side_effect=lambda *args, **kwargs: io.BytesIO(b'{"status":"ok"}'),
+                ):
+                    lab.start_provider_proxy()
+                self.assertFalse(installed.is_symlink())
+                self.assertEqual(installed.read_text(), lab.render_proxy_unit(root))
+                self.assertIn(f'WorkingDirectory={root}/dist\n', installed.read_text())
+
+    def test_stale_render_is_migrated_and_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, home = Path(tmp) / 'lab', Path(tmp) / 'home'
+            root.mkdir()
+            installed = home / '.config/systemd/user/m1nervac0nsole-cliproxy.service'
+            installed.parent.mkdir(parents=True)
+            with self.prepare(root), mock.patch.object(lab.Path, 'home', return_value=home):
+                lab.PROXY_UNIT.write_text('WorkingDirectory=@ROOT@/dist\n')
+                installed.write_text(f'{lab.UNIT_MARKER}\nWorkingDirectory=/old/checkout/dist\n')
+                output = io.StringIO()
+                with mock.patch.object(lab.subprocess, 'run'), mock.patch.object(
+                    lab.urllib.request, 'urlopen',
+                    side_effect=lambda *args, **kwargs: io.BytesIO(b'{"status":"ok"}'),
+                ), contextlib.redirect_stdout(output):
+                    lab.start_provider_proxy()
+                self.assertEqual(installed.read_text(), lab.render_proxy_unit(root))
+                self.assertIn(f'Migrating {installed.name} to {root}', output.getvalue())
+
 
 
 
@@ -227,23 +274,196 @@ class BuildFreshnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertTrue(lab.guest_dist_stale(Path(tmp) / 'm1nervac0nsole'))
 
-    def check(self, source_time, binary_time):
+    def check(self, source_age, binary_age, source_rel):
+        """Staleness of a fake binary against one source file of a fake module tree.
+
+        Times are anchored an hour ahead so the checkout's own mtimes can never
+        decide the result."""
+        base = time.time() + 3600
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source = root / 'main.go'
+            module = root / 'm1nervac0nsole'
+            source = module / source_rel
+            source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text('package main')
-            binary = root / 'm1nervac0nsole'
+            binary = root / 'built-m1nervac0nsole'
             binary.write_bytes(b'bin')
-            os.utime(source, (source_time, source_time))
-            os.utime(binary, (binary_time, binary_time))
-            with mock.patch.object(lab, 'BUILD_INPUTS', [source]):
+            os.utime(source, (base - source_age,) * 2)
+            os.utime(binary, (base - binary_age,) * 2)
+            with mock.patch.object(lab, 'ROOT', root), \
+                    mock.patch.object(lab, 'M1NERVAC0NSOLE_SRC', module):
                 return lab.guest_dist_stale(binary)
 
     def test_binary_newer_than_every_input_is_current(self):
-        self.assertFalse(self.check(1000, 2000))
+        self.assertFalse(self.check(120, 60, 'main.go'))
 
     def test_newer_input_makes_the_build_stale(self):
-        self.assertTrue(self.check(3000, 2000))
+        self.assertTrue(self.check(0, 60, 'main.go'))
+
+    def test_newer_file_in_any_package_makes_the_build_stale(self):
+        """A hand-picked list of packages missed linked ones such as execbox/."""
+        self.assertTrue(self.check(0, 60, 'execbox/x.go'))
+
+
+class ImageBuildTests(unittest.TestCase):
+    """`image-build` builds a candidate; only --replace may move the configured tag.
+
+    A failed build or a missing tool must leave the tag the sandbox boots exactly
+    where it was, or the next `./lab start` boots an unverified image."""
+
+    TAG = 'agentlab/m1nervac0nsole:deepseek-v1'
+
+    def spec(self, tmp, text=None):
+        spec = Path(tmp) / 'sandbox.yaml'
+        spec.write_text(text if text is not None else f'image: {self.TAG}\npull_policy: never\n')
+        return spec
+
+    def run_image_build(self, ids=None, replace=False, **patches):
+        """Run image_build with docker stubbed; return (summary, argv list, msb mock)."""
+        ids = ids or {}
+        self.calls = []
+
+        def run(argv, **kwargs):
+            self.calls.append(argv)
+            if argv[:3] == ['docker', 'image', 'inspect']:
+                reference = argv[-1]
+                if reference not in ids:
+                    return mock.Mock(returncode=1, stdout='', stderr='no such image')
+                return mock.Mock(returncode=0, stdout=ids[reference] + '\n', stderr='')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        patches.setdefault('image_arch', mock.Mock(return_value='amd64'))
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(contextlib.redirect_stdout(output))
+            stack.enter_context(mock.patch.object(lab, 'image_tag', return_value=self.TAG))
+            stack.enter_context(mock.patch.object(lab.subprocess, 'run', side_effect=run))
+            msb = stack.enter_context(mock.patch.object(lab, 'msb'))
+            for name, value in patches.items():
+                stack.enter_context(mock.patch.object(lab, name, value))
+            summary = lab.image_build(replace)
+        self.output = output.getvalue()
+        return summary, self.calls, msb
+
+    def test_tag_comes_from_the_sandbox_spec(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(lab.image_tag(self.spec(tmp)), self.TAG)
+            for text in ('pull_policy: never\n', 'image: a\nimage: b\n',
+                         'image: two words\n', 'image:\n'):
+                with self.subTest(text=text):
+                    with self.assertRaises(RuntimeError):
+                        lab.image_tag(self.spec(tmp, text))
+
+    def test_candidate_build_leaves_the_tag_alone(self):
+        summary, calls, msb = self.run_image_build(ids={self.TAG + '-candidate': 'sha256:candidate'})
+        self.assertEqual(summary['candidate'], self.TAG + '-candidate')
+        self.assertFalse(summary['tag_replaced'])
+        self.assertNotIn('rollback', summary)
+        self.assertFalse([argv for argv in calls if argv[:2] == ['docker', 'tag']])
+        self.assertEqual([argv for argv in calls if argv[:2] == ['docker', 'build']][0][-1],
+                         str(lab.ROOT))
+        # The caveat is printed, not implied: a rebuild is not the historical image.
+        self.assertIn('does not reproduce the historical image', self.output)
+        # No sandbox is created, started, stopped or removed.
+        msb.assert_not_called()
+
+    def test_failed_capability_check_never_replaces_the_tag(self):
+        with self.assertRaisesRegex(RuntimeError, 'missing: nmap'):
+            self.run_image_build(ids={self.TAG: 'sha256:old'},
+                                 check_image_capabilities=mock.Mock(
+                                     side_effect=RuntimeError('missing: nmap')))
+        self.assertFalse([argv for argv in self.calls if argv[:2] == ['docker', 'tag']])
+
+    def test_failed_build_never_inspects_or_tags_the_configured_tag(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_image_build(ids={self.TAG: 'sha256:old'},
+                                 build_image_candidate=mock.Mock(
+                                     side_effect=subprocess.CalledProcessError(1, 'docker build')))
+        self.assertFalse([argv for argv in self.calls if argv[:2] == ['docker', 'tag']])
+        self.assertFalse([argv for argv in self.calls if argv[:3] == ['docker', 'image', 'inspect']])
+
+    def test_replace_preserves_the_previous_image_first(self):
+        summary, calls, msb = self.run_image_build(
+            ids={self.TAG: 'sha256:oldimage0123456789',
+                 self.TAG + '-candidate': 'sha256:candidate'},
+            replace=True)
+        rollback = self.TAG + '-prev-oldimage0123'
+        self.assertEqual(summary['rollback'], rollback)
+        self.assertTrue(summary['tag_replaced'])
+        self.assertEqual([argv for argv in calls if argv[:2] == ['docker', 'tag']],
+                         [['docker', 'tag', self.TAG, rollback],
+                          ['docker', 'tag', self.TAG + '-candidate', self.TAG]])
+        # Even the replacing path only moves docker tags: no sandbox is touched.
+        msb.assert_not_called()
+
+    def test_replace_without_a_local_image_just_moves_the_tag(self):
+        summary, calls, _ = self.run_image_build(
+            ids={self.TAG + '-candidate': 'sha256:candidate'}, replace=True)
+        self.assertNotIn('rollback', summary)
+        self.assertEqual([argv for argv in calls if argv[:2] == ['docker', 'tag']],
+                         [['docker', 'tag', self.TAG + '-candidate', self.TAG]])
+
+    def test_capability_check_passes_names_as_argv(self):
+        with mock.patch.object(lab.subprocess, 'run',
+                               return_value=mock.Mock(returncode=0, stdout='', stderr='')) as run:
+            lab.check_image_capabilities('repo/img:tag')
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:7], ['docker', 'run', '--rm', '--entrypoint', 'sh', 'repo/img:tag', '-c'])
+        self.assertIn('command -v', argv[7])
+        self.assertEqual(argv[8], 'sh')
+        self.assertIn('/opt/m1nervac0nsole/m1nervac0nsole', argv[9:])
+        self.assertIn('/opt/agentlab/guest-start.py', argv[9:])
+        # One argv entry per capability: no path is split or shell-quoted.
+        self.assertFalse([name for name in argv[9:] if not name or ' ' in name])
+
+    def test_capability_check_reports_the_missing_entry(self):
+        failed = mock.Mock(returncode=1, stdout='missing: nmap\n', stderr='')
+        with mock.patch.object(lab.subprocess, 'run', return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, 'missing: nmap'):
+                lab.check_image_capabilities('repo/img:tag')
+
+    def test_inventory_covers_the_runtime_entrypoints(self):
+        entries = lab.image_capabilities()
+        for name in ('nmap', 'tcpdump', 'strace', 'psql', 'gdb', 'r2', 'jadx', 'analyzeHeadless',
+                     'searchsploit', 'sqlmap', 'playwright', '/opt/ms-playwright/current/chrome',
+                     '/opt/m1nervac0nsole/m1nervac0nsole', '/opt/agentlab/guest-start.py'):
+            with self.subTest(name=name):
+                self.assertIn(name, entries)
+        self.assertEqual(len(entries), len(set(entries)), 'capability inventory repeats an entry')
+
+    def test_a_checkout_path_with_spaces_stays_one_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'check out'
+            root.mkdir()
+            calls = []
+
+            def run(argv, **kwargs):
+                calls.append((argv, kwargs))
+                return mock.Mock(returncode=0, stdout='', stderr='')
+
+            with mock.patch.object(lab, 'image_arch', return_value='amd64'), \
+                    mock.patch.object(lab.subprocess, 'run', side_effect=run):
+                candidate = lab.build_image_candidate('repo/img:tag', root)
+        self.assertEqual(candidate, 'repo/img:tag-candidate')
+        self.assertEqual(calls[0][0], [str(root / 'm1nervac0nsole/build.sh')])
+        self.assertEqual(calls[0][1]['env']['M1NERVAC0NSOLE_TARGET_ARCH'], 'amd64')
+        self.assertEqual(calls[0][1]['env']['M1NERVAC0NSOLE_TARGET_OS'], 'linux')
+        build = calls[1][0]
+        self.assertEqual(build[build.index('-f') + 1], str(root / 'deployment/Dockerfile'))
+        self.assertEqual(build[build.index('-t') + 1], 'repo/img:tag-candidate')
+        self.assertEqual(build[-1], str(root))
+
+    def test_other_architectures_are_refused(self):
+        with mock.patch.object(lab.platform, 'machine', return_value='aarch64'):
+            with self.assertRaisesRegex(RuntimeError, 'amd64-only'):
+                lab.image_arch()
+
+    def test_load_command_is_printed_not_run(self):
+        command = lab.image_load_command(self.TAG)
+        self.assertIn('docker save', command)
+        self.assertIn('MSB_HOME=', command)
+        self.assertIn('load -i', command)
+        self.assertIn(self.TAG, command)
 
 
 class StateStorageTests(unittest.TestCase):
@@ -359,6 +579,207 @@ class StateStorageTests(unittest.TestCase):
             lab.resize_state(200, True)
         self.assertEqual(created, [200 * 1024])
         self.assertEqual([call.args[0] for call in msb.call_args_list], ['remove', 'stop'])
+
+
+class StreamRotationTests(unittest.TestCase):
+    """A bounded stream is what makes an export copy segments and `prune` safe."""
+
+    def test_full_stream_becomes_an_immutable_segment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stream = Path(tmp) / 'host-events.jsonl'
+            stream.write_bytes(b'{"kind":"old"}\n')
+            segment = lab.rotate_stream(stream, limit=1)
+            self.assertTrue(segment.name.startswith('host-events-'))
+            self.assertTrue(segment.name.endswith('.jsonl'))
+            self.assertEqual(segment.read_bytes(), b'{"kind":"old"}\n')
+            self.assertFalse(stream.exists())
+            stream.write_bytes(b'{"kind":"new"}\n')
+            self.assertEqual(segment.read_bytes(), b'{"kind":"old"}\n')
+
+    def test_stream_below_the_limit_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stream = Path(tmp) / 'host-events.jsonl'
+            stream.write_bytes(b'{}\n')
+            self.assertIsNone(lab.rotate_stream(stream, limit=1 << 20))
+            self.assertEqual(stream.read_bytes(), b'{}\n')
+
+
+class PruneTests(unittest.TestCase):
+    """`prune` is the only deletion path, so it must refuse anything unverified."""
+
+    EXPORT = '20260101T000000.000000Z'
+
+    def prepare(self, root):
+        """A verified export of two rotated segments, plus the live streams."""
+        segments = [root / 'host-events-1.jsonl',
+                    root / 'proxy-state/captures/native-sse-1.ndjson']
+        for path in segments:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'{"segment":1}\n')
+        for path in (root / 'host-events.jsonl',
+                     root / 'proxy-state/captures/native-sse.ndjson'):
+            path.write_bytes(b'{"live":true}\n')
+        output = root / 'exports' / self.EXPORT
+        raw = output / 'raw'
+        raw.mkdir(parents=True)
+        artifact = raw / 'host-events.jsonl'
+        artifact.write_bytes(b'{"kind":"command_start"}\n')
+        manifest = {
+            'sha256': {'raw/host-events.jsonl': hashlib.sha256(artifact.read_bytes()).hexdigest()},
+            'prunable': [{'source': str(path.relative_to(root)),
+                          'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in segments],
+        }
+        (output / 'manifest.json').write_text(json.dumps(manifest))
+        return output, segments
+
+    def test_missing_export_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(lab, 'ROOT', Path(tmp)):
+                with self.assertRaisesRegex(RuntimeError, 'not found'):
+                    lab.prune(self.EXPORT, dry_run=True)
+
+    def test_export_without_a_manifest_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'exports' / self.EXPORT).mkdir(parents=True)
+            with mock.patch.object(lab, 'ROOT', root):
+                with self.assertRaisesRegex(RuntimeError, 'no manifest'):
+                    lab.prune(self.EXPORT)
+
+    def test_artifact_that_does_not_match_the_manifest_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output, segments = self.prepare(root)
+            (output / 'raw/host-events.jsonl').write_bytes(b'tampered\n')
+            with mock.patch.object(lab, 'ROOT', root):
+                with self.assertRaisesRegex(RuntimeError, 'does not match'):
+                    lab.prune(self.EXPORT)
+            self.assertTrue(all(path.exists() for path in segments))
+
+    def test_dry_run_lists_what_it_would_delete_and_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output, segments = self.prepare(root)
+            with mock.patch.object(lab, 'ROOT', root), \
+                    mock.patch('sys.stdout', new_callable=io.StringIO) as printed:
+                targets = lab.prune(self.EXPORT, dry_run=True)
+            self.assertEqual(sorted(targets), sorted(segments))
+            self.assertTrue(all(path.exists() for path in segments))
+            self.assertTrue((root / 'host-events.jsonl').exists())
+            self.assertIn('"dry_run": true', printed.getvalue())
+
+    def test_prune_deletes_only_the_exported_segments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output, segments = self.prepare(root)
+            with mock.patch.object(lab, 'ROOT', root), \
+                    mock.patch('sys.stdout', new_callable=io.StringIO):
+                targets = lab.prune(self.EXPORT)
+            self.assertEqual(sorted(targets), sorted(segments))
+            self.assertFalse(any(path.exists() for path in segments))
+            self.assertTrue((root / 'host-events.jsonl').exists())
+            self.assertTrue((root / 'proxy-state/captures/native-sse.ndjson').exists())
+            self.assertTrue((output / 'manifest.json').exists())
+
+    def test_manifest_cannot_widen_what_prune_deletes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output, segments = self.prepare(root)
+            live = root / 'host-events.jsonl'
+            manifest = json.loads((output / 'manifest.json').read_text())
+            manifest['prunable'].append({'source': 'host-events.jsonl',
+                                         'sha256': hashlib.sha256(live.read_bytes()).hexdigest()})
+            (output / 'manifest.json').write_text(json.dumps(manifest))
+            with mock.patch.object(lab, 'ROOT', root):
+                with self.assertRaisesRegex(RuntimeError, 'unprunable source'):
+                    lab.prune(self.EXPORT)
+            self.assertTrue(live.exists())
+            self.assertTrue(all(path.exists() for path in segments))
+
+    def test_segment_that_grew_after_the_export_is_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, segments = self.prepare(root)
+            segments[0].write_bytes(b'{"segment":1}\n{"segment":2}\n')
+            with mock.patch.object(lab, 'ROOT', root), \
+                    mock.patch('sys.stdout', new_callable=io.StringIO):
+                lab.prune(self.EXPORT)
+            self.assertTrue(segments[0].exists())
+            self.assertFalse(segments[1].exists())
+
+
+class FailedExportTests(unittest.TestCase):
+    def test_failed_export_leaves_no_partial_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seen = []
+
+            def die(*args, **kwargs):
+                seen.extend(path.name for path in (root / 'exports').rglob('*'))
+                raise RuntimeError('psql died')
+
+            with mock.patch.object(lab, 'ROOT', root), \
+                    mock.patch.object(lab, 'guest',
+                                      return_value=mock.Mock(stdout='llm_records\n')), \
+                    mock.patch.object(lab.subprocess, 'Popen', side_effect=die):
+                with self.assertRaisesRegex(RuntimeError, 'psql died'):
+                    lab.export()
+            self.assertTrue(seen, 'the export failed before it wrote anything')
+            self.assertEqual(list((root / 'exports').iterdir()), [])
+
+
+class HostEventExportTests(unittest.TestCase):
+    def test_exports_every_segment_and_only_rotated_ones_are_prunable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'host-events-1.jsonl').write_bytes(b'{"kind":"old"}\n')
+            (root / 'host-events.jsonl').write_bytes(b'{"kind":"live"}\n')
+            raw = root / 'export/raw'
+            raw.mkdir(parents=True)
+            with mock.patch.object(lab, 'ROOT', root):
+                entry = lab.export_host_events(raw)
+            self.assertEqual([segment['source'] for segment in entry['segments']],
+                             ['host-events-1.jsonl', 'host-events.jsonl'])
+            self.assertEqual((raw / 'host-events/host-events-1.jsonl').read_bytes(),
+                             b'{"kind":"old"}\n')
+            self.assertEqual(lab.prunable_segments((entry,)),
+                             [{'source': 'host-events-1.jsonl',
+                               'sha256': hashlib.sha256(b'{"kind":"old"}\n').hexdigest()}])
+
+
+class GuestExportRootsTests(unittest.TestCase):
+    def test_export_carries_both_runtime_logs_and_no_ca_material(self):
+        path = Path(__file__).resolve().parents[2] / 'deployment/guest-export.py'
+        loader = importlib.machinery.SourceFileLoader('guest_export', str(path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        exported = [arcname for _, arcname in module.ROOTS + module.EXTRA_FILES]
+        self.assertIn('logs/egress.log', exported)
+        self.assertIn('logs/postgres.log', exported)
+        for source, _ in module.ROOTS + module.EXTRA_FILES:
+            self.assertNotIn('egress', source.parts[2:], source)
+            self.assertNotIn(source.suffix, ('.key', '.pem'), source)
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            for directory in ('m1nervac0nsole', 'captures', 'runtime/logs/postgres',
+                              'runtime/egress'):
+                (state / directory).mkdir(parents=True)
+            (state / 'm1nervac0nsole/app.db').write_text('fixture')
+            (state / 'runtime/logs/egress.log').write_text('egress\n')
+            (state / 'runtime/logs/postgres/postgres.log').write_text('postgres\n')
+            (state / 'runtime/egress/ca.key').write_text('private key')
+            module.ROOTS = [(state / 'm1nervac0nsole', 'application'),
+                            (state / 'captures', 'captures')]
+            module.EXTRA_FILES = [(state / Path(*source.parts[2:]), arcname)
+                                  for source, arcname in module.EXTRA_FILES]
+            stream = io.BytesIO()
+            with mock.patch.object(module.sys, 'stdout', mock.Mock(buffer=stream)):
+                module.main()
+            names = tarfile.open(fileobj=io.BytesIO(stream.getvalue())).getnames()
+        self.assertIn('logs/egress.log', names)
+        self.assertIn('logs/postgres.log', names)
+        self.assertEqual([name for name in names if 'egress/' in name or name.endswith('.key')], [])
 
 
 if __name__ == '__main__':

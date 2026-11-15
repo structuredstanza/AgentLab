@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"time"
 
@@ -178,6 +179,8 @@ type TrafficExchangeDTO struct {
 	Status      int    `json:"status"`
 	ContentType string `json:"content_type"`
 	RespLen     int    `json:"resp_len"`
+	// TaskID is the run that made the request; absent when no run owns it.
+	TaskID int64 `json:"task_id,omitempty"`
 }
 
 func trafficDTOs(ex []traffic.ExchangeMeta) []TrafficExchangeDTO {
@@ -192,6 +195,7 @@ func trafficDTOs(ex []traffic.ExchangeMeta) []TrafficExchangeDTO {
 			Status:      e.Status,
 			ContentType: e.ContentType,
 			RespLen:     e.RespLen,
+			TaskID:      e.TaskID,
 		})
 	}
 	return out
@@ -498,6 +502,78 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		d.IntentID = "" // node_id is the finding node, not the intent; keep IntentID empty
 	}
 	return d
+}
+
+// resolveFindingEvidence fills Evidence from the content-addressed file when the
+// row spilled it (evidence above evidence.InlineEvidenceLimit), so a single
+// finding and an export carry the proof the row only points at. List endpoints
+// must not call this: the body is unbounded and nobody reads it there.
+func (s *Server) resolveFindingEvidence(f *db.DBFinding) {
+	if f == nil || f.EvidencePath == "" || f.Evidence != "" {
+		return
+	}
+	body, err := s.evidenceStore().ReadFindingEvidence(f.EvidencePath)
+	if err != nil {
+		log.Printf("[findings] read spilled evidence for #%d: %v", f.ID, err)
+		return
+	}
+	f.Evidence = body
+}
+
+// resolveReportEvidence fills each finding node's evidence from the spilled file
+// when its standalone row kept only a path. The deliverable report renders the
+// node payload, and the body lives only in the file, so it is read here rather
+// than stored back on the node (a list query must not carry it).
+func (s *Server) resolveReportEvidence(taskID int64, nodes []*db.Node) {
+	rows, err := s.m.pg.Query(`SELECT node_id, evidence_path FROM findings
+WHERE task_id=$1 AND node_id IS NOT NULL AND evidence_path <> ''`, taskID)
+	if err != nil {
+		log.Printf("[report] resolve spilled evidence for task %d: %v", taskID, err)
+		return
+	}
+	defer rows.Close()
+	paths := map[int64]string{}
+	for rows.Next() {
+		var nodeID int64
+		var path string
+		if err := rows.Scan(&nodeID, &path); err != nil {
+			log.Printf("[report] resolve spilled evidence for task %d: %v", taskID, err)
+			return
+		}
+		paths[nodeID] = path
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[report] resolve spilled evidence for task %d: %v", taskID, err)
+		return
+	}
+	for i, n := range nodes {
+		path := paths[n.ID]
+		if path == "" {
+			continue
+		}
+		body, err := s.evidenceStore().ReadFindingEvidence(path)
+		if err != nil {
+			log.Printf("[report] read spilled evidence for node #%d: %v", n.ID, err)
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(n.Payload, &payload); err != nil {
+			continue
+		}
+		evidence, _ := payload["evidence"].(map[string]any)
+		if evidence == nil {
+			evidence = map[string]any{}
+		}
+		evidence["poc"] = body
+		payload["evidence"] = evidence
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			continue
+		}
+		patched := *n
+		patched.Payload = raw
+		nodes[i] = &patched
+	}
 }
 
 // ---- Activity (frontend "Activity") ----

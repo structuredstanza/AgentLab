@@ -279,7 +279,7 @@ func (d *DB) ListFindingsPage(f FindingFilter, page, pageSize int) ([]*DBFinding
 	order := "f.created_at DESC, f.id DESC"
 	if f.Sort == "severity" {
 		// critical > high > medium > low > other, then newest first.
-		order = `CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC, f.id DESC`
+		order = `CASE lower(f.severity) WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC, f.id DESC`
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	q := fmt.Sprintf(`
@@ -343,7 +343,7 @@ func (d *DB) ListFindingGroups(f FindingFilter, page, pageSize int) ([]FindingGr
 
 	order := "MAX(f.created_at) DESC, t.id DESC NULLS LAST"
 	if f.Sort == "severity" {
-		order = `MAX(CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) DESC, MAX(f.created_at) DESC, t.id DESC NULLS LAST`
+		order = `MAX(CASE lower(f.severity) WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) DESC, MAX(f.created_at) DESC, t.id DESC NULLS LAST`
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	query := fmt.Sprintf(`SELECT t.id, COALESCE(t.name,''), COALESCE(t.description,''), COALESCE(
@@ -354,10 +354,10 @@ func (d *DB) ListFindingGroups(f FindingFilter, page, pageSize int) ([]FindingGr
 			ELSE t.status
 		END, ''),
 		COUNT(*),
-		COUNT(*) FILTER (WHERE f.severity='critical'),
-		COUNT(*) FILTER (WHERE f.severity='high'),
-		COUNT(*) FILTER (WHERE f.severity='medium'),
-		COUNT(*) FILTER (WHERE f.severity='low'),
+		COUNT(*) FILTER (WHERE lower(f.severity)='critical'),
+		COUNT(*) FILTER (WHERE lower(f.severity)='high'),
+		COUNT(*) FILTER (WHERE lower(f.severity)='medium'),
+		COUNT(*) FILTER (WHERE lower(f.severity)='low'),
 		MAX(f.created_at)%s
 		ORDER BY %s LIMIT $%d OFFSET $%d`, grouped, order, len(args)+1, len(args)+2)
 	rows, err := d.Query(query, pageArgs...)
@@ -490,7 +490,7 @@ RETURNING id, created_at`, s.expID, audit.NodeID, utf8Clean(audit.Worker), utf8C
 // filter; when ids is empty, export according to the filter (export the current filter/all). Results are sorted by severity in descending order,
 // then by time descending, consistent with the group order of "Export Summary Report".
 func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, error) {
-	const order = `ORDER BY CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC`
+	const order = `ORDER BY CASE lower(f.severity) WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC`
 	cols := findingSelectCols + `, COALESCE(f.report, '')`
 
 	var q string
@@ -574,10 +574,10 @@ func (d *DB) FindingStats() (*FindingStats, error) {
 	err := d.QueryRow(`SELECT
 		COUNT(*),
 		COUNT(*) FILTER (WHERE status = 'pending'),
-		COUNT(*) FILTER (WHERE severity = 'critical'),
-		COUNT(*) FILTER (WHERE severity = 'high'),
-		COUNT(*) FILTER (WHERE severity = 'medium'),
-		COUNT(*) FILTER (WHERE severity = 'low')
+		COUNT(*) FILTER (WHERE lower(severity) = 'critical'),
+		COUNT(*) FILTER (WHERE lower(severity) = 'high'),
+		COUNT(*) FILTER (WHERE lower(severity) = 'medium'),
+		COUNT(*) FILTER (WHERE lower(severity) = 'low')
 		FROM findings`).Scan(&st.Total, &st.Pending, &st.Critical, &st.High, &st.Medium, &st.Low)
 	if err != nil {
 		return nil, err

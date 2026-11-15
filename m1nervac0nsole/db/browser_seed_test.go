@@ -7,26 +7,23 @@ import (
 	"testing"
 )
 
-// The browser MCP ships enabled, and an install that seeded it disabled is
-// migrated once. The one-shot settings flag is what makes a later user
-// toggle-off stick: without it the migration would resurrect the row on every
-// restart.
-func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
+// The Playwright MCP is retired: the native Chromium driver is the only testing
+// browser. An upgraded install loses the seeded row and the visibility rows that
+// pointed at it, once - a row the operator creates again by hand is theirs, and
+// the next startup leaves it alone.
+func TestPlaywrightMCPIsRemovedOnce(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
 	t.Cleanup(func() { d.Close() })
 
-	const key = "browser_mcp_enabled_v1"
-	const chromiumKey = "browser_mcp_chromium_v1"
-	const commandKey = "browser_mcp_command_v1"
-	const oldSeedArgs = `["@playwright/mcp","--headless"]` // what a build before the --browser fix seeded
-	const backup = "browser-test-backup"
-
-	// Save the shared row + flag and move the row aside under a temporary name,
-	// so the seed sees no 'browser' row while the real one keeps its id (and any
-	// agent_visibility rows pointing at it).
+	const flag = "browser_mcp_removed_v1"
+	oldFlag, hadFlag, err := d.GetSetting(flag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Park any real row so the test owns the name, and put it back afterwards.
 	var (
 		hadRow  bool
 		enabled bool
@@ -34,7 +31,8 @@ func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
 		args    string
 		env     string
 	)
-	err = d.QueryRow(`SELECT enabled, command, args, env FROM mcp_servers WHERE name='browser'`).Scan(&enabled, &command, &args, &env)
+	err = d.QueryRow(`SELECT enabled, command, args::text, env::text FROM mcp_servers WHERE name='browser'`).
+		Scan(&enabled, &command, &args, &env)
 	switch {
 	case err == nil:
 		hadRow = true
@@ -42,139 +40,248 @@ func TestBrowserMCPSeedEnablesOnceAndRespectsToggleOff(t *testing.T) {
 	default:
 		t.Fatal(err)
 	}
-	oldFlag, hadFlag, err := d.GetSetting(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldChromium, hadChromium, err := d.GetSetting(chromiumKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldCommand, hadCommand, err := d.GetSetting(commandKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hadRow {
-		if _, err := d.Exec(`DELETE FROM mcp_servers WHERE name=$1`, backup); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := d.Exec(`UPDATE mcp_servers SET name=$1 WHERE name='browser'`, backup); err != nil {
-			t.Fatal(err)
-		}
-	}
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM mcp_servers WHERE name='browser'`)
 		if hadRow {
-			_, _ = d.Exec(`UPDATE mcp_servers SET name='browser', enabled=$1, command=$2, args=$3, env=$4 WHERE name=$5`, enabled, command, args, env, backup)
+			_, _ = d.Exec(`
+INSERT INTO mcp_servers(name, transport, command, args, env, enabled)
+VALUES ('browser','stdio',$1,$2::jsonb,$3::jsonb,$4)
+ON CONFLICT (name) DO UPDATE SET command=EXCLUDED.command, args=EXCLUDED.args, env=EXCLUDED.env, enabled=EXCLUDED.enabled`,
+				command, args, env, enabled)
 		}
 		if hadFlag {
-			_ = d.SetSetting(key, oldFlag)
+			_ = d.SetSetting(flag, oldFlag)
 		} else {
-			_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, key)
-		}
-		if hadChromium {
-			_ = d.SetSetting(chromiumKey, oldChromium)
-		} else {
-			_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, chromiumKey)
-		}
-		if hadCommand {
-			_ = d.SetSetting(commandKey, oldCommand)
-		} else {
-			_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, commandKey)
+			_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, flag)
 		}
 	})
 
-	rowEnabled := func() bool {
+	// seedRow puts back what an older build shipped: the row plus one binding.
+	seedRow := func() int64 {
 		t.Helper()
-		var got bool
-		if err := d.QueryRow(`SELECT enabled FROM mcp_servers WHERE name='browser'`).Scan(&got); err != nil {
+		if _, err := d.Exec(`DELETE FROM mcp_servers WHERE name='browser'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(`
+INSERT INTO mcp_servers(name, transport, command, args, env, enabled)
+VALUES ('browser','stdio','playwright-mcp','["--headless"]'::jsonb,'{}'::jsonb,true)`); err != nil {
+			t.Fatal(err)
+		}
+		var id int64
+		if err := d.QueryRow(`SELECT id FROM mcp_servers WHERE name='browser'`).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(`
+INSERT INTO agent_visibility(agent_id, resource_kind, resource_id, mcp_tool_name, enabled)
+SELECT a.id, 'mcp', m.id, '', true FROM agents a, mcp_servers m
+WHERE a.key='worker' AND m.name='browser'
+ON CONFLICT (agent_id, resource_kind, resource_id, mcp_tool_name) DO NOTHING`); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	rowID := seedRow()
+	if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, flag); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.seedBuiltins(); err != nil {
+		t.Fatal(err)
+	}
+
+	var rows int
+	if err := d.QueryRow(`SELECT count(*) FROM mcp_servers WHERE name='browser'`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatal("the retired Playwright MCP row survived the migration")
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM agent_visibility WHERE resource_kind='mcp' AND resource_id=$1`, rowID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("%d visibility rows still point at the deleted server", rows)
+	}
+	if v, _, _ := d.GetSetting(flag); v != "true" {
+		t.Fatalf("the one-shot flag was not set (got %q)", v)
+	}
+
+	// One-shot: a row the operator adds again is not deleted on the next start.
+	seedRow()
+	if err := d.seedBuiltins(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM mcp_servers WHERE name='browser'`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatal("a browser MCP row created after the migration was deleted again")
+	}
+}
+
+// Obscura is the research browser: enabled, stealth, and bound to the agents
+// that read public material - including the chat agents, which carry no task and
+// therefore cannot use the testing browser at all.
+func TestObscuraMCPIsStealthAndResearchBound(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	const flag = "obscura_mcp_stealth_v1"
+	oldFlag, hadFlag, err := d.GetSetting(flag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		hadRow  bool
+		enabled bool
+		args    string
+	)
+	err = d.QueryRow(`SELECT enabled, args::text FROM mcp_servers WHERE name='obscura'`).Scan(&enabled, &args)
+	switch {
+	case err == nil:
+		hadRow = true
+	case errors.Is(err, sql.ErrNoRows):
+	default:
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM mcp_servers WHERE name='obscura'`)
+		if hadRow {
+			_, _ = d.Exec(`
+INSERT INTO mcp_servers(name, transport, command, args, env, enabled)
+VALUES ('obscura','stdio','obscura',$1::jsonb,'{}'::jsonb,$2)
+ON CONFLICT (name) DO UPDATE SET args=EXCLUDED.args, enabled=EXCLUDED.enabled`, args, enabled)
+		}
+		if hadFlag {
+			_ = d.SetSetting(flag, oldFlag)
+		} else {
+			_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, flag)
+		}
+	})
+
+	argsOf := func() string {
+		t.Helper()
+		var got string
+		if err := d.QueryRow(`SELECT args::text FROM mcp_servers WHERE name='obscura'`).Scan(&got); err != nil {
 			t.Fatal(err)
 		}
 		return got
 	}
+	seedFresh := func() {
+		t.Helper()
+		if _, err := d.Exec(`DELETE FROM mcp_servers WHERE name='obscura'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, flag); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.seedBuiltins(); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	// A fresh install on a build that already ran the migration (flag set, row
-	// absent): the INSERT itself must ship the row enabled.
-	if err := d.SetSetting(key, "true"); err != nil {
+	// A fresh install seeds the stealth build, enabled.
+	seedFresh()
+	if got := argsOf(); got != `["mcp", "--stealth"]` {
+		t.Fatalf("seeded obscura args = %s, want the stealth build", got)
+	}
+	var on bool
+	if err := d.QueryRow(`SELECT enabled FROM mcp_servers WHERE name='obscura'`).Scan(&on); err != nil {
+		t.Fatal(err)
+	}
+	if !on {
+		t.Fatal("the research browser was seeded disabled")
+	}
+
+	// An install from before the stealth seed gets it once.
+	if _, err := d.Exec(`UPDATE mcp_servers SET args='["mcp"]'::jsonb WHERE name='obscura'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, flag); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.seedBuiltins(); err != nil {
 		t.Fatal(err)
 	}
-	if !rowEnabled() {
-		t.Fatal("a fresh install seeded the browser MCP disabled")
+	if got := argsOf(); !strings.Contains(got, `"--stealth"`) {
+		t.Fatalf("the migrated obscura row is not stealth: %s", got)
 	}
 
-	// The user disables it. A restart must not resurrect it.
-	if _, err := d.Exec(`UPDATE mcp_servers SET enabled=false WHERE name='browser'`); err != nil {
+	// A row the operator edited is left alone.
+	if _, err := d.Exec(`UPDATE mcp_servers SET args='["mcp","--stealth","--font-dir","/fonts"]'::jsonb WHERE name='obscura'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, flag); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.seedBuiltins(); err != nil {
 		t.Fatal(err)
 	}
-	if rowEnabled() {
-		t.Fatal("a user toggle-off was resurrected by the next startup")
+	if got := argsOf(); !strings.Contains(got, "/fonts") {
+		t.Fatalf("the migration overwrote an edited row: %s", got)
 	}
 
-	// An older install: the row was seeded disabled and the migration never ran.
-	// The first startup after the upgrade flips it, once.
-	if _, err := d.Exec(`UPDATE mcp_servers SET enabled=false, command='npx', args=$1, env='{}' WHERE name='browser'`, oldSeedArgs); err != nil {
+	// Visibility: the research agents see it, the report writer does not.
+	if _, err := d.Exec(`DELETE FROM agent_visibility WHERE resource_kind='mcp' AND resource_id IN (SELECT id FROM mcp_servers WHERE name='obscura')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`DELETE FROM settings WHERE key IN ($1, $2, $3)`, key, chromiumKey, commandKey); err != nil {
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM agent_visibility WHERE resource_kind='mcp' AND resource_id IN (SELECT id FROM mcp_servers WHERE name='obscura')`)
+	})
+	if err := d.seedObscuraMCPVisibility(); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.seedBuiltins(); err != nil {
-		t.Fatal(err)
+	for _, key := range obscuraMCPAgents {
+		ag, err := d.GetAgentByKey(key)
+		if err != nil || ag == nil {
+			t.Fatalf("agent %q missing: %v", key, err)
+		}
+		ids, err := d.AgentVisible(ag.ID, "mcp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) == 0 {
+			t.Errorf("%s cannot see the research browser (visible %v)", key, ids)
+		}
 	}
-	if !rowEnabled() {
-		t.Fatal("the migrated browser MCP row is still disabled")
-	}
-	if v, _, _ := d.GetSetting(key); v != "true" {
-		t.Fatalf("the one-shot flag was not set (got %q)", v)
-	}
-	// The same upgrade names the browser: the branded "chrome" channel and the
-	// MCP's own expected revision are both absent from the image, so a row
-	// without --executable-path fails every navigation.
-	var gotArgs string
-	if err := d.QueryRow(`SELECT args::text FROM mcp_servers WHERE name='browser'`).Scan(&gotArgs); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(gotArgs, `"--executable-path"`) || !strings.Contains(gotArgs, `/opt/ms-playwright/current/chrome`) {
-		t.Fatalf("the migrated row does not name the chromium executable: %s", gotArgs)
-	}
-	// Running as root in the guest, Chromium refuses to start with its sandbox.
-	if !strings.Contains(gotArgs, `"--no-sandbox"`) {
-		t.Fatalf("the migrated row does not disable the Chromium sandbox: %s", gotArgs)
-	}
-	// npx resolves the package over the network, and every child inherits the
-	// egress proxy: the handshake hung. The image's global binary is used instead.
-	var gotCmd string
-	if err := d.QueryRow(`SELECT command FROM mcp_servers WHERE name='browser'`).Scan(&gotCmd); err != nil {
-		t.Fatal(err)
-	}
-	if gotCmd != "playwright-mcp" {
-		t.Fatalf("command = %q, want playwright-mcp", gotCmd)
-	}
-	if strings.Contains(gotArgs, "@playwright/mcp") {
-		t.Fatalf("the package name is still in the args: %s", gotArgs)
+	for _, key := range []string{"drafter", "reporter"} {
+		ag, err := d.GetAgentByKey(key)
+		if err != nil || ag == nil {
+			continue
+		}
+		ids, _ := d.AgentVisible(ag.ID, "mcp")
+		if len(ids) != 0 {
+			t.Errorf("%s should not see the research browser (visible %v)", key, ids)
+		}
 	}
 
-	// A toggle-off after the migration survives the next restart.
-	if _, err := d.Exec(`UPDATE mcp_servers SET enabled=false WHERE name='browser'`); err != nil {
+	// A user toggle-off survives a restart: the seed is insert-if-absent.
+	if _, err := d.Exec(`
+UPDATE agent_visibility SET enabled=false
+WHERE resource_kind='mcp' AND resource_id IN (SELECT id FROM mcp_servers WHERE name='obscura')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.seedBuiltins(); err != nil {
+	if err := d.seedObscuraMCPVisibility(); err != nil {
 		t.Fatal(err)
 	}
-	if rowEnabled() {
-		t.Fatal("a post-migration toggle-off was resurrected by the next startup")
+	var resurrected int
+	if err := d.QueryRow(`
+SELECT count(*) FROM agent_visibility
+WHERE resource_kind='mcp' AND enabled=true
+  AND resource_id IN (SELECT id FROM mcp_servers WHERE name='obscura')`).Scan(&resurrected); err != nil {
+		t.Fatal(err)
+	}
+	if resurrected != 0 {
+		t.Fatalf("%d bindings were resurrected after a toggle-off", resurrected)
 	}
 }
 
 // The browser skill ships visible to the agents that execute work, and stays
-// invisible to the human-interface agent. The MCP itself is bound directly (see
-// the test below); the skill is the how-to.
+// invisible to the human-interface agent. The native driver's tools are host
+// tools bound directly to the executing agents; the skill is the how-to.
 func TestBrowserSkillShipsVisibleToExecutingAgents(t *testing.T) {
 	for _, key := range []string{"auto", "pentest", "worker", "planner"} {
 		if !containsStr(builtinSkillVisibility["browser"], key) {
@@ -216,55 +323,5 @@ func TestBrowserSkillShipsVisibleToExecutingAgents(t *testing.T) {
 		if containsStr(got, "browser") {
 			t.Errorf("mainagent should not get the browser skill, has %v", got)
 		}
-	}
-}
-
-// The browser MCP is bound to the executing agents directly, so its tools are in
-// the global block from session start. A skill-gated server was listed in the
-// prompt but never unlocked in two measured runs.
-func TestBrowserMCPIsVisibleToExecutingAgents(t *testing.T) {
-	d, err := Open(testDSN(t))
-	if err != nil {
-		t.Skipf("postgres unavailable (%v) - skipping", err)
-	}
-	t.Cleanup(func() { d.Close() })
-
-	t.Cleanup(func() {
-		_, _ = d.Exec(`DELETE FROM agent_visibility WHERE resource_kind='mcp' AND resource_id IN (SELECT id FROM mcp_servers WHERE name='browser')`)
-	})
-	if _, err := d.Exec(`DELETE FROM agent_visibility WHERE resource_kind='mcp' AND resource_id IN (SELECT id FROM mcp_servers WHERE name='browser')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.seedBrowserMCPVisibility(); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, key := range []string{"auto", "pentest", "worker", "planner"} {
-		ag, err := d.GetAgentByKey(key)
-		if err != nil || ag == nil {
-			t.Fatalf("agent %q missing: %v", key, err)
-		}
-		ids, err := d.AgentVisible(ag.ID, "mcp")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(ids) == 0 {
-			t.Errorf("%s cannot see the browser MCP (visible %v)", key, ids)
-		}
-	}
-
-	// A user toggle-off survives a restart: the seed is insert-if-absent.
-	if _, err := d.Exec(`UPDATE agent_visibility SET enabled=false WHERE resource_kind='mcp'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.seedBrowserMCPVisibility(); err != nil {
-		t.Fatal(err)
-	}
-	var enabled int
-	if err := d.QueryRow(`SELECT count(*) FROM agent_visibility WHERE resource_kind='mcp' AND enabled=true`).Scan(&enabled); err != nil {
-		t.Fatal(err)
-	}
-	if enabled != 0 {
-		t.Fatalf("%d bindings were resurrected after a toggle-off", enabled)
 	}
 }

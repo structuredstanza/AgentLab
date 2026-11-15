@@ -355,6 +355,8 @@ export interface WorkspaceFile {
 // One entry in the task's test scope (the coverage denominator and the authorization boundary).
 // A rule is the operator's explicit layer over the accumulated scope rows: it
 // decides for the hosts it matches, and the rows decide only when no rule does.
+// An include rule grants only once the operator approves it; an exclude binds
+// without approval because a restriction is never a grant.
 export interface TaskScopeRule {
   id: number;
   task_id: number;
@@ -362,6 +364,9 @@ export interface TaskScopeRule {
   pattern: string;
   note: string;
   created_at: string;
+  protocol: string;
+  ports: number[];
+  authorized: boolean;
 }
 
 export interface TaskScopeRow {
@@ -944,9 +949,6 @@ export interface Settings {
   // worker/main agent/conversation) has noa take over context compaction, replacing the built-in compaction; read once per run, for
   // Takes effect for the run started after this.
   noa_compaction?: boolean;
-  // Browser surface: "mcp" (the Playwright server) or "native" (the built-in
-  // driver). Read at tool assembly, so a change applies to the next run.
-  browser_driver?: "mcp" | "native";
   // ---- Vulnerability IM push (channels are independent resources, see /api/notify/*; here are only the three global settings) ----
   notify_enabled?: boolean; // Master push switch, on by default; allows push notifications to be stopped with one action during maintenance
   notify_public_base_url?: string; // External access address for the link back to vulnerability details; empty = messages carry no link back
@@ -1316,6 +1318,15 @@ export interface ToolManifestParam {
   options?: string[];
 }
 
+// ToolArtifact is the binary an install published into the persistent toolbox:
+// read from the file on the server, so it is what PATH resolves to now.
+export interface ToolArtifact {
+  path: string;
+  size: number;
+  sha256: string;
+  installed_at: string;
+}
+
 export interface ToolManifest {
   id: string;
   name: string;
@@ -1324,6 +1335,11 @@ export interface ToolManifest {
   accepts: string[];
   requires: string[];
   available: boolean;
+  // builtin = shipped, modified = a stored row overrides a shipped manifest, custom = stored only.
+  source: "builtin" | "modified" | "custom";
+  toml: string; // raw manifest text the editor starts from
+  installable: boolean; // the manifest declares an [install] script
+  artifact?: ToolArtifact | null; // the published binary, absent when nothing was published
   params: Record<string, ToolManifestParam>;
   timeout_seconds: number;
 }

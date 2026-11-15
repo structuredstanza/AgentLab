@@ -64,19 +64,31 @@ func (e *Engine) inflightCount(taskID string) int64 {
 
 // ---------- deadline ----------
 
-// taskDeadline returns the task's absolute deadline (unix). Prefers the in-process
-// map (stamped this session); falls back to the DB-loaded value (restart), seeding
-// the map. 0 = no timeout / not yet stamped.
+// taskDeadline returns the task's absolute deadline (unix) from the lifecycle
+// snapshot, the only place resume credits the paused interval onto. 0 = no
+// timeout / not yet stamped.
 func (e *Engine) taskDeadline(t *Task) int64 {
-	if v, ok := e.deadline.Load(t.ID); ok {
-		return v.(int64)
+	return t.lifecycleSnapshot().DeadlineAt
+}
+
+// deadlineFrozen reports whether the task's timeout clock is stopped: a user
+// pause, an engine pause, or a block waiting for the operator. Resume credits the
+// paused interval onto deadline_at, so a frozen task must never be timed out.
+func (e *Engine) deadlineFrozen(t *Task) bool {
+	state := t.lifecycleSnapshot()
+	return state.Paused || e.IsPaused(t.ID) || state.Status == db.StatusNeedsOperator
+}
+
+// abandonSettle drops a wind-down whose clock froze mid-sequence, so a paused or
+// blocked task neither runs the final planner round nor gets its status
+// overwritten. Clearing settling lets a later resume run normally.
+func (e *Engine) abandonSettle(t *Task) bool {
+	if !e.deadlineFrozen(t) {
+		return false
 	}
-	deadlineAt := t.lifecycleSnapshot().DeadlineAt
-	if deadlineAt > 0 {
-		e.deadline.Store(t.ID, deadlineAt)
-		return deadlineAt
-	}
-	return 0
+	e.settling.Delete(t.ID)
+	log.Printf("[deadline] task %s is paused or waiting for the operator, abandoning the wrap-up", t.ID)
+	return true
 }
 
 // resetTimeoutRevival clears only the per-run timeout state after PostgreSQL has
@@ -86,7 +98,6 @@ func (e *Engine) taskDeadline(t *Task) int64 {
 // produced the timeout has already completed (or is in its final return path).
 func (e *Engine) resetTimeoutRevival(taskID string) {
 	e.settling.Delete(taskID)
-	e.deadline.Delete(taskID)
 	e.stamped.Delete(taskID)
 	e.coordStarted.Delete(taskID)
 }
@@ -107,7 +118,6 @@ func (e *Engine) stampFirstRun(t *Task) {
 		return
 	}
 	if dl > 0 {
-		e.deadline.Store(t.ID, dl)
 		log.Printf("[deadline] task %s first run, deadline at %s", t.ID, time.Unix(dl, 0).Format("2006-01-02 15:04:05"))
 	}
 }
@@ -143,11 +153,15 @@ func (e *Engine) startDeadlineCoordinator(ctx context.Context, t *Task) {
 	}
 	rt := e.registerTaskRoutines(ctx, t.ID, 1)
 	e.deleteMu.RUnlock()
-	runTaskRoutine(rt, func(loopCtx context.Context) { e.deadlineCoordinator(loopCtx, t) })
+	// The final planning round runs through the same tools as any other round, so
+	// its context carries the task's session like the loops' does.
+	runTaskRoutine(rt, func(loopCtx context.Context) { e.deadlineCoordinator(taskSessionContext(loopCtx, e.m, t.ID), t) })
 }
 
 // deadlineCoordinator waits until the task's absolute deadline, then runs the settle
-// sequence. Absolute wall-clock: it keeps counting through pauses.
+// sequence. The deadline is re-read from the lifecycle snapshot every tick (resume
+// credits the paused interval onto it) and the clock is stopped while the task is
+// paused or waiting for the operator.
 func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 	for {
 		select {
@@ -155,10 +169,17 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 			return
 		default:
 		}
-		if isTerminalStatus(e.m.TaskStatus(t.ID)) {
+		state := t.lifecycleSnapshot()
+		if isTerminalStatus(state.Status) {
 			return // already finished (goals met / failed) — nothing to time out
 		}
-		dl := e.taskDeadline(t)
+		if e.deadlineFrozen(t) {
+			if sleepCtx(ctx, deadlinePollInterval) {
+				return
+			}
+			continue
+		}
+		dl := state.DeadlineAt
 		if dl <= 0 {
 			if sleepCtx(ctx, deadlinePollInterval) { // not yet stamped (task hasn't really run)
 				return
@@ -202,12 +223,22 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 		}
 	}
 
+	// The operator may have paused or blocked the task while it drained: the clock
+	// is frozen then, so abandon the wind-down instead of overwriting the state the
+	// human asked for.
+	if e.abandonSettle(t) {
+		return
+	}
+
 	// ⑤ Final round of the planner (task-timeout wording, final goal judgment, does not produce new intents).
 	met := e.runFinalPlannerRound(ctx, t)
 	if !e.beginTaskOperation(t.ID) {
 		return
 	}
 	defer e.decInflight(t.ID)
+	if e.abandonSettle(t) {
+		return
+	}
 
 	// ⑥ Set the final state (with guard): met → done (completed); otherwise, timeout. If the regular path has already set done,
 	// the guard (SetTaskStatusGuarded) rejects overwriting, preserving the completed semantics.
@@ -242,7 +273,7 @@ func (e *Engine) runFinalPlannerRound(ctx context.Context, t *Task) (met bool) {
 		if sleepCtx(ctx, deadlinePollInterval) {
 			return false
 		}
-		if isTerminalStatus(e.m.TaskStatus(t.ID)) {
+		if isTerminalStatus(e.m.TaskStatus(t.ID)) || e.deadlineFrozen(t) {
 			return false
 		}
 		if e.IsDeleting(t.ID) {

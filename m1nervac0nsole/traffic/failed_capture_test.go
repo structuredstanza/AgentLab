@@ -9,7 +9,7 @@ import (
 // must not be recorded as HTTP 200. The old default rewrote status 0 to 200,
 // which turned a blocked request into apparent success.
 func TestFailedCaptureKeepsItsStatusAndSaysWhy(t *testing.T) {
-	tr, err := Open(t.TempDir(), "127.0.0.1:0")
+	tr, err := OpenWithTransport(t.TempDir(), "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

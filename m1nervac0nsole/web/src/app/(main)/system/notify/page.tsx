@@ -47,6 +47,9 @@ export default function NotifyPage() {
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<NotificationChannel | null>(null);
   const [form, setForm] = React.useState<ChannelForm>(emptyForm("webhook"));
+  // The URL as the sheet opened it: the webhook address is a credential too, so the
+  // form only ever holds it masked and the operator cannot see whether it changed.
+  const [savedURL, setSavedURL] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
 
@@ -83,12 +86,14 @@ export default function NotifyPage() {
 
   function openAdd() {
     setEditing(null);
+    setSavedURL("");
     setForm(emptyForm(meta?.kinds[0]?.kind ?? "webhook"));
     setOpen(true);
   }
 
   function openEdit(ch: NotificationChannel) {
     setEditing(ch);
+    setSavedURL(String(ch.config.url ?? ""));
     // On the backend, filter is a Go struct and is always serialized as an object (never null), so no fallback is needed.
     const f = ch.filter;
     setForm({
@@ -265,6 +270,11 @@ export default function NotifyPage() {
   const fields = CHANNEL_FIELDS[form.kind] ?? [];
   const secretKeys = new Set(meta?.kinds.find((k) => k.kind === form.kind)?.secret_keys ?? []);
   const defaultRate = meta?.kinds.find((k) => k.kind === form.kind)?.default_rate_per_min ?? 0;
+  // The webhook URL is both the destination and a credential, so it is echoed masked
+  // and so are the headers. Editing the address drops the stored headers: they were
+  // the old address's credential and must not travel to the new one.
+  const urlChanged = editing?.kind === "webhook" && form.config.url !== savedURL;
+  const maskedHeaders = typeof form.config.headers === "string" && form.config.headers.startsWith("__masked__");
 
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
@@ -469,6 +479,10 @@ export default function NotifyPage() {
                     onChange={(v) => setCfg(d.key, v)}
                   />
                 ))
+              )}
+
+              {urlChanged && maskedHeaders && (
+                <p className="text-warning text-xs">{t("sheet.headersClearedOnUrlChange")}</p>
               )}
 
               <div className="grid gap-2">

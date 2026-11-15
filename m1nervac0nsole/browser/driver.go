@@ -17,11 +17,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/execbox"
 )
 
 // errTransport marks a dead browser connection. Driver.Send uses it to tell a
@@ -43,9 +44,14 @@ type Options struct {
 	Executable string
 	// UserDataDir is the task's profile directory.
 	UserDataDir string
-	// ProxyServer is the recording proxy URL. When set, certificate errors are
-	// ignored because the proxy presents its own CA.
+	// ProxyServer is the recording proxy address, without credentials. When
+	// set, certificate errors are ignored because the proxy presents its own CA.
 	ProxyServer string
+	// ProxyUser and ProxyPass answer a proxy authentication challenge. Chromium
+	// ignores credentials embedded in --proxy-server, so they are supplied over
+	// CDP and never reach the command line.
+	ProxyUser string
+	ProxyPass string
 	// AllowRequest judges every request before the browser sends it. Nil
 	// allows everything, which keeps the package usable without a scope. An
 	// error blocks the request and its host is reported by BlockedRequests.
@@ -73,8 +79,12 @@ type Driver struct {
 	closed     bool
 
 	allowRequest func(string) error
+	proxyUser    string
+	proxyPass    string
 	blocked      []string
 	blockedSeen  map[string]bool
+	popups       []string
+	popupAt      map[string]int
 
 	console    []ConsoleEntry
 	consoleSeq int64
@@ -99,6 +109,8 @@ func Launch(ctx context.Context, opts Options) (*Driver, error) {
 	})
 	d.mu.Lock()
 	d.allowRequest = opts.AllowRequest
+	d.proxyUser = opts.ProxyUser
+	d.proxyPass = opts.ProxyPass
 	d.downloadDir = absPath(opts.DownloadDir)
 	d.mu.Unlock()
 	c, err := d.launch(ctx)
@@ -125,13 +137,24 @@ func Launch(ctx context.Context, opts Options) (*Driver, error) {
 }
 
 // enableCapabilities turns on the per-driver event surfaces after every
-// (re)launch: console capture always, interception and downloads when asked.
+// (re)launch: console capture always, interception and downloads when asked,
+// and auto-attach, which is what puts interception on a target created later.
 func (d *Driver) enableCapabilities(ctx context.Context, c conn) error {
 	if _, err := c.Send(ctx, "Runtime.enable", nil); err != nil {
 		return err
 	}
 	if err := d.enableFetch(ctx, c); err != nil {
 		return err
+	}
+	if err := d.watchTargets(ctx, c); err != nil {
+		return err
+	}
+	// A browser-level auto-attach does not hand over a page's out-of-process
+	// frames, so the page the driver drives arms it on its own session too.
+	if ps, ok := c.(pageSessioner); ok {
+		if err := d.watchTargets(ctx, targetConn{conn: c, session: ps.PageSession()}); err != nil {
+			return err
+		}
 	}
 	return d.enableDownloads(ctx, c)
 }
@@ -176,6 +199,21 @@ func (d *Driver) Send(ctx context.Context, method string, params any) (json.RawM
 	c = d.c
 	d.mu.Unlock()
 	return c.Send(ctx, method, params)
+}
+
+// sendIn speaks CDP on one target session; the empty session is the driver's
+// own page. A session dies with its target, so there is nothing to recover.
+func (d *Driver) sendIn(ctx context.Context, session, method string, params any) (json.RawMessage, error) {
+	if session == "" {
+		return d.Send(ctx, method, params)
+	}
+	d.mu.Lock()
+	c := d.c
+	d.mu.Unlock()
+	if sc, ok := c.(sessionSender); ok {
+		return sc.SendSession(ctx, session, method, params)
+	}
+	return d.Send(ctx, method, params)
 }
 
 // On registers an event handler. Handlers run on the connection's event
@@ -319,7 +357,11 @@ func (d *Driver) handleEvent(method string, params json.RawMessage) {
 	case "Page.javascriptDialogClosed":
 		d.dialogClosed()
 	case "Fetch.requestPaused":
-		d.requestPaused(params)
+		d.requestPaused("", params)
+	case "Fetch.authRequired":
+		d.authRequired("", params)
+	case "Target.attachedToTarget":
+		d.targetAttached(params)
 	case "Runtime.consoleAPICalled":
 		d.consoleAPICalled(params)
 	case "Runtime.exceptionThrown":
@@ -348,6 +390,240 @@ func (d *Driver) frameNavigated(params json.RawMessage) {
 	d.url = ev.Frame.URL
 	d.title = ""
 	d.mu.Unlock()
+}
+
+// watchTargets arms auto-attach, so a target created after the session starts
+// is handed to the driver before it runs. waitForDebuggerOnStart is what makes
+// "before" true: the target stays paused until the driver has installed its
+// interception and released it.
+func (d *Driver) watchTargets(ctx context.Context, c conn) error {
+	_, err := sendBrowser(ctx, c, "Target.setAutoAttach", map[string]any{
+		"autoAttach":             true,
+		"waitForDebuggerOnStart": true,
+		"flatten":                true,
+	})
+	return err
+}
+
+// attachedTarget is one target the browser auto-attached: a popup, a frame, a
+// worker, or anything else a page created after the session started.
+type attachedTarget struct {
+	SessionID string
+	TargetID  string
+	Type      string
+	URL       string
+}
+
+func parseAttachedTarget(params json.RawMessage) (attachedTarget, bool) {
+	var ev struct {
+		SessionID  string `json:"sessionId"`
+		TargetInfo struct {
+			TargetID string `json:"targetId"`
+			Type     string `json:"type"`
+			URL      string `json:"url"`
+		} `json:"targetInfo"`
+	}
+	if json.Unmarshal(params, &ev) != nil || ev.SessionID == "" {
+		return attachedTarget{}, false
+	}
+	return attachedTarget{
+		SessionID: ev.SessionID,
+		TargetID:  ev.TargetInfo.TargetID,
+		Type:      ev.TargetInfo.Type,
+		URL:       ev.TargetInfo.URL,
+	}, true
+}
+
+// targetAttached handles a target the browser attached after the session
+// started: a popup, a frame, a worker, or anything else a page creates. The
+// target is paused until this returns, so the interception is in place before
+// its first request leaves the browser.
+func (d *Driver) targetAttached(params json.RawMessage) {
+	target, ok := parseAttachedTarget(params)
+	if !ok {
+		return
+	}
+	d.mu.Lock()
+	c := d.c
+	allow := d.allowRequest
+	d.mu.Unlock()
+	if c == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fetchReplyTimeout)
+	defer cancel()
+
+	switch target.Type {
+	case "page":
+		d.attachPopup(ctx, c, allow, target)
+	case "iframe", "worker", "shared_worker", "service_worker":
+		// A frame or a worker makes requests of its own, so it gets the page's
+		// interception before it runs. It is not a popup: nothing reports it.
+		if d.setupTarget(ctx, c, target) {
+			_, _ = d.sendIn(ctx, target.SessionID, "Runtime.runIfWaitingForDebugger", nil)
+		}
+	default:
+		// A target this package cannot drive is released at once: a paused
+		// target would leave the page that created it waiting on a debugger
+		// nobody releases.
+		_, _ = d.sendIn(ctx, target.SessionID, "Runtime.runIfWaitingForDebugger", nil)
+	}
+}
+
+// attachPopup arms a page target created after launch. A paused popup usually
+// reports no destination yet, so this only refuses a target whose destination
+// the browser already knows; the interception judges the request the popup
+// actually makes.
+func (d *Driver) attachPopup(ctx context.Context, c conn, allow func(string) error, target attachedTarget) {
+	if allow != nil && target.URL != "" {
+		if err := allow(target.URL); err != nil {
+			// The popup is paused before it runs, so closing it is the refusal:
+			// it never reaches the network, and the host is reported.
+			d.recordBlocked(target.URL)
+			_, _ = sendBrowser(ctx, c, "Target.closeTarget", map[string]any{"targetId": target.TargetID})
+			return
+		}
+	}
+	if !d.setupTarget(ctx, c, target) {
+		return
+	}
+	// The entry exists before the popup runs: its first request is judged in
+	// requestPaused, which names the popup from that entry.
+	d.recordPopup(target.SessionID, target.URL)
+	_, _ = d.sendIn(ctx, target.SessionID, "Runtime.runIfWaitingForDebugger", nil)
+}
+
+// setupTarget installs nested auto-attach and interception on one attached
+// session before it runs, and reports whether the target may be resumed. A
+// target that cannot be intercepted is closed rather than released: it would be
+// a hole the page's own interception cannot see.
+func (d *Driver) setupTarget(ctx context.Context, c conn, target attachedTarget) bool {
+	session := targetConn{conn: c, session: target.SessionID}
+	// Nested auto-attach is what puts interception on a target this one
+	// creates: an out-of-process frame, or a worker's own worker. A type
+	// Chromium will not auto-attach from keeps the interception below, which is
+	// the part that judges requests.
+	if err := d.watchTargets(ctx, session); err != nil && !methodUnsupported(err) {
+		d.refuseTarget(ctx, c, target)
+		return false
+	}
+	// The session's handlers exist before interception can raise an event on
+	// it, so no paused request is left unanswered.
+	d.watchSession(c, target.SessionID)
+	// A driver with neither a scope nor a credential installs nothing: it
+	// attaches and releases the target rather than inventing a scope.
+	if err := d.enableFetch(ctx, session); err != nil {
+		if methodUnsupported(err) {
+			// Chromium has no interception for this target type. Releasing it is
+			// the documented browser limit: the gateway still refuses a request
+			// that carries no session credential, and the real-Chromium test is
+			// what proves the excluded origin sees no contact.
+			return true
+		}
+		d.refuseTarget(ctx, c, target)
+		return false
+	}
+	return true
+}
+
+// refuseTarget stops a paused target that could not be intercepted. Closing is
+// the refusal; a type the browser cannot close is detached instead, so it never
+// stays paused. The host is reported, so the refusal is visible in the tool
+// result rather than silent.
+func (d *Driver) refuseTarget(ctx context.Context, c conn, target attachedTarget) {
+	if target.URL != "" {
+		d.recordBlocked(target.URL)
+	}
+	if _, err := sendBrowser(ctx, c, "Target.closeTarget", map[string]any{"targetId": target.TargetID}); err == nil {
+		return
+	}
+	_, _ = sendBrowser(ctx, c, "Target.detachFromTarget", map[string]any{"sessionId": target.SessionID})
+}
+
+// methodUnsupported reports whether Chromium refused a command because the
+// target type does not implement it. That is a browser limit, not a failure to
+// set the target up.
+func methodUnsupported(err error) bool {
+	var cdp *cdpError
+	if !errors.As(err, &cdp) {
+		return false
+	}
+	if cdp.Code == -32601 {
+		return true
+	}
+	msg := strings.ToLower(cdp.Message + " " + cdp.Data)
+	return strings.Contains(msg, "not supported") || strings.Contains(msg, "not implemented")
+}
+
+// recordPopup notes a page target the driver attached. A paused popup reports
+// no destination, so the entry is named from the popup's first document
+// request.
+func (d *Driver) recordPopup(session, rawURL string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.popupAt == nil {
+		d.popupAt = map[string]int{}
+	}
+	d.popupAt[session] = len(d.popups)
+	d.popups = append(d.popups, rawURL)
+}
+
+// popupPlaceholder reports whether a popup entry still holds what the browser
+// reported before it knew where the popup was going.
+func popupPlaceholder(rawURL string) bool {
+	switch strings.TrimSpace(rawURL) {
+	case "", "about:blank":
+		return true
+	}
+	return false
+}
+
+// namePopup fills in where a popup is actually going, which the browser does
+// not say when it hands the popup over. Only the popup's own document request
+// names it: a subresource it loads is not its destination.
+func (d *Driver) namePopup(session, rawURL string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if i, ok := d.popupAt[session]; ok && popupPlaceholder(d.popups[i]) {
+		d.popups[i] = rawURL
+	}
+}
+
+// watchSession answers one target session's interception events on that
+// session: a request paused in a popup can only be continued from the session
+// that paused it.
+func (d *Driver) watchSession(c conn, session string) {
+	sc, ok := c.(sessionSender)
+	if !ok {
+		return
+	}
+	sc.OnSession(session, func(method string, params json.RawMessage) {
+		switch method {
+		case "Fetch.requestPaused":
+			d.requestPaused(session, params)
+		case "Fetch.authRequired":
+			d.authRequired(session, params)
+		case "Target.attachedToTarget":
+			// A session with handlers of its own does not also reach the page
+			// handlers, so a popup's own popup, or a worker's nested worker, is
+			// only seen here. Left unhandled it would stay paused forever.
+			d.targetAttached(params)
+		}
+	})
+}
+
+// Popups returns the page targets attached since the previous call and clears
+// the list, so one tool result reports each popup once. A popup is named by the
+// document it asked for, so one that never navigated keeps the placeholder the
+// browser reported ("about:blank" or empty). A popup the scope refused is
+// reported by BlockedRequests instead: it never ran.
+func (d *Driver) Popups() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := d.popups
+	d.popups = nil
+	d.popupAt = nil
+	return out
 }
 
 // recover relaunches on the same profile and restores the URL, the viewport
@@ -410,22 +686,25 @@ func (d *Driver) recover(ctx context.Context, failed conn) error {
 }
 
 // pipeConn is the real transport: CDP JSON on the browser's fd 3 and 4,
-// NUL-terminated, with one flattened page session.
+// NUL-terminated, with flattened sessions: one for the page the driver drives
+// and one for every target auto-attach hands it.
 type pipeConn struct {
 	out    io.WriteCloser
 	in     io.ReadCloser
-	cmd    *exec.Cmd
+	cmd    browserProc
 	stderr *tailBuffer
 
-	writeMu  sync.Mutex
-	mu       sync.Mutex
-	nextID   int64
-	pending  map[int64]chan cdpReply
-	handlers []func(string, json.RawMessage)
-	session  string
-	closed   bool
-	err      error
-	done     chan struct{}
+	writeMu         sync.Mutex
+	mu              sync.Mutex
+	nextID          int64
+	pending         map[int64]chan cdpReply
+	handlers        []func(string, json.RawMessage)
+	sessionHandlers map[string][]func(string, json.RawMessage)
+	session         string
+	pageTarget      string
+	closed          bool
+	err             error
+	done            chan struct{}
 
 	closeOnce sync.Once
 }
@@ -484,6 +763,35 @@ func sendBrowser(ctx context.Context, c conn, method string, params any) (json.R
 	return c.Send(ctx, method, params)
 }
 
+// sessionSender is a conn that can address one target session and route that
+// session's events. A popup's interception is useless unless its events are
+// answered on the session that raised them. The fake does not need it: it has
+// one session.
+type sessionSender interface {
+	SendSession(ctx context.Context, sessionID, method string, params any) (json.RawMessage, error)
+	OnSession(sessionID string, fn func(method string, params json.RawMessage))
+}
+
+// pageSessioner is a conn that names the session of the page it drives, so that
+// page can arm auto-attach for its own out-of-process frames.
+type pageSessioner interface {
+	PageSession() string
+}
+
+// targetConn is one attached target session seen as a conn, so the interception
+// installed on the page is installed on a popup by the same code.
+type targetConn struct {
+	conn
+	session string
+}
+
+func (t targetConn) Send(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if sc, ok := t.conn.(sessionSender); ok {
+		return sc.SendSession(ctx, t.session, method, params)
+	}
+	return t.conn.Send(ctx, method, params)
+}
+
 // On registers an event handler. Each event runs in its own goroutine so a
 // handler may itself send a command (the dialog policy does).
 func (p *pipeConn) On(fn func(method string, params json.RawMessage)) {
@@ -492,13 +800,28 @@ func (p *pipeConn) On(fn func(method string, params json.RawMessage)) {
 	p.mu.Unlock()
 }
 
+// SendSession speaks CDP on one attached target session.
+func (p *pipeConn) SendSession(ctx context.Context, sessionID, method string, params any) (json.RawMessage, error) {
+	return p.send(ctx, method, params, sessionID)
+}
+
+// OnSession registers a handler for one target session's events.
+func (p *pipeConn) OnSession(sessionID string, fn func(method string, params json.RawMessage)) {
+	p.mu.Lock()
+	if p.sessionHandlers == nil {
+		p.sessionHandlers = map[string][]func(string, json.RawMessage){}
+	}
+	p.sessionHandlers[sessionID] = append(p.sessionHandlers[sessionID], fn)
+	p.mu.Unlock()
+}
+
 // Close drops the pipes and kills the process.
 func (p *pipeConn) Close() error {
 	p.fail(nil)
 	p.out.Close()
 	p.in.Close()
-	if p.cmd != nil && p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
+	if p.cmd != nil {
+		_ = p.cmd.Kill()
 	}
 	return nil
 }
@@ -509,9 +832,13 @@ func (p *pipeConn) sessionID() string {
 	return p.session
 }
 
-func (p *pipeConn) setSession(id string) {
+// PageSession names the session of the page the driver drives.
+func (p *pipeConn) PageSession() string { return p.sessionID() }
+
+func (p *pipeConn) setAttached(targetID, sessionID string) {
 	p.mu.Lock()
-	p.session = id
+	p.pageTarget = targetID
+	p.session = sessionID
 	p.mu.Unlock()
 }
 
@@ -580,11 +907,12 @@ func (p *pipeConn) readLoop() {
 			continue
 		}
 		var msg struct {
-			ID     int64           `json:"id"`
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-			Result json.RawMessage `json:"result"`
-			Error  *cdpError       `json:"error"`
+			ID        int64           `json:"id"`
+			Method    string          `json:"method"`
+			Params    json.RawMessage `json:"params"`
+			Result    json.RawMessage `json:"result"`
+			Error     *cdpError       `json:"error"`
+			SessionID string          `json:"sessionId"`
 		}
 		if json.Unmarshal(line, &msg) != nil {
 			continue
@@ -607,11 +935,35 @@ func (p *pipeConn) readLoop() {
 		}
 		p.mu.Lock()
 		handlers := append([]func(string, json.RawMessage){}, p.handlers...)
+		if scoped := p.sessionHandlers[msg.SessionID]; len(scoped) > 0 {
+			// A session with handlers of its own does not also reach the page
+			// handlers: a popup's navigation must not move the page the driver
+			// drives.
+			handlers = append([]func(string, json.RawMessage){}, scoped...)
+		}
+		pageTarget := p.pageTarget
 		p.mu.Unlock()
+		if msg.Method == "Target.attachedToTarget" && pageTarget != "" && attachedTargetID(msg.Params) == pageTarget {
+			// The page the driver attached at launch is not a new target.
+			continue
+		}
 		for _, fn := range handlers {
 			go fn(msg.Method, msg.Params)
 		}
 	}
+}
+
+// attachedTargetID is the target an attachedToTarget event names.
+func attachedTargetID(params json.RawMessage) string {
+	var ev struct {
+		TargetInfo struct {
+			TargetID string `json:"targetId"`
+		} `json:"targetInfo"`
+	}
+	if json.Unmarshal(params, &ev) != nil {
+		return ""
+	}
+	return ev.TargetInfo.TargetID
 }
 
 func (p *pipeConn) fail(err error) {
@@ -642,13 +994,16 @@ func (p *pipeConn) closedErr() error {
 	}
 }
 
-// startPipe launches Chromium and attaches to its first page target.
-func startPipe(ctx context.Context, opts Options) (conn, error) {
+// launchArgs is the Chromium command line. The proxy address goes out bare:
+// Chromium ignores credentials embedded in --proxy-server, so the driver answers
+// the proxy's authentication challenge over CDP instead.
+func launchArgs(opts Options) []string {
 	exe := opts.Executable
 	if exe == "" {
 		exe = "chromium"
 	}
 	args := []string{
+		exe,
 		"--headless=new",
 		"--no-sandbox",
 		"--disable-gpu",
@@ -657,6 +1012,26 @@ func startPipe(ctx context.Context, opts Options) (conn, error) {
 	}
 	if opts.ProxyServer != "" {
 		args = append(args, "--proxy-server="+opts.ProxyServer, "--ignore-certificate-errors")
+	}
+	return args
+}
+
+// startPipe launches Chromium and attaches to its first page target.
+func startPipe(ctx context.Context, opts Options) (conn, error) {
+	argv := launchArgs(opts)
+	exe := argv[0]
+
+	// The browser is a tool process: it runs inside the task's session, so its
+	// traffic is subject to the same packet boundary as every other tool. A
+	// host without an installed client gets the capability error instead of a
+	// browser outside the boundary.
+	client, ok := execbox.Installed()
+	if !ok {
+		return nil, fmt.Errorf("browser: launch: %w", execbox.ErrUnavailable)
+	}
+	sess, err := execbox.RequireSession(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("browser: launch: %w", err)
 	}
 
 	toChildR, toChildW, err := os.Pipe()
@@ -670,13 +1045,21 @@ func startPipe(ctx context.Context, opts Options) (conn, error) {
 		return nil, fmt.Errorf("browser: launch: %w", err)
 	}
 
-	// The browser reads CDP on fd 3 and writes on fd 4; ExtraFiles maps the
-	// two child ends to exactly those descriptors.
-	cmd := exec.Command(exe, args...)
-	cmd.ExtraFiles = []*os.File{toChildR, fromChildW}
+	// The browser reads CDP on fd 3 and writes on fd 4; the session supervisor
+	// maps the two child ends to exactly those descriptors.
 	stderr := &tailBuffer{max: 4096}
-	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
+	writable := []string{}
+	if opts.DownloadDir != "" {
+		writable = append(writable, opts.DownloadDir)
+	}
+	rwc, err := execbox.RunFiles(client, ctx, sess, execbox.Spec{
+		Argv:        argv,
+		Dir:         opts.UserDataDir,
+		Writable:    writable,
+		ExtraFiles:  2,
+		MergeStderr: false,
+	}, []*os.File{toChildR, fromChildW})
+	if err != nil {
 		toChildR.Close()
 		toChildW.Close()
 		fromChildR.Close()
@@ -686,15 +1069,40 @@ func startPipe(ctx context.Context, opts Options) (conn, error) {
 	toChildR.Close()
 	fromChildW.Close()
 
+	proc, ok := execbox.ProcessOf(rwc)
+	if !ok {
+		toChildW.Close()
+		fromChildR.Close()
+		return nil, fmt.Errorf("browser: launch: session has no process control")
+	}
+	if st := proc.Stderr(); st != nil {
+		go func() { _, _ = io.Copy(stderr, st) }()
+	}
+	// CDP rides fd 3 and 4, so stdout only carries log noise. It still has to be
+	// drained: the client writes every frame to its stream, and an unread one
+	// stalls the CDP pipe with it.
+	go func() { _, _ = io.Copy(io.Discard, rwc) }()
 	p := newPipeConn(toChildW, fromChildR, stderr)
-	p.cmd = cmd
-	go func() { p.fail(cmd.Wait()) }()
+	p.cmd = sessionProc{p: proc}
+	go func() { p.fail(p.cmd.Wait()) }()
 	if err := p.attach(ctx); err != nil {
 		p.Close()
 		return nil, err
 	}
 	return p, nil
 }
+
+// browserProc is the process control the driver needs. The session adapter
+// keeps the driver independent of the supervisor's types.
+type browserProc interface {
+	Wait() error
+	Kill() error
+}
+
+type sessionProc struct{ p execbox.Process }
+
+func (s sessionProc) Wait() error { _, err := s.p.Wait(); return err }
+func (s sessionProc) Kill() error { return s.p.Kill() }
 
 // attach finds the initial page target and opens a flattened session on it.
 // Browser-level commands go out without a session; everything after this
@@ -746,7 +1154,7 @@ func (p *pipeConn) attach(ctx context.Context) error {
 	if attached.SessionID == "" {
 		return fmt.Errorf("browser: launch: no page session")
 	}
-	p.setSession(attached.SessionID)
+	p.setAttached(targetID, attached.SessionID)
 	return nil
 }
 

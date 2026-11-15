@@ -9,7 +9,7 @@ import (
 
 func TestTrafficArchiveRoundTripAndCurrentRowWins(t *testing.T) {
 	trafficDir := t.TempDir()
-	tr, err := Open(trafficDir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(trafficDir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,9 +72,13 @@ VALUES(?,?,?,?,?)`, id, requestHead, []byte("payload"), responseHead, []byte(`{"
 	}
 }
 
+// A version-1 host-scoped journal is what a binary that predates ID-scoped
+// compaction leaves behind. Recovery must still resolve it the way that binary
+// would have: PostgreSQL not committed means the rows are still there and the
+// moved tree has to come home.
 func TestRecoverArchiveHostDeleteStageRollsBackBeforePostgresCommit(t *testing.T) {
 	trafficDir := t.TempDir()
-	tr, err := Open(trafficDir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(trafficDir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,11 +92,7 @@ func TestRecoverArchiveHostDeleteStageRollsBackBeforePostgresCommit(t *testing.T
 	if err := os.WriteFile(filepath.Join(legacyDir, "request.http"), []byte("request"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stage, err := tr.StageDeleteHostsExactForArchive([]string{host}, 17, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
-	simulateTrafficStageProcessExit(t, stage)
+	stageV1ArchiveJournal(t, tr, legacyDir, host, 17, 42)
 	if err := tr.RecoverHostDeleteStages(func(id, taskID int64) (bool, error) {
 		if id != 17 || taskID != 42 {
 			t.Fatalf("archive id=%d task=%d, want 17/42", id, taskID)
@@ -112,7 +112,7 @@ func TestRecoverArchiveHostDeleteStageRollsBackBeforePostgresCommit(t *testing.T
 
 func TestRecoverArchiveHostDeleteStageCompletesAfterPostgresCommit(t *testing.T) {
 	trafficDir := t.TempDir()
-	tr, err := Open(trafficDir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(trafficDir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,11 +123,7 @@ func TestRecoverArchiveHostDeleteStageCompletesAfterPostgresCommit(t *testing.T)
 	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stage, err := tr.StageDeleteHostsExactForArchive([]string{host}, 18, 43)
-	if err != nil {
-		t.Fatal(err)
-	}
-	simulateTrafficStageProcessExit(t, stage)
+	stageV1ArchiveJournal(t, tr, legacyDir, host, 18, 43)
 	if err := tr.RecoverHostDeleteStages(func(id, taskID int64) (bool, error) { return id == 18 && taskID == 43, nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -140,19 +136,38 @@ func TestRecoverArchiveHostDeleteStageCompletesAfterPostgresCommit(t *testing.T)
 	}
 }
 
+// stageV1ArchiveJournal reproduces the stage an older binary wrote: the host
+// tree is moved aside and a version-1 journal names both the tree and the host.
+func stageV1ArchiveJournal(t *testing.T, tr *Traffic, legacyDir, host string, archiveID, taskID int64) {
+	t.Helper()
+	parent := filepath.Join(tr.dir, "_delete_staging")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stageDir, err := os.MkdirTemp(parent, "hosts-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(stageDir, "0-"+filepath.Base(legacyDir))
+	journal := hostDeleteStageJournal{
+		Version:   hostDeleteStageVersionHosts,
+		ArchiveID: archiveID,
+		TaskID:    taskID,
+		Hosts:     []string{host},
+		Moves:     []hostDeleteStageMove{{Source: legacyDir, Staged: staged}},
+	}
+	if err := writeHostDeleteStageJournal(filepath.Join(stageDir, hostDeleteStageJournalName), journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(legacyDir, staged); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func insertArchiveRecoveryExchange(t *testing.T, tr *Traffic, id, host string) {
 	t.Helper()
 	if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
 VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, 1, host, "GET", "/", "https://"+host+"/", 200, "text/plain", 0, 0, ""); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func simulateTrafficStageProcessExit(t *testing.T, stage *HostDeleteStage) {
-	t.Helper()
-	if err := stage.tx.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	stage.done = true
-	stage.traffic.wmu.Unlock()
 }

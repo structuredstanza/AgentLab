@@ -1,21 +1,27 @@
 package db
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/scope"
 )
 
 // TaskScopeRule is one operator-written boundary line, stored beside the rows
 // the hunt accumulates.
 type TaskScopeRule struct {
-	ID        int64  `json:"id"`
-	TaskID    int64  `json:"task_id"`
-	Effect    string `json:"effect"`
-	Pattern   string `json:"pattern"`
-	Note      string `json:"note"`
-	CreatedAt string `json:"created_at"`
+	ID         int64  `json:"id"`
+	TaskID     int64  `json:"task_id"`
+	Effect     string `json:"effect"`
+	Pattern    string `json:"pattern"`
+	Note       string `json:"note"`
+	CreatedAt  string `json:"created_at"`
+	Protocol   string `json:"protocol"`
+	Ports      []int  `json:"ports"`
+	Authorized bool   `json:"authorized"`
 }
 
 // ListTaskScopeRules returns the task's rules in the shape the matcher takes.
@@ -49,40 +55,23 @@ ORDER BY (r.task_id=$1) DESC, r.id`, taskID)
 	return out, rows.Err()
 }
 
-// AddTaskScopeRule stores one rule and returns its id.
+// AddTaskScopeRule stores one rule and returns its id. The console's write path
+// goes through the policy accessor, so it records the same audit row and moves
+// the same revision; a written rule is not a grant until it is approved.
 func (s *AssetStore) AddTaskScopeRule(taskID int64, effect, pattern, note string) (int64, error) {
-	if taskID <= 0 {
-		return 0, fmt.Errorf("scope rule needs a task")
-	}
-	if effect != string(scope.Include) && effect != string(scope.Exclude) {
-		return 0, fmt.Errorf("effect must be include or exclude, got %q", effect)
-	}
-	if pattern == "" {
-		return 0, fmt.Errorf("pattern is empty")
-	}
-	var id int64
-	if err := s.db.QueryRow(`INSERT INTO task_scope_rules(task_id, effect, pattern, note)
-VALUES ($1,$2,$3,$4) RETURNING id`, taskID, effect, pattern, note).Scan(&id); err != nil {
-		return 0, fmt.Errorf("add scope rule: %w", err)
-	}
-	return id, nil
+	return s.db.AddPolicyRule(context.Background(), taskID,
+		netpolicy.Rule{Effect: effect, Pattern: pattern, Note: note}, OperatorActor)
 }
 
 // DeleteTaskScopeRule removes one rule.
 func (s *AssetStore) DeleteTaskScopeRule(taskID, id int64) error {
-	res, err := s.db.Exec(`DELETE FROM task_scope_rules WHERE id=$1 AND task_id=$2`, id, taskID)
-	if err != nil {
-		return fmt.Errorf("delete scope rule: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("scope rule %d not found", id)
-	}
-	return nil
+	return s.db.DeletePolicyRule(context.Background(), taskID, id, OperatorActor)
 }
 
 // ListTaskScopeRuleRows returns the rules with their metadata for the API.
 func (s *AssetStore) ListTaskScopeRuleRows(taskID int64) ([]TaskScopeRule, error) {
-	rows, err := s.db.Query(`SELECT id, task_id, effect, pattern, note, created_at::text
+	rows, err := s.db.Query(`SELECT id, task_id, effect, pattern, note, created_at::text,
+       protocol, COALESCE(array_to_json(ports)::text,'[]'), authorized
 FROM task_scope_rules WHERE task_id=$1 ORDER BY id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list scope rules: %w", err)
@@ -90,9 +79,16 @@ FROM task_scope_rules WHERE task_id=$1 ORDER BY id`, taskID)
 	defer rows.Close()
 	out := []TaskScopeRule{}
 	for rows.Next() {
-		var r TaskScopeRule
-		if err := rows.Scan(&r.ID, &r.TaskID, &r.Effect, &r.Pattern, &r.Note, &r.CreatedAt); err != nil {
+		var (
+			r     TaskScopeRule
+			ports string
+		)
+		if err := rows.Scan(&r.ID, &r.TaskID, &r.Effect, &r.Pattern, &r.Note, &r.CreatedAt,
+			&r.Protocol, &ports, &r.Authorized); err != nil {
 			return nil, fmt.Errorf("list scope rules: %w", err)
+		}
+		if err := json.Unmarshal([]byte(ports), &r.Ports); err != nil {
+			return nil, fmt.Errorf("scope rule %d ports: %w", r.ID, err)
 		}
 		out = append(out, r)
 	}
@@ -100,21 +96,10 @@ FROM task_scope_rules WHERE task_id=$1 ORDER BY id`, taskID)
 }
 
 // UpdateTaskScopeRule rewrites one rule in place, so an operator can correct a
-// pattern without losing the row's identity in the audit trail.
+// pattern without losing the row's identity in the audit trail. An edit to the
+// effect or the pattern drops the rule's approval: the old grant named the old
+// line.
 func (s *AssetStore) UpdateTaskScopeRule(taskID, id int64, effect, pattern, note string) error {
-	if effect != string(scope.Include) && effect != string(scope.Exclude) {
-		return fmt.Errorf("effect must be include or exclude, got %q", effect)
-	}
-	if pattern == "" {
-		return fmt.Errorf("pattern is empty")
-	}
-	res, err := s.db.Exec(`UPDATE task_scope_rules SET effect=$3, pattern=$4, note=$5 WHERE id=$1 AND task_id=$2`,
-		id, taskID, effect, pattern, note)
-	if err != nil {
-		return fmt.Errorf("update scope rule: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("scope rule %d not found", id)
-	}
-	return nil
+	return s.db.UpdatePolicyRule(context.Background(), taskID, id,
+		netpolicy.Rule{Effect: effect, Pattern: pattern, Note: note}, OperatorActor)
 }

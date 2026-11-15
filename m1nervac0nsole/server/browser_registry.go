@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,11 +14,15 @@ import (
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/agent"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/browser"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/execbox"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
 
-// browserSession is one task's Chromium: the driver plus when it was last used.
+// browserSession is one task's Chromium: the driver, the gateway credential its
+// launch ran under, and when it was last used.
 type browserSession struct {
 	drv      *browser.Driver
+	cred     string
 	lastUsed time.Time
 }
 
@@ -27,6 +32,9 @@ type browserSession struct {
 type browserSessions struct {
 	mu   sync.Mutex
 	byID map[string]*browserSession
+	// launching counts launches in flight. The cap counts them so it holds
+	// while a launch runs, without holding mu across the launch.
+	launching int
 }
 
 // browserIdleTimeout closes a browser no tool has touched for this long, unless
@@ -42,48 +50,94 @@ const browserMaxSessions = 4
 
 func (s *Server) browserFor(ctx context.Context, taskID string) (*browser.Driver, error) {
 	s.browsers.mu.Lock()
-	defer s.browsers.mu.Unlock()
 	if s.browsers.byID == nil {
 		s.browsers.byID = map[string]*browserSession{}
 	}
 	if sess := s.browsers.byID[taskID]; sess != nil {
 		sess.lastUsed = time.Now()
+		s.browsers.mu.Unlock()
 		return sess.drv, nil
 	}
-	drv, err := s.launchBrowser(ctx, taskID)
-	if err != nil {
+	if err := s.evictForCap(); err != nil {
+		s.browsers.mu.Unlock()
 		return nil, err
 	}
-	s.browsers.byID[taskID] = &browserSession{drv: drv, lastUsed: time.Now()}
+	s.browsers.launching++
+	s.browsers.mu.Unlock()
+
+	// The launch spawns a process and attaches to its page, so it runs without
+	// the registry lock: one slow browser must not block every other task.
+	drv, cred, err := s.launchBrowser(ctx, taskID)
+
+	s.browsers.mu.Lock()
+	s.browsers.launching--
+	if err != nil {
+		s.browsers.mu.Unlock()
+		return nil, err
+	}
+	if sess := s.browsers.byID[taskID]; sess != nil {
+		// A concurrent call registered this task's browser first; keep that one.
+		sess.lastUsed = time.Now()
+		s.browsers.mu.Unlock()
+		s.closeSession(&browserSession{drv: drv, cred: cred})
+		return sess.drv, nil
+	}
+	s.browsers.byID[taskID] = &browserSession{drv: drv, cred: cred, lastUsed: time.Now()}
+	s.browsers.mu.Unlock()
 	return drv, nil
 }
 
 // launchBrowser starts the task's Chromium on a profile of its own, pointed at
 // the recording proxy when capture is on, so every request the browser makes is
-// evidence without extra work. The caller holds browsers.mu.
-func (s *Server) launchBrowser(ctx context.Context, taskID string) (*browser.Driver, error) {
-	if err := s.evictForCap(); err != nil {
-		return nil, err
+// evidence without extra work. It returns the credential the launch ran under.
+//
+// The browser gets a session of its own: it outlives the run that started it, so
+// it cannot borrow that run's credential, and the registry revokes this one when
+// the browser closes.
+func (s *Server) launchBrowser(ctx context.Context, taskID string) (*browser.Driver, string, error) {
+	tid, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil {
+		return nil, "", fmt.Errorf("browser: task %q: %w", taskID, err)
 	}
-	opts := browserLaunchOptions(s, taskID)
+	sess, err := s.session(ctx, netpolicy.CallerAgent, tid, 0, netpolicy.PurposeTesting)
+	if err != nil {
+		return nil, "", fmt.Errorf("browser: launch needs a session: %w", err)
+	}
+	// A launch that fails must not leave its credential behind: nothing else
+	// holds it.
+	launched := false
+	defer func() {
+		if !launched {
+			s.m.RevokeSession(sess.Credential)
+		}
+	}()
+
+	ctx = execbox.WithSession(ctx, sess)
+	opts := browserLaunchOptions(s, ctx, taskID)
 	if err := os.MkdirAll(opts.UserDataDir, 0o700); err != nil {
-		return nil, fmt.Errorf("browser profile: %w", err)
+		return nil, "", fmt.Errorf("browser profile: %w", err)
 	}
 	if err := os.MkdirAll(opts.DownloadDir, 0o755); err != nil {
-		return nil, fmt.Errorf("browser downloads: %w", err)
+		return nil, "", fmt.Errorf("browser downloads: %w", err)
 	}
 	drv, err := browser.Launch(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	launched = true
 	log.Printf("[browser] launched for task %s", taskID)
-	return drv, nil
+	return drv, sess.Credential, nil
 }
 
 // browserLaunchOptions is what one task's browser launches with: its own
 // profile, the recording proxy, the per-request boundary and a downloads
 // folder under the task directory.
-func browserLaunchOptions(s *Server, taskID string) browser.Options {
+//
+// Chromium ignores credentials embedded in --proxy-server, so the address goes
+// out bare and the launch session's credential is answered over CDP instead. A
+// launch with no session gets no proxy rather than a bare address the gateway
+// would refuse.
+func browserLaunchOptions(s *Server, ctx context.Context, taskID string) browser.Options {
 	dir := filepath.Join(s.m.dir, "tasks", taskID)
 	opts := browser.Options{
 		Executable:   browserExecutable(s),
@@ -91,9 +145,14 @@ func browserLaunchOptions(s *Server, taskID string) browser.Options {
 		DownloadDir:  filepath.Join(dir, "downloads"),
 		AllowRequest: s.browserRequestScope(taskID),
 	}
-	if proxy := s.m.ProxyAddr(); proxy != "" {
-		opts.ProxyServer = proxyURL(proxy)
+	proxyURL := execbox.ProxyURL(ctx, s.m.ProxyAddr())
+	if u, err := url.Parse(proxyURL); err == nil && u.User != nil {
+		opts.ProxyUser = u.User.Username()
+		opts.ProxyPass, _ = u.User.Password()
+		u.User = nil
+		proxyURL = u.String()
 	}
+	opts.ProxyServer = proxyURL
 	return opts
 }
 
@@ -101,7 +160,7 @@ func browserLaunchOptions(s *Server, taskID string) browser.Options {
 // used session whose task has no running work. Called with browsers.mu held,
 // before a new launch; a session with running work is never evicted.
 func (s *Server) evictForCap() error {
-	if len(s.browsers.byID) < browserMaxSessions {
+	if len(s.browsers.byID)+s.browsers.launching < browserMaxSessions {
 		return nil
 	}
 	var victimID string
@@ -119,19 +178,8 @@ func (s *Server) evictForCap() error {
 	}
 	delete(s.browsers.byID, victimID)
 	log.Printf("[browser] evicting session for task %s: %d-session cap, idle %s", victimID, browserMaxSessions, time.Since(victim.lastUsed).Round(time.Second))
-	_ = victim.drv.Close()
+	s.closeSession(victim)
 	return nil
-}
-
-// proxyURL normalizes a proxy address for Chromium's --proxy-server. The
-// recorder already returns a full URL, and prefixing it again produced
-// "http://http://127.0.0.1:8788", which Chromium rejects with
-// ERR_NO_SUPPORTED_PROXIES.
-func proxyURL(raw string) string {
-	if strings.Contains(raw, "://") {
-		return raw
-	}
-	return "http://" + raw
 }
 
 // browserExecutable resolves Chromium: M1NERVAC0NSOLE_CHROMIUM first (CI and
@@ -155,8 +203,21 @@ func (s *Server) closeBrowser(taskID string) {
 	sess := s.browsers.byID[taskID]
 	delete(s.browsers.byID, taskID)
 	s.browsers.mu.Unlock()
-	if sess != nil {
+	s.closeSession(sess)
+}
+
+// closeSession ends one browser and revokes the credential its launch ran
+// under: the browser is the only holder, so nothing else can use it once the
+// process is gone. Called without browsers.mu held.
+func (s *Server) closeSession(sess *browserSession) {
+	if sess == nil {
+		return
+	}
+	if sess.drv != nil {
 		_ = sess.drv.Close()
+	}
+	if s.m != nil {
+		s.m.RevokeSession(sess.cred)
 	}
 }
 
@@ -185,12 +246,26 @@ func (s *Server) reapBrowsers() {
 	}
 }
 
-// browserTaskID is the task a browser tool acts for. A chat session has none,
-// and a browser without a task has no scope to enforce.
-func browserTaskID(ctx context.Context) (string, error) {
-	id := agent.RunInfoFrom(ctx).TaskID
-	if id <= 0 {
-		return "", fmt.Errorf("the browser tools only run inside a task; this session has no task to scope them to")
+// browserTaskID is the task a browser tool acts for. The task comes from the
+// run's own context or from the conversation row the chat is bound to, never from
+// a tool argument: a model cannot point the browser at another engagement.
+//
+// A chat with no task has no testing browser at all - there is nothing to scope
+// it to - so the refusal names the research browser, which is the surface that
+// chat does have.
+func (s *Server) browserTaskID(ctx context.Context) (string, error) {
+	ri := agent.RunInfoFrom(ctx)
+	if ri.TaskID > 0 {
+		return strconv.FormatInt(ri.TaskID, 10), nil
 	}
-	return strconv.FormatInt(id, 10), nil
+	if id := conversationIDFromSession(ri.SessionID); id > 0 {
+		c, err := s.m.PG().GetConversation(id)
+		if err != nil {
+			return "", fmt.Errorf("this chat's task binding could not be read (%v), so the browser cannot be scoped", err)
+		}
+		if c != nil && c.TaskID > 0 {
+			return strconv.FormatInt(c.TaskID, 10), nil
+		}
+	}
+	return "", fmt.Errorf("the browser tools test a target and need a task; this chat is not bound to one. For public documentation, repositories and advisories use the research browser (mcp__obscura__*), which needs no task")
 }

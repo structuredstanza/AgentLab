@@ -107,11 +107,11 @@ func TestCanaryVariantsDenied(t *testing.T) {
 	b64 := base64.StdEncoding.EncodeToString([]byte("m1nervac0nsole"))
 	cases := map[string]string{
 		"plain":              `{"model":"m","messages":[{"role":"user","content":"ask m1nervac0nsole"}]}`,
-		"zero-width":         `{"model":"m","messages":[{"role":"user","content":"AR\u200bTEX"}]}`,
-		"variation-selector": `{"model":"m","messages":[{"role":"user","content":"AR\uFE0FTEX"}]}`,
-		"bidi-format":        `{"model":"m","messages":[{"role":"user","content":"AR\u202ETEX"}]}`,
-		"json-escape-key":    `{"model":"m","messages":[],"\u0041RTEX":1}`,
-		"double-escaped":     `{"model":"m","messages":[{"role":"user","content":"\\u0061rtex"}]}`,
+		"zero-width":         `{"model":"m","messages":[{"role":"user","content":"m1nerva\u200bc0nsole"}]}`,
+		"variation-selector": `{"model":"m","messages":[{"role":"user","content":"m1nerva\uFE0Fc0nsole"}]}`,
+		"bidi-format":        `{"model":"m","messages":[{"role":"user","content":"m1nerva\u202Ec0nsole"}]}`,
+		"json-escape-key":    `{"model":"m","messages":[],"\u006d1nervac0nsole":1}`,
+		"double-escaped":     `{"model":"m","messages":[{"role":"user","content":"\\u006d1nervac0nsole"}]}`,
 		"base64":             `{"model":"m","messages":[{"role":"user","content":"` + b64 + `"}]}`,
 	}
 	for name, body := range cases {

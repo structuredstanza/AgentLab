@@ -2,11 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,8 +22,10 @@ import (
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/agent"
 	pgdb "github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/enrich"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/gateway"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/guard"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/intercept"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/traffic"
 	actool "github.com/structuredstanza/norma/tool"
 )
@@ -253,6 +259,14 @@ type Manager struct {
 	traffic     *traffic.Traffic       // process-wide recording proxy (may be nil)
 	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
+	// gw is the origin transport the recorder dials through: policy, DNS
+	// pinning, the exit and the origin TLS handshake. Nil when no recorder runs.
+	gw *gateway.Transport
+	// sessions maps a gateway credential to the session it was issued for. The
+	// credential is the only thing a tool holds: it names no task, purpose or
+	// revision, so a tool cannot widen its own authority by editing it.
+	sessMu   sync.RWMutex
+	sessions map[string]netpolicy.Session
 
 	companyMu sync.Mutex // serializes task/company-scope commits with live handle registration
 	// taskStateMu preserves commit order between PostgreSQL lifecycle writes and
@@ -286,10 +300,6 @@ type Manager struct {
 
 // Settings keys the UI toggles at runtime.
 const (
-	// browser_driver picks the browser surface: "mcp" (the Playwright server,
-	// default) or "native" (the built-in driver in browser/). Read at tool
-	// assembly, so a change applies to the next run.
-	settingBrowserDriver       = "browser_driver"
 	settingTrafficCapture      = "traffic_capture"
 	settingAgentTrafficBinding = "agent_traffic_binding"
 	settingWebSearchOn         = "web_search_enabled"
@@ -424,41 +434,45 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	}
 	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
 	if proxyAddr != "" {
-		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
+		// The recorder dials every origin through the gateway hook. A recorder
+		// that cannot start is a startup failure: the alternative is a recorder
+		// that either dials directly or silently stops recording, and both are
+		// the unrecorded path the boundary forbids.
+		gw := m.newGatewayTransport()
+		tr, err := openRecorder(filepath.Join(dir, "traffic"), proxyAddr, gw)
 		if err != nil {
-			log.Printf("[traffic] disabled: %v", err)
-		} else {
-			err = tr.RecoverHostDeleteStages(func(_ int64, taskID int64) (bool, error) {
-				if taskID <= 0 {
-					// This is an internal consistency error in the recovery-traffic callback during startup. NewManager
-					// Wrapped as fmt.Errorf("recover traffic delete staging: %w", err) so the startup failure
-					// It is an operator startup log that reaches neither writeErr nor actool,
-					// so it is outside the scope of F3b (user-facing writeErr), and the original text is preserved (Z2 family).
-					return false, errors.New("archive traffic staging log is missing a task ID")
-				}
-				task, taskErr := pg.GetTask(taskID)
-				if taskErr != nil {
-					return false, taskErr
-				}
-				// Archived/permanently deleted tasks are hidden from GetTask. A
-				// restored task is visible and needs the staged traffic put back.
-				return task == nil, nil
-			})
-			if err != nil {
-				_ = tr.Close()
-				_ = pg.Close()
-				return nil, fmt.Errorf("recover traffic delete staging: %w", err)
+			_ = pg.Close()
+			return nil, err
+		}
+		if err := tr.RecoverHostDeleteStages(func(_ int64, taskID int64) (bool, error) {
+			if taskID <= 0 {
+				// This is an internal consistency error in the recovery-traffic callback during startup. NewManager
+				// Wrapped as fmt.Errorf("recover traffic delete staging: %w", err) so the startup failure
+				// It is an operator startup log that reaches neither writeErr nor actool,
+				// so it is outside the scope of F3b (user-facing writeErr), and the original text is preserved (Z2 family).
+				return false, errors.New("archive traffic staging log is missing a task ID")
 			}
+			task, taskErr := pg.GetTask(taskID)
+			if taskErr != nil {
+				return false, taskErr
+			}
+			// Archived/permanently deleted tasks are hidden from GetTask. A
+			// restored task is visible and needs the staged traffic put back.
+			return task == nil, nil
+		}); err != nil {
+			_ = tr.Close()
+			_ = pg.Close()
+			return nil, fmt.Errorf("recover traffic delete staging: %w", err)
 		}
-		if tr != nil {
-			m.traffic = tr
-			go func() {
-				log.Printf("[traffic] recording proxy on %s (set HTTP_PROXY=%s + trust _ca CA)", proxyAddr, tr.ProxyAddr())
-				if err := tr.Start(); err != nil {
-					log.Printf("[traffic] proxy stopped: %v", err)
-				}
-			}()
-		}
+		m.gw = gw
+		m.traffic = tr
+		go func() {
+			log.Printf("[traffic] recording proxy on %s (set HTTP_PROXY=%s + trust _ca CA)", proxyAddr, tr.ProxyAddr())
+			if err := tr.Start(); err != nil {
+				log.Printf("[traffic] proxy stopped: %v", err)
+			}
+		}()
+		log.Printf("[gateway] origin transport ready: every recorded request needs a session credential issued by the backend (agent, chat and curator callers); an unknown or absent credential is refused")
 	}
 	// Asset auto-completion engine (§5) is created at the end of startup, once the
 	// egress configuration is settled. Traffic capture toggle (default off).
@@ -501,15 +515,12 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	// Recorder exit path: the operator's global proxy when set, else the masking
 	// egress proxy. The fallback is in-memory only — settings.global_proxy is
 	// never rewritten — so capture stays on for the operator's workers.
-	_ = m.applyRecorderUpstream()
+	m.applyRecorderExit()
 	// Asset auto-completion engine (§5). Probes go straight to the masking egress
 	// proxy in every capture mode (no mask configured → probes are skipped; there
 	// is no direct path). When capture is on, each exchange is also stored through
 	// the existing first-party RecordExternal path via observeEnrichment.
-	m.enrich = enrich.New(m.assets, enrich.Options{Workers: 4, Proxy: m.enrichMask, CAFile: m.enrichMaskCA, Observe: m.observeEnrichment})
-	// Reconcile the seeded browser MCP with the persisted capture state, so a
-	// restart with capture already on keeps Playwright routed through the proxy.
-	m.syncBrowserMCPProxy()
+	m.enrich = enrich.New(m.assets, enrich.Options{Workers: 4, Proxy: m.enrichMask, CAFile: m.enrichMaskCA, Observe: m.observeEnrichment, Authorizer: netpolicy.NewAuthorizer(pg)})
 	return m, nil
 }
 
@@ -523,31 +534,6 @@ func (m *Manager) TrafficEnabled() bool {
 
 // SetTrafficEnabled persists and applies the traffic-capture toggle. Callers must
 // rebuild the agents afterwards so the new proxy/tools/prompt take hold.
-// BrowserDriverNative reports whether the built-in driver replaces the
-// Playwright MCP for this process. Read per assembly, so it is cheap.
-func (m *Manager) BrowserDriverNative() bool {
-	return m.BrowserDriver() == "native"
-}
-
-// BrowserDriver returns the selected browser surface, defaulting to the
-// Playwright MCP so an unset row keeps the older behaviour.
-func (m *Manager) BrowserDriver() string {
-	v, _, _ := m.pg.GetSetting(settingBrowserDriver)
-	if v == "native" {
-		return "native"
-	}
-	return "mcp"
-}
-
-// SetBrowserDriver persists the browser surface. It applies to the next run:
-// tool assembly reads it per run and disables the MCP row when native is on.
-func (m *Manager) SetBrowserDriver(v string) error {
-	if v != "native" && v != "mcp" {
-		return fmt.Errorf("browser driver: want native or mcp, got %q", v)
-	}
-	return m.pg.SetSetting(settingBrowserDriver, v)
-}
-
 func (m *Manager) SetTrafficEnabled(on bool) error {
 	if err := m.pg.SetBool(settingTrafficCapture, on); err != nil {
 		return err
@@ -555,11 +541,6 @@ func (m *Manager) SetTrafficEnabled(on bool) error {
 	m.mu.Lock()
 	m.trafficOn = on
 	m.mu.Unlock()
-	// Inject (on) or strip (off) the recording proxy + CA on the browser MCP so
-	// Playwright routes through the MITM. Must run after the flag flip above, since
-	// ProxyAddr/ProxyCACert honor it. putSettings rebuilds agents next,
-	// which re-spawns the MCP with the new args/env.
-	m.syncBrowserMCPProxy()
 	return nil
 }
 
@@ -731,80 +712,6 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 	return nil
 }
 
-// browserMCPName is the seeded Playwright MCP whose proxy args + CA env are kept
-// in sync with the traffic-capture toggle.
-const browserMCPName = "browser"
-
-// syncBrowserMCPProxy reconciles the seeded browser MCP's proxy args + CA env with
-// the current traffic-capture state: capture on → route Playwright through the
-// recording proxy (--proxy-server) and trust its MITM CA (NODE_EXTRA_CA_CERTS);
-// capture off → strip both. Idempotent, and a no-op if the user deleted/renamed the
-// MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
-func (m *Manager) syncBrowserMCPProxy() {
-	servers, err := m.pg.ListMCP()
-	if err != nil {
-		log.Printf("[mcp] browser proxy sync: failed to read MCP list: %v", err)
-		return
-	}
-	var srv *pgdb.MCPServer
-	for _, s := range servers {
-		if s.Name == browserMCPName {
-			srv = s
-			break
-		}
-	}
-	if srv == nil {
-		return // user removed/renamed it — leave it alone
-	}
-
-	proxy := m.ProxyAddr()  // "" when capture off
-	cert := m.ProxyCACert() // "" when capture off
-
-	args := stripProxyArgs(decodeStrSlice(srv.Args))
-	env := decodeStrMap(srv.Env)
-	delete(env, "NODE_EXTRA_CA_CERTS")
-	if proxy != "" {
-		// The recorder MITMs every connection, so the browser must accept its
-		// certificate. Chromium does not read NODE_EXTRA_CA_CERTS; without this
-		// flag every https:// navigation fails with ERR_CERT_AUTHORITY_INVALID.
-		args = append(args, "--proxy-server", proxy, "--ignore-https-errors")
-		if cert != "" {
-			env["NODE_EXTRA_CA_CERTS"] = cert
-		}
-	}
-	srv.Args = encodeJSON(args)
-	srv.Env = encodeJSON(env)
-	if _, err := m.pg.SaveMCP(srv); err != nil {
-		log.Printf("[mcp] browser proxy sync failed: %v", err)
-		return
-	}
-	if proxy != "" {
-		log.Printf("[mcp] browser MCP capture proxy attached: %s (CA %s)", proxy, cert)
-	} else {
-		log.Print("[mcp] browser MCP capture proxy configuration removed")
-	}
-}
-
-// stripProxyArgs removes any --proxy-server/--proxy-bypass flags (both "--flag val"
-// and "--flag=val" forms) and the bare --ignore-https-errors flag, so they can be
-// re-added cleanly from current state, without mutating the input slice.
-func stripProxyArgs(args []string) []string {
-	out := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "--proxy-server" || a == "--proxy-bypass" {
-			i++ // skip the following value too
-			continue
-		}
-		if a == "--ignore-https-errors" ||
-			strings.HasPrefix(a, "--proxy-server=") || strings.HasPrefix(a, "--proxy-bypass=") {
-			continue
-		}
-		out = append(out, a)
-	}
-	return out
-}
-
 func decodeStrSlice(raw json.RawMessage) []string {
 	var out []string
 	if len(raw) > 0 {
@@ -881,8 +788,8 @@ func (m *Manager) GlobalProxy() string {
 }
 
 // SetGlobalProxy validates, persists and applies the global egress proxy
-// (http/https/socks5, optional user:pass; empty = direct). It updates the MITM's
-// upstream immediately; callers must rebuild agents afterwards so the
+// (http/https/socks5, optional user:pass; empty = direct). It updates the
+// recorder's exit immediately; callers must rebuild agents afterwards so the
 // capture-off path (bash env / WebFetch) picks up the change too.
 func (m *Manager) SetGlobalProxy(raw string) error {
 	raw = strings.TrimSpace(raw)
@@ -900,44 +807,198 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 	// The recorder exits through the operator's proxy, or through the masking
 	// egress proxy when the operator set none. Clearing the setting restores the
 	// mask fallback rather than silently reverting to a direct dial.
-	if err := m.applyRecorderUpstream(); err != nil {
-		return err
-	}
-	// Keep the browser MCP's egress in sync with the new global proxy too.
-	m.syncBrowserMCPProxy()
+	m.applyRecorderExit()
 	return nil
 }
 
-// applyRecorderUpstream points the recording proxy at the operator's global
-// proxy, falling back to the masking egress proxy when no global proxy is
+// applyRecorderExit points the recorder's origin transport at the operator's
+// global proxy, falling back to the masking egress proxy when no global proxy is
 // configured. The fallback is in-memory only: settings.global_proxy is never
 // rewritten, so the operator's choice stays exactly as saved.
 //
-// Only worker/recorded traffic uses this path; enrichment probes go straight to
-// the mask and do not depend on it.
-func (m *Manager) applyRecorderUpstream() error {
-	if m.traffic == nil {
-		return nil
+// The exit is the gateway's, not the recorder's own dial target: policy, DNS
+// pinning and the origin handshake stay in the gateway, and only the last hop
+// changes. Only worker/recorded traffic uses this path; enrichment probes go
+// straight to the mask and do not depend on it.
+func (m *Manager) applyRecorderExit() {
+	if m.gw == nil {
+		return
 	}
 	m.mu.RLock()
 	global := strings.TrimSpace(m.globalProxy)
 	mask := strings.TrimSpace(m.enrichMask)
 	m.mu.RUnlock()
-	upstream := global
+	exit := global
 	fallback := false
-	if upstream == "" && mask != "" {
-		upstream, fallback = mask, true
+	if exit == "" && mask != "" {
+		exit, fallback = mask, true
 	}
-	err := m.traffic.SetUpstreamProxy(upstream)
-	if err != nil {
-		// err and upstream can both carry URL credentials; log neither verbatim.
-		log.Printf("[proxy] recorder upstream %s is invalid and was ignored", enrich.RedactProxyURL(upstream))
-		return err
+	if exit != "" {
+		// The gateway refuses an unusable exit at dial time rather than dialing
+		// direct, so say why here instead of leaving the operator with bare 502s.
+		if _, err := traffic.ValidateProxyURL(exit); err != nil {
+			log.Printf("[proxy] recorder exit %s is not a usable proxy URL; the gateway will refuse origin dials until it is fixed", enrich.RedactProxyURL(exit))
+		}
 	}
+	m.gw.SetExit(netpolicy.Exit{ProxyURL: exit})
 	if fallback {
 		log.Printf("[proxy] recorder exits through the masking egress proxy %s (no operator global proxy is set; the setting itself is unchanged)", enrich.RedactProxyURL(mask))
 	}
-	return nil
+}
+
+// openRecorder starts the recording proxy with the gateway origin transport. A
+// recorder without the hook would dial origins directly, so a missing one is a
+// startup failure rather than a silent direct path.
+func openRecorder(dir, addr string, gw *gateway.Transport) (*traffic.Traffic, error) {
+	if gw == nil {
+		return nil, errors.New("the recording proxy needs the gateway origin transport")
+	}
+	return traffic.OpenWithTransport(dir, addr, gw)
+}
+
+// newGatewayTransport builds the origin transport the recorder dials through.
+// Its authorizer refuses every request when it has no policy source, so a
+// transport without a database is still fail-closed rather than a direct dial.
+func (m *Manager) newGatewayTransport() *gateway.Transport {
+	return gateway.New(gateway.Config{
+		Authorizer:    netpolicy.NewAuthorizer(m.pg),
+		SessionFor:    m.gatewaySession,
+		CertException: m.certException,
+	})
+}
+
+// Gateway returns the origin transport the recorder dials through (nil when no
+// recorder runs). The supervisor reads its Exit to configure a session's packet
+// boundary.
+func (m *Manager) Gateway() *gateway.Transport { return m.gw }
+
+// gatewayCredential reads the session credential from the proxy authorization
+// header. A proxy URL of the form http://<credential>@host:port arrives as Basic
+// auth with the credential as the user name; a client may also send it as a
+// bearer token.
+func gatewayCredential(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	v := strings.TrimSpace(req.Header.Get("Proxy-Authorization"))
+	if v == "" {
+		return ""
+	}
+	scheme, rest, _ := strings.Cut(v, " ")
+	rest = strings.TrimSpace(rest)
+	switch {
+	case strings.EqualFold(scheme, "basic"):
+		raw, err := base64.StdEncoding.DecodeString(rest)
+		if err != nil {
+			return ""
+		}
+		user, _, _ := strings.Cut(string(raw), ":")
+		return user
+	case strings.EqualFold(scheme, "bearer"):
+		return rest
+	}
+	return ""
+}
+
+// gatewaySession resolves the session a proxied request runs under from the
+// credential the backend issued. An absent or unknown credential is refused:
+// there is no anonymous session and no default one to fall back to.
+func (m *Manager) gatewaySession(req *http.Request) (netpolicy.Session, bool) {
+	cred := gatewayCredential(req)
+	if cred == "" {
+		return netpolicy.Session{}, false
+	}
+	m.sessMu.RLock()
+	defer m.sessMu.RUnlock()
+	s, ok := m.sessions[cred]
+	return s, ok
+}
+
+// maxGatewaySessions bounds the credential map. A session that was never revoked
+// is a caller bug, and evicting a live one silently would end an unrelated
+// session's authority, so the issuer refuses instead.
+const maxGatewaySessions = 4096
+
+// IssueSession registers a backend-issued session and returns it, credential
+// included. Purpose, task, conversation and policy revision are fixed here from
+// server-side state, so a request cannot change any of them. The credential is
+// what the gateway resolves the session from; it reaches a run only inside the
+// proxy URL that run's tool environment carries (see ToolProxyURL).
+func (m *Manager) IssueSession(ctx context.Context, caller netpolicy.Caller, taskID, conversationID int64, purpose netpolicy.Purpose) (netpolicy.Session, error) {
+	s, err := netpolicy.NewIssuer(m.pg).Issue(ctx, caller, taskID, conversationID, purpose)
+	if err != nil {
+		return netpolicy.Session{}, err
+	}
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return netpolicy.Session{}, fmt.Errorf("gateway: session credential: %w", err)
+	}
+	cred := hex.EncodeToString(raw[:])
+
+	m.sessMu.Lock()
+	defer m.sessMu.Unlock()
+	if m.sessions == nil {
+		m.sessions = make(map[string]netpolicy.Session)
+	}
+	if len(m.sessions) >= maxGatewaySessions {
+		log.Printf("[gateway] refusing to issue a session: %d credentials are live; a session was never revoked", len(m.sessions))
+		return netpolicy.Session{}, fmt.Errorf("gateway: %d live sessions, refusing to issue another", len(m.sessions))
+	}
+	s.Credential = cred
+	m.sessions[cred] = s
+	return s, nil
+}
+
+// ToolProxyURL returns the proxy URL a run's tool environment carries: the
+// gateway address with the session credential the gateway resolves the run from.
+// It is empty when the run has no session or no proxy is configured, so a tool
+// gets no proxy rather than a bare address the gateway would refuse.
+//
+// With capture off the address is the operator's global proxy, a plain forwarder
+// with no session concept; the credential in the URL is then meaningless and
+// ignored, and a socks5 or authenticated exit keeps its own credentials.
+func (m *Manager) ToolProxyURL(sess netpolicy.Session) string {
+	return netpolicy.ProxyURL(sess, m.ProxyAddr())
+}
+
+// RevokeSession ends one session: the credential stops resolving and every
+// pooled origin connection is dropped, so a revoke ends the connections that
+// session was already using instead of only blocking new requests. The hook
+// exposes no per-session drop, so other sessions re-dial once; correctness is
+// unaffected because every request is re-authorized.
+func (m *Manager) RevokeSession(cred string) {
+	if cred == "" {
+		return
+	}
+	m.sessMu.Lock()
+	delete(m.sessions, cred)
+	m.sessMu.Unlock()
+	if m.gw != nil {
+		m.gw.CloseIdleConnections()
+	}
+}
+
+// certException reports whether the operator approved skipping origin
+// certificate verification for this session's task and authority. An unknown or
+// unreadable exception set is strict: verification stays on.
+func (m *Manager) certException(s netpolicy.Session, authority string) bool {
+	if s.TaskID <= 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	exceptions, err := m.pg.ListCertExceptions(ctx, s.TaskID)
+	if err != nil {
+		log.Printf("[gateway] cert exceptions for task %d are unreadable; verification stays strict", s.TaskID)
+		return false
+	}
+	authority = strings.ToLower(strings.TrimSpace(authority))
+	for _, e := range exceptions {
+		if strings.EqualFold(e.Authority, authority) {
+			return true
+		}
+	}
+	return false
 }
 
 // observeEnrichment stores what an enrichment probe exchanged with the masking
@@ -946,11 +1007,13 @@ func (m *Manager) applyRecorderUpstream() error {
 // uniformly. The probe never routes through the recorder: a second MITM in front
 // of the mask would present leaves without IP SANs for SNI-less IP targets.
 //
-// Only evidence that is exact is stored. RecordExternal records
-// resp_len = len(body), and evidence binding trusts that length, so an exchange
-// whose body was cut or not fully read is NOT stored (never as a "successful"
-// prefix, never as Failed, which means "no response"). A genuine no-response
-// failure is stored as Failed. Log lines carry no URL (it may hold credentials).
+// A complete exchange is stored with its exact body. One whose body was cut at
+// the capture cap or not read to the end is stored as the prefix that was read,
+// with the response's full length and a partial marker, so the probe leaves
+// evidence instead of vanishing; evidence binding compares the declared length
+// against the body it reads, so it refuses a prefix rather than binding one as
+// the whole response. A genuine no-response failure is stored as Failed. Log
+// lines carry no URL (it may hold credentials).
 func (m *Manager) observeEnrichment(o enrich.Observation) {
 	if m.traffic == nil || !m.TrafficEnabled() {
 		return
@@ -962,9 +1025,10 @@ func (m *Manager) observeEnrichment(o enrich.Observation) {
 		log.Printf("[enrich] a probe response was not stored in the traffic store: the egress proxy reported the failure, not the target")
 		return
 	}
-	if !o.Failed && !o.Complete {
-		log.Printf("[enrich] a probe response was not stored in the traffic store: its body was incomplete or over the capture cap")
-		return
+	partial := !o.Failed && !o.Complete
+	respLen := 0 // unknown: the store falls back to the body it was given
+	if partial && o.DeclaredLength > 0 {
+		respLen = int(o.DeclaredLength)
 	}
 	if err := m.traffic.RecordExternal(traffic.ExternalExchange{
 		Method:          o.Method,
@@ -974,6 +1038,8 @@ func (m *Manager) observeEnrichment(o enrich.Observation) {
 		RequestHeaders:  o.RequestHeaders,
 		ResponseHeaders: o.ResponseHeaders,
 		ResponseBody:    o.ResponseBody,
+		Partial:         partial,
+		RespLen:         respLen,
 	}); err != nil {
 		log.Printf("[enrich] could not record a probe in the traffic store")
 	}
@@ -1700,11 +1766,12 @@ func (m *Manager) deriveTaskReflections(taskID int64) {
 	}
 }
 
-// DeleteTask removes a task and optionally its related global data. Traffic has
-// no task-id column, so related exchanges are resolved by exact hosts from the
-// task's asset rows. Files are staged before the database operation; traffic is
-// staged while PostgreSQL excludes asset/anchor writers. Both are restored on a
-// database failure and purged only after its commit.
+// DeleteTask removes a task and optionally its related global data. Traffic is
+// selected by task_id, the ownership the recorder wrote with each exchange, so a
+// task delete never removes another run's exchanges or unattributed history,
+// even when they share a host. Files are staged before the database operation;
+// traffic is staged while PostgreSQL excludes asset/anchor writers. Both are
+// restored on a database failure and purged only after its commit.
 func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResult, error) {
 	result := DeleteTaskResult{Deleted: id}
 	n, err := strconv.ParseInt(id, 10, 64)
@@ -1732,11 +1799,11 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 	var trafficStage *traffic.HostDeleteStage
 	var prepare func(pgdb.TaskDeletePreparation) error
 	if opts.DeleteTraffic && m.traffic != nil {
-		prepare = func(p pgdb.TaskDeletePreparation) error {
-			if len(p.TrafficHosts) == 0 {
-				return nil
-			}
-			trafficStage, err = m.traffic.StageDeleteHostsExact(p.TrafficHosts, n)
+		// Unconditional: ownership is the task id, not an asset-derived host
+		// list, so a run that captured traffic at a host with no registered
+		// asset is still cleaned up.
+		prepare = func(pgdb.TaskDeletePreparation) error {
+			trafficStage, err = m.traffic.StageDeleteTask(n)
 			if err != nil {
 				return err
 			}

@@ -1,0 +1,165 @@
+# PATCH: go-mitmproxy v1.9.2 origin-transport hook
+
+This directory is a verbatim copy of `github.com/lqqyt2423/go-mitmproxy` at tag
+**v1.9.2** (module hash `h1:+QTbDyUUaVRmEavPq0/eWzJ2K+K4JdL4ff91s/adnxk=`, recorded
+in `m1nervac0nsole/go.sum`) with the hunks below applied. `LICENSE` is the
+upstream MIT license, unchanged. `m1nervac0nsole/go.mod` replaces the module
+with this directory; the module cache is never edited.
+
+Why a source copy: v1.9.2 exposes no seam for the origin dial, the origin TLS
+handshake or the origin round trip, and an addon cannot refuse a CONNECT before
+the dial or take over a WebSocket upgrade. See
+`m1nervac0nsole/docs/design/network-boundary-implementation-plan.md`, "Resolved
+decisions" item 1.
+
+Behaviour with `Options.OriginTransport == nil` is upstream v1.9.2 except where a
+hunk says otherwise: Hunk 8 is an independent defect fix, and Hunks 9-10 change
+WebSocket addon delivery for every configuration (an addon that does not implement
+the optional interface sees exactly the hooks it saw before).
+
+## Tests
+
+The module's own tests are not a gate: no CI job runs them, and two of them fail
+under Go 1.26 for upstream reasons that have nothing to do with the hunks below —
+`cert.TestNewCA` compares a generated CA PEM against a golden, and
+`proxy.TestProxy/test_https_server/should_generate_not_trusted_error` asserts the
+raw `x509.UnknownAuthorityError` that Go now wraps in a `tls` error. Do not
+"fix" them by editing the golden: the hook is covered by
+`m1nervac0nsole/traffic/` and by the guest integration tests, which is the
+coverage that matters.
+
+## Applied hunks
+
+### Hunk 1 — `proxy/proxy.go`: the hook and its error type
+
+- `Options.OriginTransport OriginTransport` (nil keeps upstream behaviour) and
+  `Options.MaxStreamEvents int` (0 keeps every event).
+- New `OriginTransport` interface: `Dial`, `Handshake`, `RoundTrip`, each taking
+  `*ConnContext` so an implementation can key its own per-connection state.
+- New `OriginError{Stage, Status, Reason, Header}` with `Error()`. An
+  implementation returns it from `Dial`/`Handshake` so the CONNECT reply carries
+  the stage, and `Header` (when set) carries what the client needs to answer the
+  refusal, such as a `Proxy-Authenticate` challenge.
+- New `DialUpstream(ctx, proxyURL, address, sslInsecure)`, the exported form of
+  the existing exit dial, so a hook reuses the maintained http/https/socks5
+  logic instead of copying it. `getUpstreamConn` now delegates to it.
+- New `(*Proxy).originTransport()`.
+
+### Hunk 2 — `proxy/attacker.go`: dial, handshake, round trip
+
+- `httpsDial`: `ot.Dial(ctx, connCtx, req)` when the hook is set, otherwise
+  `getUpstreamConn` unchanged. The rest (ServerConn, `ServerConnected`) is
+  untouched.
+- `serverTlsHandshake`: `ot.Handshake(ctx, connCtx, serverConn.Conn,
+  clientHello.ServerName)` when the hook is set, otherwise the existing
+  `tls.Client` block unchanged. `serverConn.tlsConn` is assigned from either
+  path, `TlsEstablishedServer` still fires, and the existing
+  `serverConn.client` is still built for the nil-hook path only.
+- `attack`: the hook's `RoundTrip` is tried first, so both the cross-authority
+  client (`useSeparateClient`) and the per-connection client go through one
+  policy-checked call site. Everything after it (Responseheaders, SSE
+  detection, buffering, `StreamResponseModifier`, reply) is unchanged.
+
+### Hunk 3 — `proxy/entry.go`: dial-first, error attribution, tunnel dial
+
+- `handleConnect`: `ClientConn.UpstreamCert || originTransport() != nil` selects
+  `httpsDialFirstAttack`, so a later `NewUpstreamCertAddon(false)` cannot
+  reintroduce the lazy path's "200 before any dial" regression when a hook is
+  active.
+- `httpsDialFirstAttack`: a failed dial is reported by `writeOriginError`, which
+  writes `OriginError.Status` (default 502), `OriginError.Header` and
+  `X-M1nervac0nsole-Gateway: <stage>`; an unclassified error still yields 502.
+  Without the header copy a refusal could not carry a `Proxy-Authenticate`
+  challenge, and a browser would never send its proxy credential.
+- `directTransfer`: dials through `dialOrigin`, which uses the hook when set, so
+  a non-intercepted tunnel cannot skip policy.
+- New `dialOrigin` and `writeOriginError`; `errors` imported. New
+  `proxy/origin_error_test.go` covers the reply this function writes.
+
+### Hunk 4 — `proxy/connection.go`: `tlsConn` type
+
+- `ServerConn.tlsConn` is `net.Conn` instead of `*tls.Conn`, because a uTLS
+  connection is not a `*tls.Conn`. The only reader is `serveConn`'s h2
+  `DialTLSContext`, which already accepts `net.Conn`.
+
+### Hunk 5 — `proxy/websocket.go`: WSS reuses the CONNECT connection
+
+- `handleWSS` reuses `connCtx.ServerConn.tlsConn` when the CONNECT already
+  dialed and handshook the origin. Before this, the handler dialed a second
+  origin connection, overwrote `connCtx.ServerConn` without closing the first,
+  and ran a second TLS handshake with `InsecureSkipVerify` from `SslInsecure`.
+  When no connection exists it dials through the hook (`Dial` + `Handshake`) or
+  `getUpstreamConn`, and the handshake state is reported to addons.
+- The gorilla dialer uses `NetDialTLSContext`, which tells gorilla the TLS
+  handshake is already done, so it neither re-handshakes nor consults
+  `TLSClientConfig`.
+- `context` imported.
+
+### Hunk 6 — `proxy/flow.go`, `proxy/sse.go`: bounded stream retention
+
+- `WebSocketData.Dropped` / `SSEData.Dropped` count what `MaxStreamEvents`
+  discarded, so a reader can tell a short stream from a truncated one.
+- `addMessage` and `addEvent` take the limit and stop appending past it. With
+  `MaxStreamEvents == 0` nothing changes.
+- The two `addEvent` call sites in `proxy/sse.go` pass
+  `proxy.Opts.MaxStreamEvents`.
+
+Without this, a long-lived WebSocket or SSE session grows `f.WebScoket.Messages`
+/ `f.SSE.Events` without bound, which the plan's bounded-memory rule forbids.
+
+### Hunk 7 — `proxy/addon.go`: empty-retention guard
+
+- `LogAddon.WebSocketMessage` returns when no message is retained. It indexed
+  the last element unconditionally, which panics once Hunk 6 drops a message.
+
+### Hunk 8 — `proxy/websocket.go`: WebSocket subprotocol
+
+Independent of the hook, and present in v1.9.2: `cloneHeaderWithoutWSHandshake`
+deletes `Sec-Websocket-Protocol` (the gorilla dialer rejects it as a duplicate)
+and `Upgrader.Subprotocols` was never set, so both the origin and the client saw
+a successful upgrade with no negotiated subprotocol.
+
+- `handle` and `handleWSS` pass the client's subprotocol list to the dialer and
+  echo the origin's choice back through `Upgrader.Subprotocols`.
+
+### Hunk 9 — `proxy/addon.go`: optional WebSocket recorder extension
+
+Additive to the `Addon` interface, which is unchanged, so `BaseAddon`,
+`LogAddon`, `web.WebAddon` and every other implementation compile untouched.
+
+- New optional `WebSocketRecorder` interface: `WebSocketFrame(f, m)` and
+  `WebSocketClosed(f, fromClient, err)`. `WebSocketMessage(*Flow)` carries no
+  message, and the flow's retained list is capped by `MaxStreamEvents` and
+  appended from both forwarding goroutines, so an addon can neither identify the
+  current message nor rely on it still being retained. The extension hands the
+  message itself over, before it is forwarded.
+- New `WebSocketCloseError` alias for `websocket.CloseError`, so an addon can
+  record a closure's code and reason without importing gorilla itself.
+
+### Hunk 10 — `proxy/flow.go`, `proxy/websocket.go`: ordered delivery
+
+- `WebSocketData.addMessage` returns the message it built, including one dropped
+  by `MaxStreamEvents`, so a recorder sees every frame whatever the flow retains.
+- `forwardMessages` type-asserts each addon for `WebSocketRecorder` and delivers
+  the frame before forwarding it. Each direction reports its close once, through a
+  deferred `WebSocketClosed` that runs before the direction signals completion.
+- `forwardMessages` drains both directions before the deferred `WebSocketEnd`
+  instead of returning on the first one. Previously the second direction could
+  still be delivering when `WebSocketEnd` ran, so an addon finalizing there could
+  miss frames. The first direction's deferred close already unblocks the second,
+  so the drain cannot hang. The first error is still the one returned.
+- New `closeErr`, `frame` and `closed` helpers; `closeErr` keeps the previous
+  return value (a normal close is not an error).
+
+## Re-applying on an upstream bump
+
+The hunks are small and local. On a new upstream tag: copy the module, then
+re-apply in the order above and confirm with
+
+    go build github.com/lqqyt2423/go-mitmproxy/proxy/
+    go test github.com/lqqyt2423/go-mitmproxy/proxy/
+
+The dependency's own `TestProxy/test_https_server/should_generate_not_trusted_error`
+asserts a Go error string (`certificate is not trusted`) that current Go no
+longer produces; it fails identically on the unpatched v1.9.2 tree, so it is not
+a regression from this patch.

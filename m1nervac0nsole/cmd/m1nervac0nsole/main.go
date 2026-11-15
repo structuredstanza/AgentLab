@@ -18,6 +18,7 @@ import (
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/agent"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/config"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/execbox"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/server"
 )
 
@@ -40,6 +41,9 @@ func main() {
 func run() int {
 	if len(os.Args) > 1 && os.Args[1] == "egress-proxy" {
 		return runEgressProxy(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "execbox" {
+		return runExecbox(os.Args[2:])
 	}
 	var (
 		addr    = flag.String("addr", "127.0.0.1:8787", "HTTP listen address (default accepts local connections only; use :8787 to serve other hosts)")
@@ -80,6 +84,21 @@ func run() int {
 		log.Fatalf("open stores: %v", err)
 	}
 	defer mgr.Close()
+
+	// Install the unprivileged execution boundary once, before any run can start.
+	// Every tool process is started by the supervisor inside a session; a host
+	// without the client refuses instead of spawning unisolated. The install is
+	// atomic with the session wiring: one unwired spawn path would turn every
+	// Bash call on it into a refusal, so the wiring is asserted first and nothing
+	// is installed when it fails.
+	execClient := execbox.NewClient("")
+	if err := server.InstallExecutionBoundary(mgr.PG(), execClient); err != nil {
+		log.Printf("[execbox] execution boundary NOT installed: %v", err)
+	} else if rep, err := execClient.Capabilities(ctx); err != nil {
+		log.Printf("[execbox] capability probe failed: %v", err)
+	} else {
+		log.Printf("[execbox] %s", rep.String())
+	}
 
 	skillDir := config.SkillDir()
 	if abs, err := filepath.Abs(skillDir); err == nil {

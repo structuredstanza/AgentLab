@@ -1,18 +1,24 @@
 package server
 
 import (
-	"database/sql"
 	"os"
 	"testing"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/execbox"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/internal/testlock"
 )
 
-// TestMain acquires a PostgreSQL advisory lock (7337741002) for the entire
-// server test suite so cross-package DELETE cleanup races with db/agent
-// packages are avoided when running `go test ./...`.
+// TestMain holds the shared cross-package suite lock (testlock.LockKey) for the
+// entire server test suite so cross-package DELETE cleanup races with the db and
+// agent packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
+	// The execution-boundary test starts a real supervisor, which re-executes
+	// this binary as the session child. A test binary stands in for the product
+	// binary because the supervisor starts os.Executable().
+	if len(os.Args) > 2 && os.Args[1] == "execbox" && os.Args[2] == execbox.ChildMode {
+		os.Exit(execbox.RunChild(os.Args[3:]))
+	}
 	// server.New starts the realtime notifier's background delivery loop
 	// (notifyTick) unless this env var is set. The notify integration tests
 	// drive stepRealtime/stepDigest directly (see newNotifyFixture) and only
@@ -29,16 +35,7 @@ func TestMain(m *testing.M) {
 
 	dsn, _, err := db.DSN()
 	if err != nil {
-		os.Exit(m.Run())
+		dsn = "" // no DB configured — DB-backed tests skip themselves
 	}
-	conn, err := sql.Open("pgx", dsn)
-	if err != nil || conn.Ping() != nil {
-		os.Exit(m.Run())
-	}
-	defer conn.Close()
-	if _, err := conn.Exec(`SELECT pg_advisory_lock(7337741002)`); err != nil {
-		os.Exit(m.Run())
-	}
-	defer conn.Exec(`SELECT pg_advisory_unlock(7337741002)`) //nolint:errcheck
-	os.Exit(m.Run())
+	os.Exit(testlock.Run(dsn, m.Run))
 }

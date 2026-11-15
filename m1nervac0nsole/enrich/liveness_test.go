@@ -9,6 +9,7 @@ import (
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
 
 // unreachableAt reads the liveness marker straight from the row: Asset does not
@@ -43,7 +44,7 @@ func TestSuccessfulProbeClearsUnreachableMarker(t *testing.T) {
 		t.Fatalf("fixture: the marker was not set")
 	}
 
-	engine := New(as, staticRoute(proxyURL, caFile))
+	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
 	engine.ProbeSite(task.ID, id, target)
 	engine.Wait()
@@ -75,7 +76,7 @@ func TestProxyLabelledFailureKeepsUnreachableMarker(t *testing.T) {
 		t.Fatalf("mark unreachable: %v", err)
 	}
 
-	engine := New(as, Options{Workers: 1, Proxy: proxy.URL, CAFile: foreignCA(t)})
+	engine := New(as, Options{Workers: 1, Proxy: proxy.URL, CAFile: foreignCA(t), Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	engine.ProbeSite(task.ID, id, target)
 	engine.Wait()

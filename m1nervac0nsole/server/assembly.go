@@ -12,6 +12,7 @@ import (
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/agent"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/traffic"
 	"github.com/structuredstanza/norma/skill"
 	actool "github.com/structuredstanza/norma/tool"
@@ -25,6 +26,11 @@ import (
 // capture is on) to add to EVERY agent's base list — the DB tools table then
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
 func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string)) {
+	// One authorizer for the process: it caches a verdict per destination under
+	// the stored policy revision, and the MCP tools are assembled per run.
+	researchAuth := netpolicy.NewAuthorizer(pg)
+	// tcp_probe dials from the backend, outside the gateway: it asks the same policy.
+	agent.NetPolicyAuthorizer = researchAuth
 	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
 		a, err := pg.GetAgentByKey(agentKey)
 		if err != nil || a == nil {
@@ -86,13 +92,25 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				cl, err := connectMCP(ctx, m)
+				launch, revoke, err := researchServer(ctx, m)
 				if err != nil {
+					log.Printf("[mcp] %s not launched: %v", m.Name, err)
+					_ = pg.UpdateMCPHealth(m.ID, false, "research proxy: "+err.Error())
+					continue
+				}
+				cl, err := connectMCP(ctx, launch)
+				if err != nil {
+					if revoke != nil {
+						revoke()
+					}
 					log.Printf("[mcp] %s connection failed: %v", m.Name, err)
 					_ = pg.UpdateMCPHealth(m.ID, false, "connect: "+err.Error())
 					continue
 				}
 				closers = append(closers, cl)
+				if revoke != nil {
+					closers = append(closers, closerFunc(revoke))
+				}
 				ts, err := cl.Tools(ctx)
 				if err != nil {
 					log.Printf("[mcp] %s tools/list failed: %v", m.Name, err)
@@ -101,9 +119,16 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				}
 				_ = pg.UpdateMCPHealth(m.ID, true, "")
 				for _, t := range ts {
+					// The research browser exposes reading and extraction only;
+					// anything else it offers is not assembled at all.
+					if !researchToolAllowed(m.Name, t.Name()) {
+						continue
+					}
 					// A browser navigation is the one MCP call that crosses the
-					// task boundary; judge it here, where every agent's MCP tools
-					// are assembled.
+					// boundary; judge it here, where every agent's MCP tools are
+					// assembled: the research policy for the research browser, the
+					// task scope for the testing one.
+					t = researchGuardTool(researchAuth, t)
 					t = scopeGuardTool(assets, t)
 					extra = append(extra, t)
 					allNames = append(allNames, t.Name())
@@ -187,6 +212,50 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 		}
 		return extra, def, cleanup
 	}
+}
+
+// closerFunc lets a plain function join the MCP closers, so a research session
+// credential is revoked when the run's MCP children are closed.
+type closerFunc func()
+
+func (f closerFunc) Close() error {
+	f()
+	return nil
+}
+
+// researchServer returns the row to launch for m. The research browser gets the
+// gateway as its --proxy argument, because its own HTTP client ignores
+// HTTP_PROXY, and the recorder's CA in SSL_CERT_FILE, because the recorder
+// re-signs every certificate it forwards; revoke ends the session credential
+// once the child is gone. Every other server is launched exactly as stored.
+func researchServer(ctx context.Context, m *db.MCPServer) (*db.MCPServer, func(), error) {
+	if m.Name != researchMCPServer {
+		return m, nil, nil
+	}
+	var proxy, ca string
+	var revoke func()
+	if researchProxyFor != nil {
+		var err error
+		proxy, ca, revoke, err = researchProxyFor(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	launch := *m
+	// The CA is set only while a recorder runs. Without one it is removed rather
+	// than left pointing at a file that is gone, which would fail every HTTPS
+	// load the child makes.
+	env := jsonStrMap(m.Env)
+	delete(env, "SSL_CERT_FILE")
+	if ca != "" {
+		env["SSL_CERT_FILE"] = ca
+	}
+	launch.Env, _ = json.Marshal(env) // a string map cannot fail to marshal
+	if proxy != "" {
+		launch.Args, _ = json.Marshal(append(jsonStrSlice(m.Args), "--proxy", proxy))
+	}
+	return &launch, revoke, nil
 }
 
 func idSet(ids []int64) map[int64]bool {

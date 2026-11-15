@@ -517,3 +517,75 @@ func TestAddFindingFollowUpIntent(t *testing.T) {
 		t.Fatalf("missing source node: want ErrFindingOriginUnavailable, got %v", err)
 	}
 }
+
+// TestFindingsSeverityIsCaseInsensitive: a severity stored in mixed case must
+// order and count like its lowercase form. The rows are inserted most-severe
+// first, so the old case-sensitive SQL (every mixed-case row in the same bucket,
+// falling back to newest first) would return them reversed.
+func TestFindingsSeverityIsCaseInsensitive(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	vc := fmt.Sprintf("__test_vc_case_%d__", time.Now().UnixNano())
+	cleanup := func() { _, _ = d.Exec(`DELETE FROM findings WHERE vulnclass=$1`, vc) }
+	cleanup()
+	defer cleanup()
+
+	before, err := d.FindingStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct{ name, sev string }{
+		{"case critical", "Critical"},
+		{"case high", "HIGH"},
+		{"case low", "Low"},
+	} {
+		if _, err := d.AddFinding(0, 0, vc, row.name, row.sev, "summary", "", "tester", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, total, err := d.ListFindingsPage(FindingFilter{VulnClass: vc, Sort: "severity"}, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(page) != 3 {
+		t.Fatalf("page: want 3/3, got %d/%d", total, len(page))
+	}
+	for i, want := range []string{"Critical", "HIGH", "Low"} {
+		if page[i].Severity != want {
+			t.Fatalf("page severity order: want %q at %d, got %q", want, i, page[i].Severity)
+		}
+	}
+
+	exported, err := d.ListFindingsForExport(FindingFilter{VulnClass: vc}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exported) != 3 {
+		t.Fatalf("export: want 3 rows, got %d", len(exported))
+	}
+	for i, want := range []string{"Critical", "HIGH", "Low"} {
+		if exported[i].Severity != want {
+			t.Fatalf("export severity order: want %q at %d, got %q", want, i, exported[i].Severity)
+		}
+	}
+
+	groups, _, _, err := d.ListFindingGroups(FindingFilter{VulnClass: vc}, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Critical != 1 || groups[0].High != 1 || groups[0].Low != 1 {
+		t.Fatalf("group severity counts: %+v", groups)
+	}
+
+	after, err := d.FindingStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Critical != before.Critical+1 || after.High != before.High+1 || after.Low != before.Low+1 {
+		t.Fatalf("stats ignored case: before %+v after %+v", before, after)
+	}
+}

@@ -201,9 +201,17 @@ command -v docker >/dev/null 2>&1 || die "docker not found"
   fi
 
   # psql credentials inside the container: command line first, then POSTGRES_* in .env, and finally compose defaults (m1nervac0nsole)
+  # .env is dotenv data, not shell: read only the keys this script needs instead of sourcing it.
   if [[ -f .env ]]; then
-    # shellcheck disable=SC1091
-    set -a; . ./.env; set +a
+    while IFS='=' read -r key value; do
+      case "$key" in
+        POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB) ;;
+        *) continue ;;
+      esac
+      value="${value%$'\r'}"
+      if [[ "$value" == \"*\" || "$value" == \'*\' ]]; then value="${value:1:${#value}-2}"; fi
+      export "$key=$value"
+    done < .env
   fi
   DUSER="${USER:-${POSTGRES_USER:-m1nervac0nsole}}"
   DNAME="${DBNAME:-${POSTGRES_DB:-m1nervac0nsole}}"

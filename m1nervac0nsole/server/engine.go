@@ -156,7 +156,6 @@ type Engine struct {
 
 	// Task-level timeouts (see docs/\u4efb\u52a1\u7ea7\u8d85\u65f6\u4e0e\u6536\u5c3e\u8bbe\u8ba1.md):
 	settling     sync.Map // taskID -> bool, whether the task has entered the wind-down sequence (stop dispatching/claiming new intents)
-	deadline     sync.Map // taskID -> int64 unix, absolute deadline (stamped on first run; 0/absent = unlimited)
 	stamped      sync.Map // taskID -> bool, whether first_run_at has been stamped (stamped only once per process)
 	inflight     sync.Map // taskID -> *int64, counter of in-flight planner.Plan + worker.Execute calls (used for drain)
 	coordStarted sync.Map // taskID -> bool, whether the deadline coordinator has been started (deduplicates Run/reload)
@@ -304,7 +303,6 @@ func (e *Engine) StopTask(taskID string) {
 	e.dropCnt.Delete(taskID)
 	e.plannerRound.Delete(taskID)
 	e.settling.Delete(taskID)
-	e.deadline.Delete(taskID)
 	e.stamped.Delete(taskID)
 	e.inflight.Delete(taskID)
 	e.coordStarted.Delete(taskID)
@@ -343,7 +341,9 @@ func (e *Engine) Resume(t *Task) {
 }
 
 // execContextFor returns a live per-task context derived from parent, recreating
-// it if a prior pause cancelled it.
+// it if a prior pause cancelled it. The context carries the backend-issued
+// session every planner.Plan and worker.Execute under it runs in, so a process
+// a tool starts belongs to this task's boundary and no other.
 func (e *Engine) execContextFor(parent context.Context, taskID string) context.Context {
 	e.execMu.Lock()
 	defer e.execMu.Unlock()
@@ -356,10 +356,23 @@ func (e *Engine) execContextFor(parent context.Context, taskID string) context.C
 	if c := e.execCtx[taskID]; c != nil && c.Err() == nil {
 		return c
 	}
-	c, cancel := context.WithCancelCause(parent)
+	// The session hangs off the task's own cancellable context, not parent: a
+	// pause cancels this one long before parent ends, and the credential must
+	// die with it or every pause/resume leaks one.
+	base, cancel := context.WithCancelCause(parent)
+	c := taskSessionContext(base, e.m, taskID)
 	e.execCtx[taskID] = c
 	e.execCancel[taskID] = cancel
 	return c
+}
+
+// pg returns the store sessions are issued from, or nil when the engine runs
+// without one (tests, and the pre-startup window).
+func (e *Engine) pg() *db.DB {
+	if e.m == nil {
+		return nil
+	}
+	return e.m.pg
 }
 
 // IsPaused reports whether a task is user-paused.
@@ -523,12 +536,40 @@ func transitionIntentState(store *db.ExplorationStore, intentID int64, expected,
 	return nil
 }
 
+// intentStateWrite is transitionIntentState behind a package variable so a test
+// can inject a transient database failure; production always uses the real writer.
+var intentStateWrite = transitionIntentState
+
+const (
+	intentStateWriteAttempts = 3
+	intentStateWriteBackoff  = 200 * time.Millisecond
+)
+
+// retryIntentWrite runs an intent-state write, retrying a transient error a bounded
+// number of times so a phantom running intent cannot survive it. A compare-and-set
+// conflict is final: the intent already moved, and retrying cannot win.
+func retryIntentWrite(write func() error) error {
+	var err error
+	for attempt := 1; attempt <= intentStateWriteAttempts; attempt++ {
+		if err = write(); err == nil || errors.Is(err, db.ErrIntentStateConflict) {
+			return err
+		}
+		if attempt < intentStateWriteAttempts {
+			log.Printf("[worker] intent state write failed (attempt %d/%d): %v", attempt, intentStateWriteAttempts, err)
+			time.Sleep(intentStateWriteBackoff * time.Duration(attempt))
+		}
+	}
+	return err
+}
+
 // setIntentState persists one intent state change and announces it on the task's
 // activity stream. Without the announcement a viewer only learns that an intent
 // finished from the next unrelated event (usually the planner wake), so the graph
 // shows a finished intent as running until then.
 func (e *Engine) setIntentState(t *Task, intentID int64, expected, state string) error {
-	if err := transitionIntentState(t.Store, intentID, expected, state); err != nil {
+	if err := retryIntentWrite(func() error {
+		return intentStateWrite(t.Store, intentID, expected, state)
+	}); err != nil {
 		return err
 	}
 	id := intentID
@@ -1084,14 +1125,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			log.Printf("[planner] task %s planning error: %v", t.ID, err)
 		case met:
 			log.Printf("[planner] task %s judged goal achieved: %s", t.ID, reason)
-			// All goals achieved → persist task status as done (the frontend DTO prefers displaying this terminal state).
-			if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
-				log.Printf("[planner] task %s failed to persist completion mark: %v", t.ID, err)
-			}
-			// Task already judged complete → immediately cancel the workers still running: whatever their in-flight intent produces is no longer meaningful.
-			// The next worker loop iteration hits the terminal-state gate and no longer claims new intents; the batch that was cancelled falls through to the "task completed" branch below
-			// and is classified as stopped (rather than blocked).
-			e.cancelExec(t.ID, agent.AbortGoalMet)
+			e.finishGoalMet(t)
 		default:
 			log.Printf("[planner] task %s planning complete", t.ID)
 		}
@@ -1117,6 +1151,21 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// After each wake (edge or heartbeat), re-arm the heartbeat: any planning trigger recomputes this idle timer.
 		resetPlannerTimer(heartbeat, interval)
 	}
+}
+
+// finishGoalMet records the planner's met verdict through the same terminal guard
+// as every other terminal writer, so a timeout or failure that already won is
+// kept, then stops the workers still running: whatever their in-flight intent
+// produces is no longer meaningful. The next worker loop iteration hits the
+// terminal-state gate and no longer claims new intents; the cancelled batch falls
+// through to the "task completed" branch and is classified as stopped.
+func (e *Engine) finishGoalMet(t *Task) {
+	if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
+		log.Printf("[planner] task %s failed to persist completion mark: %v", t.ID, err)
+	} else if !won {
+		log.Printf("[planner] task %s already terminal at goal-met write, keeping the winning status", t.ID)
+	}
+	e.cancelExec(t.ID, agent.AbortGoalMet)
 }
 
 func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
@@ -1200,7 +1249,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	emit := func(r db.Activity) { e.emitActivity(t, r) }
 	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; with task deadline
 	if ectx.Err() != nil || e.IsDeleting(t.ID) {
-		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
+		if err := retryIntentWrite(func() error {
+			return transitionIntentState(t.Store, intent.ID, "running", "open")
+		}); err != nil {
 			log.Printf("[worker %s] task %s intent #%d failed to roll back after claim: %v", name, t.ID, intent.ID, err)
 		}
 		return true
@@ -1305,7 +1356,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// so it is re-claimed on resume — the worker will resume the prior LLM
 	// conversation from its transcript instead of restarting from scratch.
 	if ectx.Err() != nil && taskExecutionPaused(context.Cause(ectx)) {
-		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
+		if err := retryIntentWrite(func() error {
+			return transitionIntentState(t.Store, intent.ID, "running", "open")
+		}); err != nil {
 			log.Printf("[worker %s] task %s intent #%d failed to roll back task pause: %v", name, t.ID, intent.ID, err)
 		}
 		return true
@@ -1361,7 +1414,11 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		if errors.Is(err, errProviderRefused) {
 			reason = db.IntentBlockedLLMRefused
 		}
-		_ = t.Store.SetIntentBlockedReason(intent.ID, reason)
+		if stateErr := retryIntentWrite(func() error {
+			return t.Store.SetIntentBlockedReason(intent.ID, reason)
+		}); stateErr != nil {
+			log.Printf("[worker %s] task %s intent #%d failed to persist terminal state %s: %v", name, t.ID, intent.ID, state, stateErr)
+		}
 	} else {
 		if stateErr := e.setIntentState(t, intent.ID, "running", state); stateErr != nil {
 			log.Printf("[worker %s] task %s intent #%d failed to persist terminal state %s: %v", name, t.ID, intent.ID, state, stateErr)

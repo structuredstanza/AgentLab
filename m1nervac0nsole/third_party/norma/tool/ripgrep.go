@@ -34,8 +34,17 @@ var (
 // RipgrepPath returns the resolved ripgrep binary path, or "" when the pure-Go
 // grep should be used. The heavy resolution (detect + optional npm install) runs
 // at most once per process.
+//
+// With a host executor installed it always returns "": the Grep call site
+// carries no context, so an rg subprocess could not be given a session, and
+// spawning it directly would run a tool process outside the boundary. The
+// in-process Go implementation is used instead (which the host's capability
+// report already lists as outside the boundary).
 func RipgrepPath() string {
 	if os.Getenv("NORMA_DISABLE_RIPGREP") != "" {
+		return ""
+	}
+	if currentExecutor() != nil {
 		return ""
 	}
 	rgOnce.Do(func() { rgResolved = resolveRipgrep() })
@@ -103,6 +112,12 @@ type ripgrepReq struct {
 // Returns ok=false when rg failed for a real reason (not "no matches"), so the
 // caller falls back to the Go implementation.
 func runWithRipgrep(rg string, r ripgrepReq, tc *ToolContext) (Result, bool) {
+	if currentExecutor() != nil {
+		// No session is reachable from this call site, so spawning rg here would
+		// run a tool process outside the boundary. Fall back to the in-process
+		// implementation instead of spawning unisolated.
+		return Result{}, false
+	}
 	args := []string{"--color", "never"}
 	if r.ignoreCase {
 		args = append(args, "-i")

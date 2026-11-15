@@ -27,37 +27,6 @@ func TestValidateProxyURL(t *testing.T) {
 	}
 }
 
-func TestSetUpstreamProxyStoreClear(t *testing.T) {
-	tr := &Traffic{}
-	if got := tr.upstream.Load(); got != nil {
-		t.Fatalf("initial upstream = %v, want nil", got)
-	}
-	if err := tr.SetUpstreamProxy("socks5://user:pass@10.0.0.1:1080"); err != nil {
-		t.Fatalf("SetUpstreamProxy: %v", err)
-	}
-	u := tr.upstream.Load()
-	if u == nil || u.Scheme != "socks5" || u.Host != "10.0.0.1:1080" {
-		t.Fatalf("stored upstream = %v, want socks5://10.0.0.1:1080", u)
-	}
-	if pw, _ := u.User.Password(); u.User.Username() != "user" || pw != "pass" {
-		t.Fatalf("stored upstream lost credentials: %v", u)
-	}
-	// Empty clears back to direct.
-	if err := tr.SetUpstreamProxy("  "); err != nil {
-		t.Fatalf("SetUpstreamProxy(clear): %v", err)
-	}
-	if got := tr.upstream.Load(); got != nil {
-		t.Fatalf("after clear upstream = %v, want nil", got)
-	}
-	// Invalid value is rejected and does not mutate current state.
-	if err := tr.SetUpstreamProxy("nope://x"); err == nil {
-		t.Fatal("SetUpstreamProxy(invalid) expected error")
-	}
-	if got := tr.upstream.Load(); got != nil {
-		t.Fatalf("invalid set mutated upstream to %v, want nil", got)
-	}
-}
-
 func TestProxyAddr(t *testing.T) {
 	cases := []struct {
 		addr string

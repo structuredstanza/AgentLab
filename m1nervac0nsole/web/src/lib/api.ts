@@ -119,6 +119,7 @@ import type {
   TokenTotal,
   TokenUsage,
   Tool,
+  ToolArtifact,
   ToolManifest,
   ToolPreview,
   ToolStat,
@@ -149,28 +150,39 @@ function getToken(): string | null {
   return localStorage.getItem("m1nervac0nsole_token");
 }
 
+// The bearer header every API call carries, plus whatever the caller adds.
+function authHeaders(init?: RequestInit): Record<string, string> {
+  const token = getToken();
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+}
+
+// A 401 means the stored credential is gone: drop it and send the operator to
+// the login page instead of leaving a screen that silently shows nothing.
+function clearSession(): never {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("m1nervac0nsole_token");
+    document.cookie = "m1nervac0nsole_token=; path=/; max-age=0";
+    window.location.href = "/login";
+  }
+  throw new Error("Unauthorized");
+}
+
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (process.env.NEXT_PUBLIC_MOCK === "1") {
     const { mockHandle } = await import("@/lib/mock/handler");
     return mockHandle<T>(init?.method ?? "GET", path, init?.body ?? null);
   }
-  const token = getToken();
   const r = await fetch(`/api${path}`, {
     ...init,
     headers: {
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init?.headers as Record<string, string> | undefined),
+      ...authHeaders(init),
     },
   });
-  if (r.status === 401) {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("m1nervac0nsole_token");
-      document.cookie = "m1nervac0nsole_token=; path=/; max-age=0";
-      window.location.href = "/login";
-    }
-    throw new Error("Unauthorized");
-  }
+  if (r.status === 401) clearSession();
   if (!r.ok) {
     const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
     let message = fallback;
@@ -188,6 +200,16 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json();
 }
 
+// httpRaw is the authenticated fetch for the responses http() cannot decode:
+// blobs, plain text and multipart uploads. It owns only the prefix, the bearer
+// header and the expired-session handling; the caller owns the body and its own
+// error message.
+export async function httpRaw(path: string, init?: RequestInit): Promise<Response> {
+  const r = await fetch(`/api${path}`, { ...init, headers: authHeaders(init) });
+  if (r.status === 401) clearSession();
+  return r;
+}
+
 // sseUrl builds a URL for Server-Sent Events streams.
 //
 // Production (static export / Docker): the Go backend serves the web UI *and* the
@@ -203,7 +225,12 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 // to the Go backend on :8787, whose CORS is open.
 //
 // Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
-// Token is appended as ?token= because SSE can't carry cookies cross-origin.
+//
+// Credential: a same-origin stream authenticates with the HttpOnly
+// m1nervac0nsole_stream cookie the backend sets at login, so the JWT stays out of
+// the URL. Only a cross-origin base (dev :8787, or an explicit override) appends
+// ?token=: the browser does not attach that cookie across origins and EventSource
+// cannot set headers, so there is no other way to authenticate there.
 // mockReport returns a canned Markdown report for the demo.
 function mockReport(_task?: string): string {
   return `# Penetration Test Report: Acme Corp
@@ -233,12 +260,9 @@ export function sseUrl(path: string): string {
     (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
       ? `${window.location.protocol}//${window.location.hostname}:8787`
       : "");
-  const token = getToken();
-  // Same-origin streams already authenticate with the m1nervac0nsole_token cookie, and
-  // EventSource cannot set headers. A JWT in the query string there only writes
-  // a 7-day credential into proxy access logs and browser history, so it is sent
-  // only when the stream is genuinely cross-origin.
-  if (!token || !base) return `${base}${path}`;
+  const crossOrigin = !!base && (typeof window === "undefined" || base !== window.location.origin);
+  const token = crossOrigin ? getToken() : null;
+  if (!token) return `${base}${path}`;
   const sep = path.includes("?") ? "&" : "?";
   return `${base}${path}${sep}token=${encodeURIComponent(token)}`;
 }
@@ -299,6 +323,16 @@ export interface LLMOAuthPoll {
   expires_at?: string;
   error?: string;
 }
+// ToolInstallResult is what POST /api/tool-manifests/{id}/install answers. The
+// artifact is the file the toolbox bin directory holds after the run, absent
+// when the install published nothing.
+export interface ToolInstallResult {
+  output: string;
+  is_error: boolean;
+  available: boolean;
+  artifact?: ToolArtifact | null;
+}
+
 export const api = {
   // Backend application version number (injected via ldflags at release time; defaults to "dev").
   health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
@@ -538,6 +572,11 @@ export const api = {
   deleteTaskScopeRule: (id: string, ruleId: number) => del<{ ok: boolean }>(`/tasks/${id}/scope/rules/${ruleId}`),
   updateTaskScopeRule: (id: string, ruleId: number, effect: "include" | "exclude", pattern: string, note: string) =>
     put<{ ok: boolean }>(`/tasks/${id}/scope/rules/${ruleId}`, { effect, pattern, note }),
+  // A rule grants only once approved; an exclude binds without approval.
+  setTaskRuleAuthorized: (taskId: string, ruleId: number, authorized: boolean) =>
+    post<{ ok: boolean; authorized: boolean }>(
+      `/tasks/${taskId}/policy/rules/${ruleId}/${authorized ? "authorize" : "revoke"}`,
+    ),
   // Intents / facts / findings associated with an asset in this task (used by the graph node drawer).
   taskAssetRefs: (id: string, assetId: number) => get<CoverageAssetRefs>(`/tasks/${id}/asset-refs?asset_id=${assetId}`),
 
@@ -563,12 +602,7 @@ export const api = {
     if (MOCK) return { uploaded: files.length };
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
-    const token = getToken();
-    const r = await fetch(`/api/workspace/upload?path=${encodeURIComponent(dir)}`, {
-      method: "POST",
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: fd,
-    });
+    const r = await httpRaw(`/workspace/upload?path=${encodeURIComponent(dir)}`, { method: "POST", body: fd });
     if (!r.ok) throw new Error(`Upload failed: ${r.status}`);
     return r.json() as Promise<{ uploaded: number }>;
   },
@@ -577,10 +611,7 @@ export const api = {
     if (MOCK) {
       blob = new Blob([`(demo) Example download content for ${path}.`], { type: "text/plain" });
     } else {
-      const token = getToken();
-      const r = await fetch(`/api/workspace/download?path=${encodeURIComponent(path)}`, {
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      });
+      const r = await httpRaw(`/workspace/download?path=${encodeURIComponent(path)}`);
       if (!r.ok) throw new Error(`Download failed: ${r.status}`);
       blob = await r.blob();
     }
@@ -685,10 +716,7 @@ export const api = {
     } else if (opts.scope === "filtered" && opts.filters) {
       for (const [k, v] of findingFilterParams(opts.filters)) p.set(k, v);
     }
-    const token = getToken();
-    const r = await fetch(`/api/exploration/findings/export?${p.toString()}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const r = await httpRaw(`/exploration/findings/export?${p.toString()}`);
     if (!r.ok) throw new Error(`export: ${r.status}`);
     const blob = await r.blob();
     // The file name prefers the Content-Disposition header from the backend; if that is unavailable, fall back to the default name.
@@ -758,10 +786,8 @@ export const api = {
     side: "request" | "response",
     contextTask?: string,
   ) => {
-    const token = getToken();
-    const response = await fetch(
-      `/api/exploration/findings/${id}/traffic/${bindingId}/body?side=${side}&download=1${contextTask ? `&context_task=${encodeURIComponent(contextTask)}` : ""}`,
-      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    const response = await httpRaw(
+      `/exploration/findings/${id}/traffic/${bindingId}/body?side=${side}&download=1${contextTask ? `&context_task=${encodeURIComponent(contextTask)}` : ""}`,
     );
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: "Download failed" }));
@@ -977,10 +1003,7 @@ export const api = {
   notifyRetryDelivery: (id: number) => post<{ ok: boolean }>(`/notify/deliveries/${id}/retry`),
   report: async (task?: string) => {
     if (MOCK) return mockReport(task);
-    const token = getToken();
-    const r = await fetch(`/api/report${tq(task)}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const r = await httpRaw(`/report${tq(task)}`);
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
   },
@@ -1005,12 +1028,7 @@ export const api = {
       };
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
-    const token = getToken();
-    const r = await fetch(`/api/chat/upload?scope=${scope}&id=${encodeURIComponent(id)}`, {
-      method: "POST",
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: fd,
-    });
+    const r = await httpRaw(`/chat/upload?scope=${scope}&id=${encodeURIComponent(id)}`, { method: "POST", body: fd });
     if (!r.ok) throw new Error(`Upload failed: ${r.status} ${await r.text()}`);
     return r.json() as Promise<{ attachments: ChatAttachment[] }>;
   },
@@ -1207,6 +1225,9 @@ export const api = {
   // previewTool renders the argv the executor would run; it never runs anything.
   previewTool: (key: string, target: string, params: Record<string, string>) =>
     post<ToolPreview>(`/tools/${key}/preview`, { target, params }),
+  saveToolManifest: (toml: string) => post<{ id: string }>("/tool-manifests", { toml }),
+  deleteToolManifest: (id: string) => del<{ deleted: string }>(`/tool-manifests/${id}`),
+  installToolManifest: (id: string) => post<ToolInstallResult>(`/tool-manifests/${id}/install`, {}),
 
   // ---- api tokens (scoped read-only credentials) ----
   apiTokens: () => get<{ items: APIToken[] }>("/tokens").then((r) => arr(r.items)),
@@ -1238,12 +1259,7 @@ export const api = {
     if (MOCK) return { name: file.name.replace(/\.zip$/i, ""), files: 1 };
     const fd = new FormData();
     fd.append("file", file);
-    const token = getToken();
-    const r = await fetch(`/api/skills/upload${overwrite ? "?overwrite=true" : ""}`, {
-      method: "POST",
-      body: fd,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const r = await httpRaw(`/skills/upload${overwrite ? "?overwrite=true" : ""}`, { method: "POST", body: fd });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new ApiError(body?.error || `Upload failed (${r.status})`, r.status);
     return body;
@@ -1325,22 +1341,15 @@ export const api = {
   // ---- intercept tool-config (global tool interception scope) ----
   interceptGetToolConfig: async (): Promise<{ enabled_tools: string[] }> => {
     if (MOCK) return { enabled_tools: ["bash"] };
-    const token = getToken();
-    const r = await fetch("/api/intercept/tool-config", {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const r = await httpRaw("/intercept/tool-config");
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
   interceptSetToolConfig: async (enabledTools: string[]): Promise<void> => {
     if (MOCK) return;
-    const token = getToken();
-    const r = await fetch("/api/intercept/tool-config", {
+    const r = await httpRaw("/intercept/tool-config", {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled_tools: enabledTools }),
     });
     if (!r.ok) throw new Error(await r.text());

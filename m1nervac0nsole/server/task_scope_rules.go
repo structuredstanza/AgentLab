@@ -1,8 +1,11 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+
+	pgdb "github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 )
 
 // Scope rules are the operator's explicit layer over the boundary the hunt
@@ -110,7 +113,13 @@ func (s *Server) taskScopeRuleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := as.UpdateTaskScopeRule(taskID, ruleID, body.Effect, body.Pattern, body.Note); err != nil {
-		writeErr(w, 404, err.Error())
+		// A missing rule is the only 404 here; a rejected pattern or effect is
+		// the caller's mistake, exactly as the add handler answers it.
+		if errors.Is(err, pgdb.ErrPolicyRuleNotFound) {
+			writeErr(w, 404, err.Error())
+			return
+		}
+		writeErr(w, 400, err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})

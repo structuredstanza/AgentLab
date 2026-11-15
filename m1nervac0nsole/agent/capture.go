@@ -15,6 +15,13 @@ import (
 )
 
 func newSession(ctx context.Context, opts agentcore.Options) (context.Context, *agentcore.Session) {
+	// Background tasks and PTY shells spawn from the session's own root context,
+	// not from the turn that started them, so the run's execution identity has to
+	// be handed to the SDK explicitly. Every agent builds its session here, which
+	// is why this is the one place that does it.
+	if opts.RootContext == nil {
+		opts.RootContext = ctx
+	}
 	provider, defaultMode, before := opts.Provider, opts.NonStreaming, opts.Deps.BeforeModel
 	opts.Deps.BeforeModel = func(ctx context.Context, req llm.CompletionRequest) (context.Context, bool, error) {
 		mode := defaultMode

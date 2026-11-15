@@ -1,7 +1,8 @@
 // Package traffic implements the request-recording subsystem (docs §10): an
 // embedded go-mitmproxy proxy whose addon writes every target HTTP exchange into
 // a human-browsable file tree, with a sidecar SQLite index for paged queries.
-// Full capture, plaintext (no redaction), target HTTP only.
+// Full capture, plaintext (no redaction), target HTTP only; the gateway's own
+// Proxy-Authorization header is the one thing not recorded.
 package traffic
 
 import (
@@ -13,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"log"
@@ -30,10 +32,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 	"github.com/structuredstanza/norma/permission"
 	actool "github.com/structuredstanza/norma/tool"
-	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
 	_ "modernc.org/sqlite"
 )
 
@@ -49,7 +51,8 @@ CREATE TABLE IF NOT EXISTS exchanges (
   content_type TEXT,
   req_len      INTEGER,
   resp_len     INTEGER,
-  path         TEXT
+  path         TEXT,
+  task_id      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_ex_host ON exchanges(host);
 CREATE INDEX IF NOT EXISTS idx_ex_tmpl ON exchanges(host, url_template);
@@ -126,12 +129,43 @@ const (
 	// reclaimBudget caps one background reclamation. Deleting a busy host can free
 	// gigabytes, and the next deletion resumes wherever this one stopped.
 	reclaimBudget = 5 * time.Minute
+	// maxStreamEvents caps what a streamed flow retains in memory. That is the
+	// live view only: the cap keeps a long SSE stream or WebSocket from growing
+	// without bound, while the client still receives every byte and Dropped
+	// counts the rest. What is persisted is spooled to disk instead, so this
+	// never bounds a stored body.
+	maxStreamEvents = 256
+	// streamCheckBytes is how much the store spools between free-space checks. The
+	// check is a statfs, so it runs per MiB of store-wide writes rather than per
+	// 32 KiB read; a body that ends mid-interval overshoots the reserve by at most
+	// one read per active writer.
+	streamCheckBytes = 1 << 20
+	// captureReserveFloorBytes and captureReservePct are the standalone defaults
+	// for the capture filesystem reserve: keep a fifth of the volume free, never
+	// less than 1536 MiB, for Postgres, the binary, the DB WAL and the next
+	// session's writes. In the deployed lab these numbers have one authority,
+	// deployment/guest-start.py, which also sizes the packet ring from them and
+	// passes them here as M1NERVAC0NSOLE_CAPTURE_RESERVE_MB/_PCT; the constants
+	// below are what a run outside the lab uses. The reserve is a floor this
+	// recorder keeps for its own writers, not a cross-process quota: another
+	// process can still fill the volume, and no writer here can prove otherwise.
+	captureReserveFloorBytes = 1536 << 20
+	captureReservePct        = 20
 )
 
 // TrafficSearchDescription is persisted into the tool catalog for new and
 // upgraded installations. Keep it in the traffic package so the runtime tool
 // and the catalog migration cannot drift apart.
 const TrafficSearchDescription = "Query target traffic that the recording proxy has captured (host is required; accepts a bare host, host:port, or a full URL, and can be further filtered by URL substring or body keyword). Specifying a port returns only that service's traffic, so traffic from different ports on the same IP is not mixed. body_contains runs full-text search over captured request/response headers and bodies, supporting any substring and Chinese (at least 3 characters). Returns only a lightweight index (id/method/url/status/resp_len) without response content. After a non-empty result, you must verify each request/response with traffic_get, then pass only the IDs that really support the current vulnerability to bind_finding_traffic. By default it returns 3 results (at most 10 per page); use page to paginate when there are many results."
+
+// taskSource is the origin transport's own answer to which task a proxied
+// request belongs to. The gateway implements it from the session it already
+// authorized the request with, so an exchange is attributed to the run that made
+// it instead of being guessed from the host or a time window. A transport that
+// does not implement it (the nil test hook) records NULL.
+type taskSource interface {
+	TaskID(connCtx *mproxy.ConnContext, req *http.Request) int64
+}
 
 // Traffic runs the recording proxy and owns the file tree + index.
 type Traffic struct {
@@ -141,6 +175,14 @@ type Traffic struct {
 	wmu   sync.Mutex // serializes record() vs DeleteHost (incl. blob GC)
 	seq   atomic.Int64
 	proxy *mproxy.Proxy
+	// taskOf resolves the task an exchange belongs to; nil records NULL.
+	taskOf taskSource
+	// taskIDs remembers the task of a live client connection. A tunnel's inner
+	// requests carry no proxy credential, and the gateway retires its own
+	// per-connection state with the origin connection, which can close before the
+	// exchange is recorded, so the task is taken once at ServerConnected and
+	// dropped with the client connection.
+	taskIDs sync.Map // conn id -> int64
 	// fts reports whether the full-text index is available. False on a driver
 	// build without FTS5: recording and metadata search still work, body search
 	// degrades to unsupported rather than erroring.
@@ -161,20 +203,43 @@ type Traffic struct {
 	// stopping() treats as "not closing".
 	closed    chan struct{}
 	closeOnce sync.Once
-	// pass is the set of hosts whose MITM interception failed for a proxy/protocol
-	// reason; connections to them are tunneled transparently (fail-open) so the
-	// request still reaches the target — unrecorded — instead of being killed.
-	pass sync.Map // hostname(string) -> struct{}
-	// upstream is the global egress proxy every captured request is forwarded
-	// through (nil = dial targets directly). Both the intercepted and the
-	// transparent-passthrough paths honor it (go-mitmproxy's getUpstreamConn),
-	// so no host escapes it. Hot-swappable at runtime via SetUpstreamProxy.
-	upstream atomic.Pointer[url.URL]
+	// free measures the free and total bytes of the filesystem holding dir. A
+	// field rather than a direct call so a test can trip the capture reserve
+	// without filling a disk. Nil means the platform has no probe at all, which
+	// keeps capture running (see captureSpace).
+	free func(dir string) (free, total int64, err error)
+	// reserveFloor and reservePct are the reserve kept free on the capture
+	// filesystem, read once at open from the environment guest-start.py sets.
+	reserveFloor int64
+	reservePct   int64
+	// spooled counts bytes written to capture artifacts store-wide since the last
+	// free-space probe. One counter for the whole store, not one per writer, so N
+	// concurrent writers probe N times less often.
+	spooled atomic.Int64
+	// probed records that the filesystem has been measured at least once, so the
+	// first capture write of a run is never written without a measurement.
+	probed atomic.Bool
+	// spaceStop holds the reason capture was disabled, "" while it is enabled. A
+	// probe that finds the reserve reached or cannot measure latches here, so
+	// every writer stops at its next check instead of probing again.
+	spaceStop atomic.Value // string
+	spaceMu   sync.Mutex
+	// wsSpools holds the transcript being written for each live WebSocket flow,
+	// from WebSocketStart to WebSocketEnd.
+	wsSpools sync.Map // *mproxy.Flow -> *wsSpool
 }
 
-// Open initializes the traffic tree, blob store and SQLite index under dir.
-func Open(dir, addr string) (*Traffic, error) {
-	for _, d := range []string{dir, filepath.Join(dir, "_index"), filepath.Join(dir, "_blobs"), filepath.Join(dir, "_ca")} {
+// OpenWithTransport initializes the traffic tree, blob store and SQLite index
+// under dir. A nil hook keeps go-mitmproxy's own dial/TLS/round-trip path; a
+// hook owns origin authorization, the exit, the TLS handshake and connection
+// pooling. Production always passes one: a recorder built without it dials
+// origins directly, which is the unrecorded path the boundary forbids.
+func OpenWithTransport(dir, addr string, ot mproxy.OriginTransport) (*Traffic, error) {
+	streams := filepath.Join(dir, "_streams")
+	// A spool is renamed into the blob store or removed when its flow ends, so
+	// anything still here was left by a crash and was never indexed.
+	_ = os.RemoveAll(streams)
+	for _, d := range []string{dir, filepath.Join(dir, "_index"), filepath.Join(dir, "_blobs"), filepath.Join(dir, "_ca"), streams} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
 		}
@@ -195,7 +260,14 @@ func Open(dir, addr string) (*Traffic, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &Traffic{dir: dir, addr: addr, db: db, closed: make(chan struct{})}
+	t := &Traffic{dir: dir, addr: addr, db: db, closed: make(chan struct{}), free: filesystemSpace}
+	t.reserveFloor, t.reservePct = captureReserve()
+	// The origin transport is where the session was resolved, so the recorder
+	// takes an exchange's task from it instead of parsing proxy credentials
+	// itself. A transport that cannot answer records NULL.
+	if ts, ok := ot.(taskSource); ok {
+		t.taskOf = ts
+	}
 	if err := t.initIndex(); err != nil {
 		db.Close()
 		return nil, err
@@ -205,27 +277,23 @@ func Open(dir, addr string) (*Traffic, error) {
 		Addr:        addr,
 		SslInsecure: true,
 		CaRootPath:  filepath.Join(dir, "_ca"),
+		// A nil hook keeps go-mitmproxy's own origin path; a hook owns origin
+		// authorization, TLS, the exit and pooling (see gateway.Transport).
+		OriginTransport: ot,
+		// Bounded retention for streamed flows: what is persisted is spooled to
+		// disk, so this cap only bounds the flow's in-memory live view.
+		MaxStreamEvents: maxStreamEvents,
 	})
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	// Upstream selection. By default (no global egress proxy set) targets are
-	// dialed DIRECTLY: go-mitmproxy's own default upstream uses
-	// http.ProxyFromEnvironment, so an HTTP_PROXY/HTTPS_PROXY in the environment
-	// (a VPN/system proxy) would make it forward target requests through that
-	// external proxy — which can't reach the target → 502. Returning nil forces
-	// a direct dial. When a global egress proxy IS configured (SetUpstreamProxy),
-	// every captured request — intercepted AND transparently tunneled — is
-	// forwarded through it instead, so no host leaks the real source IP.
-	p.SetUpstreamProxy(func(*http.Request) (*url.URL, error) { return t.upstream.Load(), nil })
-	// Fail-open: MITM every host by default, EXCEPT ones a prior request proved we
-	// can't intercept without breaking (see maybePassthrough). Those are tunneled
-	// transparently so the request still reaches the target instead of being killed.
-	p.SetShouldInterceptRule(func(req *http.Request) bool {
-		_, tunnel := t.pass.Load(hostOnly(req.Host))
-		return !tunnel
-	})
+	// The nil-hook path dials targets DIRECTLY: go-mitmproxy's own default
+	// upstream uses http.ProxyFromEnvironment, so an HTTP_PROXY/HTTPS_PROXY in
+	// the environment (a VPN/system proxy) would make it forward target requests
+	// through that external proxy — which can't reach the target → 502. The
+	// operator's global proxy is the gateway's exit, not the recorder's own.
+	p.SetUpstreamProxy(func(*http.Request) (*url.URL, error) { return nil, nil })
 	p.AddAddon(&sink{t: t})
 	t.proxy = p
 	return t, nil
@@ -283,21 +351,32 @@ func (t *Traffic) initIndex() error {
 	if _, err := conn.ExecContext(ctx, indexSchema); err != nil {
 		return err
 	}
+	// task_id postdates shipped installs, and CREATE TABLE IF NOT EXISTS leaves
+	// an existing table alone. SQLite has no ADD COLUMN IF NOT EXISTS, so the
+	// column is added only when it is missing: re-applying this is a no-op, which
+	// is what makes it safe on every start. Rows recorded before it existed keep
+	// NULL, which is the same value a run with no session records.
+	var hasTaskID int
+	if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('exchanges') WHERE name='task_id'`).Scan(&hasTaskID); err != nil {
+		return err
+	}
+	if hasTaskID == 0 {
+		if _, err := conn.ExecContext(ctx, `ALTER TABLE exchanges ADD COLUMN task_id INTEGER`); err != nil {
+			return err
+		}
+	}
+	// After the column, never inside indexSchema: on an install that predates
+	// task_id the index would name a column the table does not have yet and take
+	// the whole recorder down at startup.
+	if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_ex_task ON exchanges(task_id)`); err != nil {
+		return err
+	}
 	if _, err := conn.ExecContext(ctx, ftsSchema); err != nil {
 		log.Printf("[traffic] full-text index unavailable; body search is disabled (metadata search is unaffected): %v", err)
 		return nil
 	}
 	t.fts = true
 	return nil
-}
-
-// hostOnly strips an optional :port, so passthrough keys match whether the host
-// arrives as "example.com:443" (CONNECT) or "example.com" (request URL).
-func hostOnly(hostport string) string {
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		return h
-	}
-	return hostport
 }
 
 // ProxyAddr returns the address workers should set as HTTP(S)_PROXY. A bare
@@ -307,24 +386,6 @@ func (t *Traffic) ProxyAddr() string {
 		return "http://127.0.0.1" + t.addr
 	}
 	return "http://" + t.addr
-}
-
-// SetUpstreamProxy points every captured request at a global egress proxy
-// (http/https/socks5, optional user:pass in the URL). An empty raw string clears
-// it, restoring direct dialing. The change is atomic and takes effect on the next
-// connection — no restart, no proxy rebuild. go-mitmproxy dials all three schemes
-// itself, so socks5 works uniformly here regardless of the target tool.
-func (t *Traffic) SetUpstreamProxy(raw string) error {
-	if strings.TrimSpace(raw) == "" {
-		t.upstream.Store(nil)
-		return nil
-	}
-	u, err := ValidateProxyURL(raw)
-	if err != nil {
-		return err
-	}
-	t.upstream.Store(u)
-	return nil
 }
 
 // ValidateProxyURL parses and checks a proxy URL (http/https/socks5, optional
@@ -396,38 +457,742 @@ func (s *sink) Response(f *mproxy.Flow) {
 	s.t.record(f)
 }
 
-// RequestError fires when a request through an established MITM tunnel fails. If
-// the failure looks proxy/protocol-caused (h2 quirks, HEAD-with-body, protocol
-// errors) — not a plain target-unreachable error — we flag the host for
-// transparent passthrough so future requests to it succeed instead of dying.
-func (s *sink) RequestError(f *mproxy.Flow, err error) { s.t.maybePassthrough(f, err) }
-
-// maybePassthrough marks a host to be tunneled transparently on the next
-// connection, but only for errors the proxy itself caused — a target that is
-// simply down/filtered would fail without us too, and must stay MITM'd+recorded.
-func (t *Traffic) maybePassthrough(f *mproxy.Flow, err error) {
-	if err == nil || f == nil || f.Request == nil || f.Request.URL == nil || !proxyCausedErr(err) {
+// ServerConnected remembers the task the tunnel was opened for. A tunnel's inner
+// requests carry no proxy credential, and the gateway retires its per-connection
+// state with the origin connection, so this is the one point the recorder can
+// learn the task before any exchange on that connection is stored.
+func (s *sink) ServerConnected(connCtx *mproxy.ConnContext) {
+	if s.t.taskOf == nil || connCtx == nil {
 		return
 	}
-	host := f.Request.URL.Hostname()
-	if host == "" {
-		return
-	}
-	if _, loaded := t.pass.LoadOrStore(host, struct{}{}); !loaded {
-		log.Printf("[traffic] MITM error with %s; switched to pass-through (later connections to this host go directly to the target and are no longer recorded, but requests proceed normally): %v", host, err)
+	if id := s.t.taskOf.TaskID(connCtx, nil); id != 0 {
+		s.t.taskIDs.Store(connCtx.Id(), id)
 	}
 }
 
-// proxyCausedErr reports whether err indicates the interception layer (not the
-// target) is at fault — HTTP/2 handling, HEAD-with-body, or a protocol violation.
-func proxyCausedErr(err error) bool {
-	s := strings.ToLower(err.Error())
-	for _, p := range []string{"head request", "http2", "http/2", "protocol error", "protocol_error", "malformed"} {
-		if strings.Contains(s, p) {
-			return true
+// ClientDisconnected drops the connection's task with the connection, so the
+// map stays bounded by live client connections.
+func (s *sink) ClientDisconnected(c *mproxy.ClientConn) {
+	if c != nil {
+		s.t.taskIDs.Delete(c.Id)
+	}
+}
+
+// taskFor returns the task a flow's exchange belongs to, 0 when none: the
+// session its connection was opened under, otherwise the one its own credential
+// resolves (a plain-HTTP request, or a refused CONNECT).
+func (t *Traffic) taskFor(f *mproxy.Flow) int64 {
+	if f == nil {
+		return 0
+	}
+	if f.ConnContext != nil {
+		if id, ok := t.taskIDs.Load(f.ConnContext.Id()); ok {
+			return id.(int64)
 		}
 	}
+	if t.taskOf == nil || f.Request == nil {
+		return 0
+	}
+	return t.taskOf.TaskID(f.ConnContext, f.Request.Raw())
+}
+
+// streamedMarker is the line a stored response head carries when its body could
+// not be captured at all: a streamed body whose spool failed to store, or a
+// WebSocket flow whose transcript was never started. The name follows the
+// gateway's attribution header style, which also makes the reason searchable.
+const streamedMarker = "X-M1nervac0nsole-Capture: body not captured: streamed"
+
+// StreamResponseModifier spools a streamed body to disk as it passes to the
+// client. A streamed flow never reaches Response — the proxy refuses to buffer
+// it — so this hook is the only place its bytes exist, and the spooled file is
+// what keeps a 6 MiB body or a long SSE stream from being recorded as metadata
+// only.
+func (s *sink) StreamResponseModifier(f *mproxy.Flow, in io.Reader) io.Reader {
+	if !f.Stream {
+		return in
+	}
+	sp := &streamSpool{t: s.t, f: f, r: in, taskID: s.t.taskFor(f)}
+	// f.Done() closes when the exchange ends, which is the one point every way
+	// of ending a stream passes through: EOF, a client disconnect and a
+	// shutdown alike.
+	go func() {
+		<-f.Done()
+		sp.finish()
+	}()
+	return sp
+}
+
+// wsTranscriptType names the stored body of a WebSocket flow: one JSON object
+// per line, frames in the order the proxy saw them. It is an ordinary blob, so
+// archive, export, evidence and traffic_get carry it with no change.
+const wsTranscriptType = "application/x-m1nervac0nsole-ws+jsonl"
+
+// wsTranscriptHeader is the first line of every transcript. The two directions
+// are independent TCP streams, so proxy arrival order is the only order that
+// exists. gorilla consumes ping and pong inside ReadMessage, so control frames
+// are not observable at this layer and the transcript says so rather than
+// implying a completeness it cannot have.
+const wsTranscriptHeader = `{"v":1,"kind":"ws-transcript","order":"proxy-arrival","control_frames":"not-observable"}` + "\n"
+
+// WebSocket close codes (RFC 6455 7.4.1). Named here so the recorder does not
+// import the proxy's websocket library for two integers.
+const (
+	wsCloseNormal   = 1000
+	wsCloseAbnormal = 1006
+)
+
+// wsFrameLine is one forwarded WebSocket message. Data is base64 in JSON.
+type wsFrameLine struct {
+	Seq  int64  `json:"seq"`
+	TS   int64  `json:"ts_ns"`
+	Dir  string `json:"dir"`
+	Type string `json:"type"`
+	Len  int    `json:"len"`
+	Data []byte `json:"data"`
+}
+
+// wsCloseLine is one direction's end: the close frame a peer sent, or the
+// transport error that ended it.
+type wsCloseLine struct {
+	Seq   int64   `json:"seq"`
+	TS    int64   `json:"ts_ns"`
+	Dir   string  `json:"dir"`
+	Close wsClose `json:"close"`
+}
+
+type wsClose struct {
+	Code   int    `json:"code"`
+	Reason string `json:"reason"`
+	Error  string `json:"error"`
+	// Frame is true only when the peer sent a close frame. An end without one
+	// is a cut-short session, whatever error the transport reported.
+	Frame bool `json:"-"`
+	// Teardown is true when the connection ended because the proxy closed it
+	// after the other direction ended. That is a consequence of the session
+	// ending, not evidence of why it ended, so it decides nothing.
+	Teardown bool `json:"-"`
+}
+
+// WebSocketStart opens the transcript for a WebSocket flow. The task is taken
+// here, while the connection that opened it is still live, exactly as a streamed
+// HTTP body does.
+func (s *sink) WebSocketStart(f *mproxy.Flow) {
+	if f == nil || f.Request == nil || f.Request.URL == nil {
+		return
+	}
+	sp := &wsSpool{t: s.t, f: f, taskID: s.t.taskFor(f)}
+	sp.open()
+	s.t.wsSpools.Store(f, sp)
+}
+
+// WebSocketFrame writes one forwarded message to the flow's transcript. The proxy
+// calls it before forwarding, so the transcript is never behind the peers.
+func (s *sink) WebSocketFrame(f *mproxy.Flow, m *mproxy.WebSocketMessage) {
+	if m == nil {
+		return
+	}
+	if sp := s.t.wsSpoolFor(f); sp != nil {
+		sp.frame(m)
+	}
+}
+
+// WebSocketClosed records one direction's end, including the close code or the
+// error that ended it.
+func (s *sink) WebSocketClosed(f *mproxy.Flow, fromClient bool, err error) {
+	if sp := s.t.wsSpoolFor(f); sp != nil {
+		sp.closed(fromClient, err)
+	}
+}
+
+// WebSocketEnd finalizes the transcript and writes the exchange row.
+func (s *sink) WebSocketEnd(f *mproxy.Flow) {
+	if f == nil || f.Request == nil || f.Request.URL == nil {
+		return
+	}
+	sp, ok := s.t.wsSpools.LoadAndDelete(f)
+	if !ok {
+		// No start was seen, so no frame was captured: keep the metadata row
+		// rather than losing the exchange, and say the body is missing.
+		s.t.recordStreamed(f, wsStatus(f), 0, storedBody{}, streamedMarker, s.t.taskFor(f))
+		return
+	}
+	sp.(*wsSpool).finish()
+}
+
+// wsSpoolFor returns the transcript being written for a flow, nil when none is.
+func (t *Traffic) wsSpoolFor(f *mproxy.Flow) *wsSpool {
+	if f == nil {
+		return nil
+	}
+	sp, ok := t.wsSpools.Load(f)
+	if !ok {
+		return nil
+	}
+	return sp.(*wsSpool)
+}
+
+// wsSpool writes one WebSocket flow's transcript while its frames are forwarded.
+// Each frame is written before it is forwarded, so the transcript is never behind
+// the peers, and nothing is retained in memory: the file is the only copy, so no
+// per-exchange cap applies and the capture reserve is the one bound.
+//
+// kept and keptFrames count what reached the file; payload and frames count what
+// the peers exchanged, so a partial capture can say what it kept of what. stopped
+// is why capture ended early, closedBy the directions that ended with a close
+// frame, and abnormal those that did not.
+type wsSpool struct {
+	t      *Traffic
+	f      *mproxy.Flow
+	taskID int64
+
+	// mu guards both directions' writes and keeps seq in file order.
+	mu   sync.Mutex
+	file *os.File
+	path string
+	sum  hash.Hash
+	seq  int64
+	// head keeps the first blobPreview bytes for the inline preview.
+	head []byte
+
+	kept       int64
+	payload    int64
+	frames     int64
+	keptFrames int64
+	stopped    string
+	closedBy   []string
+	abnormal   []string
+}
+
+// open starts the transcript. A failure to open it is not fatal: the row is still
+// written, labelled with why the body is missing.
+func (s *wsSpool) open() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := os.CreateTemp(filepath.Join(s.t.dir, "_streams"), "ws-")
+	if err != nil {
+		s.stopLocked("opening the capture failed: " + err.Error())
+		return
+	}
+	s.file, s.path, s.sum = f, f.Name(), sha256.New()
+	s.writeLocked([]byte(wsTranscriptHeader))
+}
+
+// writeLocked appends one complete line to the transcript, stopping at the
+// capture filesystem's reserve or on a write failure. The caller holds s.mu.
+func (s *wsSpool) writeLocked(line []byte) {
+	if s.stopped != "" {
+		return
+	}
+	if reason := s.t.captureSpace(int64(len(line))); reason != "" {
+		s.stopLocked(reason)
+		return
+	}
+	n, err := s.file.Write(line)
+	s.sum.Write(line[:n])
+	s.kept += int64(n)
+	if room := blobPreview - len(s.head); room > 0 {
+		s.head = append(s.head, line[:min(n, room)]...)
+	}
+	if err != nil {
+		s.stopLocked("writing the capture failed: " + err.Error())
+	}
+}
+
+func (s *wsSpool) stopLocked(reason string) {
+	s.stopped = reason
+	log.Printf("[traffic] WebSocket transcript not captured in full: %s", reason)
+}
+
+// frame records one forwarded message. The sequence number is assigned here, in
+// proxy arrival order, which is the only order two independent directions have.
+func (s *wsSpool) frame(m *mproxy.WebSocketMessage) {
+	// gorilla's data opcodes: 1 text, 2 binary. Named here rather than imported so
+	// the recorder does not depend on the proxy's websocket library.
+	typ := "binary"
+	if m.Type == 1 {
+		typ = "text"
+	}
+	dir := "s2c"
+	if m.FromClient {
+		dir = "c2s"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.frames++
+	s.payload += int64(len(m.Content))
+	if s.stopped != "" {
+		return
+	}
+	s.seq++
+	line, err := json.Marshal(wsFrameLine{Seq: s.seq, TS: m.Timestamp.UnixNano(), Dir: dir, Type: typ, Len: len(m.Content), Data: m.Content})
+	if err != nil {
+		s.stopLocked("encoding the capture failed: " + err.Error())
+		return
+	}
+	s.writeLocked(append(line, '\n'))
+	if s.stopped == "" {
+		s.keptFrames++
+	}
+}
+
+// closed records one direction's end. A peer's close frame ends the session by
+// agreement; a direction that ends without one means the conversation was cut
+// short, so the row is labelled rather than reading as a whole session. The
+// proxy tears down the other direction as soon as one ends, so the direction
+// that follows a close frame reports our own teardown error and is not treated
+// as a cut-short conversation.
+func (s *wsSpool) closed(fromClient bool, err error) {
+	dir := "s2c"
+	if fromClient {
+		dir = "c2s"
+	}
+	cl := wsCloseOf(err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A direction the proxy closed after the other one ended says nothing about
+	// why the session ended, so it decides nothing. A close frame means the
+	// peers agreed; a real transport error means the session was cut short.
+	if !cl.Teardown {
+		if cl.Frame {
+			s.closedBy = append(s.closedBy, dir)
+		} else {
+			s.abnormal = append(s.abnormal, fmt.Sprintf("%s ended with code %d: %s", dir, cl.Code, cl.Error))
+		}
+	}
+	if s.stopped != "" {
+		return
+	}
+	s.seq++
+	line, merr := json.Marshal(wsCloseLine{Seq: s.seq, TS: time.Now().UnixNano(), Dir: dir, Close: cl})
+	if merr != nil {
+		s.stopLocked("encoding the capture failed: " + merr.Error())
+		return
+	}
+	s.writeLocked(append(line, '\n'))
+}
+
+// wireCloseCode reports whether a close code can appear in a close frame on the
+// wire. 1004, 1005 (no status), 1006 (abnormal) and 1015 (TLS) are reserved for
+// local reporting, so a CloseError carrying one describes a torn-down
+// connection, not an agreement between the peers (RFC 6455 7.4.1).
+func wireCloseCode(code int) bool {
+	switch {
+	case code >= 1000 && code <= 1003:
+		return true
+	case code >= 1007 && code <= 1011:
+		return true
+	case code >= 3000 && code <= 4999:
+		return true
+	}
 	return false
+}
+
+// wsCloseOf describes one direction's end: the close frame a peer sent, or the
+// transport error that ended it.
+func wsCloseOf(err error) wsClose {
+	var ce *mproxy.WebSocketCloseError
+	switch {
+	case errors.As(err, &ce) && wireCloseCode(ce.Code):
+		return wsClose{Code: ce.Code, Reason: ce.Text, Frame: true}
+	case errors.As(err, &ce):
+		return wsClose{Code: ce.Code, Error: ce.Text}
+	case errors.Is(err, net.ErrClosed):
+		// The proxy closed this connection because the other direction ended
+		// first. The session's cause is the other direction's, not this one's.
+		return wsClose{Code: wsCloseAbnormal, Error: err.Error(), Teardown: true}
+	case err != nil:
+		return wsClose{Code: wsCloseAbnormal, Error: err.Error()}
+	default:
+		// The goroutine ended without a close frame and without an error: the
+		// session was torn down, not agreed.
+		return wsClose{Code: wsCloseAbnormal, Error: "ended without a close frame"}
+	}
+}
+
+// finish stores the transcript and writes the exchange row. resp_len is the
+// transcript's own length on disk, not the payload the frames carried: the blob
+// is what an archive, an evidence read and a restore compare, so the two must
+// agree. Payload totals live in the capture marker only.
+func (s *wsSpool) finish() {
+	s.mu.Lock()
+	if s.file != nil {
+		s.file.Close()
+	}
+	kept, payload, frames, keptFrames := s.kept, s.payload, s.frames, s.keptFrames
+	path, sum, head := s.path, s.sum, s.head
+	reasons := []string{}
+	if s.stopped != "" {
+		reasons = append(reasons, s.stopped)
+	}
+	// A real transport error means the session was cut short; without one, a
+	// close frame means the peers agreed.
+	if len(s.abnormal) > 0 {
+		reasons = append(reasons, s.abnormal...)
+	} else if len(s.closedBy) == 0 {
+		reasons = append(reasons, "neither direction sent a close frame")
+	}
+	s.mu.Unlock()
+
+	mark := ""
+	if len(reasons) > 0 {
+		mark = fmt.Sprintf("%s (%s, kept %d of %d messages, %d of %d bytes)", partialMarker, strings.Join(reasons, "; "), keptFrames, frames, kept, payload)
+	}
+	s.t.wmu.Lock()
+	defer s.t.wmu.Unlock()
+	var body storedBody
+	if kept > 0 {
+		var err error
+		if body, err = s.t.storeStreamed(path, sum, head, wsTranscriptType); err != nil {
+			mark = fmt.Sprintf("%s (storing the WebSocket transcript failed: %v)", partialMarker, err)
+		}
+	} else if path != "" {
+		os.Remove(path) // opened but nothing was written
+	}
+	s.t.recordStreamedLocked(s.f, wsStatus(s.f), kept, body, mark, s.taskID)
+}
+
+// wsStatus is the status a WebSocket exchange is recorded with: the origin's
+// answer to the upgrade when the flow carries one, otherwise 101, which is what
+// the client was told.
+func wsStatus(f *mproxy.Flow) int {
+	if f.Response != nil {
+		return f.Response.StatusCode
+	}
+	return http.StatusSwitchingProtocols
+}
+
+// streamSpool captures one streamed body to disk while it is passed to the
+// client. Nothing is held in memory beyond the preview, so an exchange has no
+// size cap of its own: the only bound is the capture filesystem's reserve.
+type streamSpool struct {
+	t *Traffic
+	f *mproxy.Flow
+	r io.Reader
+
+	// taskID is taken when the stream starts, while the connection it belongs to
+	// is still live: a stream normally ends with the client disconnecting, which
+	// retires the connection's task before the row is written.
+	taskID int64
+
+	file *os.File
+	path string
+	sum  hash.Hash
+
+	n    int64  // bytes the client received
+	kept int64  // bytes written to the artifact
+	head []byte // first blobPreview bytes, for the inline preview
+
+	// stopped says why spooling ended early; the row is labelled partial when it
+	// is set. eof records that the origin's body ended, so a stream cut short by
+	// a client disconnect is labelled too instead of reading as a whole body.
+	stopped string
+	eof     bool
+}
+
+func (s *streamSpool) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.n += int64(n)
+		s.write(p[:n])
+	}
+	if errors.Is(err, io.EOF) {
+		s.eof = true
+	}
+	return n, err
+}
+
+// write appends p to the artifact, stopping at the capture filesystem's reserve
+// or on a write failure. Stopping never fails the read: the client still gets
+// every byte, and the row records what was kept. A short write is a write error
+// here: os.File reports one whenever it accepts fewer bytes than offered.
+func (s *streamSpool) write(p []byte) {
+	if s.stopped != "" {
+		return
+	}
+	if s.file == nil && !s.open() {
+		return
+	}
+	if reason := s.t.captureSpace(int64(len(p))); reason != "" {
+		s.stop(reason)
+		return
+	}
+	n, err := s.file.Write(p)
+	s.sum.Write(p[:n])
+	s.kept += int64(n)
+	if room := blobPreview - len(s.head); room > 0 {
+		s.head = append(s.head, p[:min(n, room)]...)
+	}
+	if err != nil {
+		s.stop("writing the capture failed: " + err.Error())
+	}
+}
+
+func (s *streamSpool) open() bool {
+	f, err := os.CreateTemp(filepath.Join(s.t.dir, "_streams"), "stream-")
+	if err != nil {
+		s.stop("opening the capture failed: " + err.Error())
+		return false
+	}
+	s.file, s.path, s.sum = f, f.Name(), sha256.New()
+	return true
+}
+
+func (s *streamSpool) stop(reason string) {
+	s.stopped = reason
+	log.Printf("[traffic] streamed body not captured in full: %s", reason)
+}
+
+// finish stores the spooled body and writes the exchange row. The write lock
+// covers the rename and the row, exactly as record() covers spill and insert:
+// blob GC runs under the same lock and would otherwise delete a blob that has
+// no reference yet.
+func (s *streamSpool) finish() {
+	if s.file != nil {
+		s.file.Close()
+	}
+	ct := ""
+	if s.f.Response != nil {
+		ct = s.f.Response.Header.Get("Content-Type")
+	}
+	mark := ""
+	switch {
+	case s.stopped != "":
+		mark = fmt.Sprintf("%s (%s, kept %d of %d bytes)", partialMarker, s.stopped, s.kept, s.n)
+	case !s.eof && s.n > 0:
+		mark = fmt.Sprintf("%s (the stream ended before the origin finished, kept %d bytes)", partialMarker, s.n)
+	}
+	s.t.wmu.Lock()
+	defer s.t.wmu.Unlock()
+	var body storedBody
+	if s.kept > 0 {
+		var err error
+		if body, err = s.t.storeStreamed(s.path, s.sum, s.head, ct); err != nil {
+			mark = fmt.Sprintf("%s (storing the streamed body failed: %v)", streamedMarker, err)
+		}
+	} else if s.path != "" {
+		os.Remove(s.path) // opened but nothing was written
+	}
+	s.t.recordStreamedLocked(s.f, 0, s.n, body, mark, s.taskID)
+}
+
+// captureReserve reads the capture filesystem reserve once: the floor in MiB and
+// the percentage of the volume. deployment/guest-start.py owns these numbers in
+// the deployed lab and passes them to this process, so the packet ring and the
+// recorder stop at the same floor; an unset or unusable value falls back to the
+// standalone defaults rather than disabling the guard.
+func captureReserve() (floorBytes, pct int64) {
+	floorBytes, pct = captureReserveFloorBytes, captureReservePct
+	if raw := strings.TrimSpace(os.Getenv("M1NERVAC0NSOLE_CAPTURE_RESERVE_MB")); raw != "" {
+		if mb, err := strconv.ParseInt(raw, 10, 64); err == nil && mb > 0 {
+			floorBytes = mb << 20
+		} else {
+			log.Printf("[traffic] M1NERVAC0NSOLE_CAPTURE_RESERVE_MB=%q is not a positive integer; using %d MiB", raw, floorBytes>>20)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("M1NERVAC0NSOLE_CAPTURE_RESERVE_PCT")); raw != "" {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 && v < 100 {
+			pct = v
+		} else {
+			log.Printf("[traffic] M1NERVAC0NSOLE_CAPTURE_RESERVE_PCT=%q is not a percentage in 1..99; using %d", raw, pct)
+		}
+	}
+	return floorBytes, pct
+}
+
+// reserveBytes is the free space this recorder keeps on its capture filesystem:
+// pct of the volume, never less than the floor. Same formula as
+// deployment/guest-start.py's ring_reserve_mb, from the same numbers.
+func (t *Traffic) reserveBytes(total int64) int64 {
+	return max(t.reserveFloor, total*t.reservePct/100)
+}
+
+// captureSpace records n bytes about to be written to a capture artifact and
+// reports why capture must stop, "" while it may continue. The probe runs at most
+// once per streamCheckBytes of store-wide writes, so the reserve costs one statfs
+// per MiB rather than one per writer.
+//
+// A probe that finds the reserve reached, or that cannot measure at all, disables
+// capture for the process: the answer cannot improve on its own, every writer
+// must stop at its next check instead of probing a filesystem already at its
+// floor, and continuing would be the unbounded fallback this guard exists to
+// prevent. A restart measures again. A platform with no probe at all
+// (t.free == nil) keeps capturing: there is nothing to measure, which is a
+// platform limit, not a reserve decision.
+//
+// This is a floor this recorder keeps for its own writers, not a cross-process
+// quota: another process can still fill the volume.
+func (t *Traffic) captureSpace(n int64) string {
+	if t.free == nil {
+		return ""
+	}
+	if reason, _ := t.spaceStop.Load().(string); reason != "" {
+		return reason
+	}
+	if t.probed.Load() && t.spooled.Add(n) < streamCheckBytes {
+		return ""
+	}
+	t.spaceMu.Lock()
+	defer t.spaceMu.Unlock()
+	if reason, _ := t.spaceStop.Load().(string); reason != "" {
+		return reason
+	}
+	// Another writer may have probed while this one waited for the lock: its
+	// answer covers the bytes counted since.
+	if t.probed.Load() && t.spooled.Load() < streamCheckBytes {
+		return ""
+	}
+	t.probed.Store(true)
+	t.spooled.Store(0)
+	free, total, err := t.free(t.dir)
+	var reason string
+	switch {
+	case err != nil:
+		reason = fmt.Sprintf("capture filesystem unmeasurable: %v", err)
+	case free < t.reserveBytes(total):
+		reason = fmt.Sprintf("capture filesystem reserve reached (%d MiB free, reserve %d MiB)", free>>20, t.reserveBytes(total)>>20)
+	}
+	if reason != "" {
+		t.spaceStop.Store(reason)
+		log.Printf("[traffic] capture disabled: %s", reason)
+	}
+	return reason
+}
+
+// storeStreamed moves a finished spool into the content-addressed blob store and
+// returns the body record for it: the hash names the blob and only the preview
+// stays inline, exactly as spill does for a buffered body. The bytes are never
+// held in memory, so a body of any size costs the same.
+func (t *Traffic) storeStreamed(path string, sum hash.Hash, head []byte, contentType string) (storedBody, error) {
+	defer os.Remove(path) // no-op once renamed into the store
+	h := hex.EncodeToString(sum.Sum(nil))
+	blobDir := filepath.Join(t.dir, "_blobs", "sha256", h[:2])
+	dest := filepath.Join(blobDir, h+".bin")
+	if _, err := os.Stat(dest); err == nil {
+		// Content-addressed: identical bytes are already stored.
+	} else if err := os.MkdirAll(blobDir, 0o755); err != nil {
+		return storedBody{}, err
+	} else if err := os.Rename(path, dest); err != nil {
+		return storedBody{}, err
+	}
+	if isBinaryBody(contentType, head) {
+		return storedBody{hash: h, inline: []byte(binaryTag(contentType, head))}, nil
+	}
+	return storedBody{hash: h, inline: []byte(truncateUTF8(head, blobPreview))}, nil
+}
+
+// recordStreamed stores one exchange whose body was streamed past the recorder.
+// status 0 takes the flow's own response status; respLen is the length of the
+// body that was stored (what the client received, or the transcript's own length
+// for a WebSocket); respB is the spooled body, empty when none was captured; mark
+// is a capture line appended to the stored response head, so a row never reads as
+// a whole body it does not have.
+func (t *Traffic) recordStreamed(f *mproxy.Flow, status int, respLen int64, respB storedBody, mark string, taskID int64) {
+	t.wmu.Lock()
+	defer t.wmu.Unlock()
+	t.recordStreamedLocked(f, status, respLen, respB, mark, taskID)
+}
+
+// recordStreamedLocked is recordStreamed with the write lock already held, so a
+// caller that also stores a blob keeps the two under one lock.
+func (t *Traffic) recordStreamedLocked(f *mproxy.Flow, status int, respLen int64, respB storedBody, mark string, taskID int64) {
+	if f == nil || f.Request == nil || f.Request.URL == nil || t.stopping() {
+		return
+	}
+	u := f.Request.URL
+	var respHeader http.Header
+	if f.Response != nil {
+		respHeader = f.Response.Header
+		if status == 0 {
+			status = f.Response.StatusCode
+		}
+	}
+	reqHead := fmt.Sprintf("%s %s %s\n%s", f.Request.Method, u.RequestURI(), f.Request.Proto, requestHeaderLines(f.Request))
+	respHead := fmt.Sprintf("HTTP %d\n%s", status, headerLines(respHeader))
+	if mark != "" {
+		respHead += mark + "\n"
+	}
+
+	n := t.seq.Add(1)
+	now := time.Now()
+	id := fmt.Sprintf("%d-%08d", now.Unix(), n) // no modulo: keeps every id unique
+	if err := t.insertExchange(id, now.Unix(), taskID, u.Hostname(), f.Request.Method, db.TemplatePath(u.EscapedPath()), u.String(), status, respHeader.Get("Content-Type"), len(f.Request.Body), int(respLen), reqHead, storedBody{}, respHead, respB); err != nil {
+		log.Printf("[traffic] failed to record streamed exchange %s: %v", u.String(), err)
+	}
+}
+
+// RequestError fires when a request through an established MITM tunnel fails.
+// The recorder stores the attempt instead of tunneling the host transparently:
+// a passthrough skipped both policy and capture, so a proxy-caused error used to
+// turn every later request to that host into an unrecorded one.
+func (s *sink) RequestError(f *mproxy.Flow, err error) {
+	if err == nil || f == nil || f.Request == nil || f.Request.URL == nil {
+		return
+	}
+	s.t.recordFailure(f, err, 0)
+}
+
+// HTTPConnectError fires when a CONNECT never produced a tunnel: the gateway
+// refused it (policy, dns, dial, tls) before any request reached the origin.
+// Without this row an HTTPS refusal was invisible, while the same refusal on a
+// plain-HTTP target was recorded by RequestError. Nothing is flagged: the host
+// stays intercepted, exactly as after a recorded request failure.
+func (s *sink) HTTPConnectError(f *mproxy.Flow, err error) {
+	if err == nil || f == nil || f.Request == nil || f.Request.URL == nil {
+		return
+	}
+	// The status the client was answered with, matching writeOriginError's
+	// default of 502 for an unclassified failure.
+	status := http.StatusBadGateway
+	var oe *mproxy.OriginError
+	if errors.As(err, &oe) && oe.Status != 0 {
+		status = oe.Status
+	}
+	s.t.recordFailure(f, err, status)
+}
+
+// recordFailure stores one attempt that produced no usable origin response,
+// through the same spill/blob/index path as a completed exchange. The stage
+// comes from the gateway's OriginError so policy, dns, dial, tls and transport
+// failures stay distinguishable in the index. status 0 means no response was
+// seen at all; a non-zero status is the gateway's own answer to a refused
+// CONNECT.
+func (t *Traffic) recordFailure(f *mproxy.Flow, err error, status int) {
+	stage := "transport"
+	var oe *mproxy.OriginError
+	if errors.As(err, &oe) && oe.Stage != "" {
+		stage = oe.Stage
+	}
+	u := f.Request.URL
+	taskID := t.taskFor(f)
+	respHeader := http.Header{"X-M1nervac0nsole-Gateway": {stage}}
+	// A response header already seen means the failure came after the origin
+	// answered, so keep its status and headers and only add the stage.
+	if f.Response != nil {
+		status = f.Response.StatusCode
+		respHeader = f.Response.Header
+		respHeader.Set("X-M1nervac0nsole-Gateway", stage)
+	}
+	reqHead := fmt.Sprintf("%s %s %s\n%s", f.Request.Method, u.RequestURI(), f.Request.Proto, requestHeaderLines(f.Request))
+	respHead := fmt.Sprintf("HTTP %d\n%s", status, headerLines(respHeader))
+	if f.Response == nil {
+		respHead = fmt.Sprintf("(no response) %s: %v\n%s", stage, err, headerLines(respHeader))
+		if status != 0 {
+			// The client was answered with the gateway's own status: name both,
+			// so the row cannot read as a target answer.
+			respHead = fmt.Sprintf("HTTP %d (no origin response) %s: %v\n%s", status, stage, err, headerLines(respHeader))
+		}
+	}
+
+	t.wmu.Lock()
+	defer t.wmu.Unlock()
+	reqB := t.spill(f.Request.Body, f.Request.Header.Get("Content-Type"))
+	respHead += cutMarker(reqB, storedBody{})
+	n := t.seq.Add(1)
+	now := time.Now()
+	id := fmt.Sprintf("%d-%08d", now.Unix(), n) // no modulo: keeps every id unique
+	if ierr := t.insertExchange(id, now.Unix(), taskID, u.Hostname(), f.Request.Method, db.TemplatePath(u.EscapedPath()), u.String(), status, "", len(f.Request.Body), 0, reqHead, reqB, respHead, storedBody{}); ierr != nil {
+		log.Printf("[traffic] failed to record failed exchange %s: %v", u.String(), ierr)
+	}
 }
 
 // record persists one exchange entirely in SQLite: metadata, bodies and the
@@ -441,6 +1206,7 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	host := f.Request.URL.Hostname()
 	method := f.Request.Method
 	tmpl := db.TemplatePath(f.Request.URL.EscapedPath())
+	taskID := t.taskFor(f)
 	n := t.seq.Add(1)
 	now := time.Now()
 	id := fmt.Sprintf("%d-%08d", now.Unix(), n) // no modulo: keeps every id unique
@@ -453,6 +1219,9 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	// work and must not sit inside the SQLite write lock.
 	reqB := t.spill(f.Request.Body, f.Request.Header.Get("Content-Type"))
 	respB := t.spill(f.Response.Body, ct)
+	// A body stored as a preview only says so in the head, so the row never reads
+	// as a whole body it does not have. resp_len still carries the full length.
+	respHead += cutMarker(reqB, respB)
 
 	tx, err := t.db.Begin()
 	if err != nil {
@@ -463,9 +1232,9 @@ func (t *Traffic) record(f *mproxy.Flow) {
 
 	// path stays empty for db-resident exchanges; a non-empty path marks a legacy
 	// row whose bodies still live in the old on-disk tree (see Get).
-	res, err := tx.Exec(`INSERT OR REPLACE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
-VALUES(?,?,?,?,?,?,?,?,?,?,'')`,
-		id, now.Unix(), host, method, tmpl, url, f.Response.StatusCode, ct,
+	res, err := tx.Exec(`INSERT OR REPLACE INTO exchanges(id,ts,task_id,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,'')`,
+		id, now.Unix(), nullIfZero(taskID), host, method, tmpl, url, f.Response.StatusCode, ct,
 		len(f.Request.Body), len(f.Response.Body))
 	if err != nil {
 		log.Printf("[traffic] failed to record %s (write index): %v", url, err)
@@ -511,11 +1280,30 @@ VALUES(?,?,?,?,?,?,?)`,
 
 // storedBody is one body after the inline/spill decision: inline is what goes in
 // the SQLite column (the whole body, or a preview when spilled), hash names the
-// blob when it spilled, and index is the text handed to FTS (empty for binary).
+// blob when it spilled, index is the text handed to FTS (empty for binary), and
+// partial says why the body was stored as a preview only, so the row can say so
+// instead of reading as a whole body.
 type storedBody struct {
-	inline []byte
-	hash   string
-	index  string
+	inline  []byte
+	hash    string
+	index   string
+	partial string
+}
+
+// cutMarker names each body that was stored as a preview only. A row carrying it
+// never reads as a whole body it does not have, and an archive accepts the prefix
+// instead of refusing the export as truncated.
+func cutMarker(reqB, respB storedBody) string {
+	var b strings.Builder
+	for _, side := range []struct {
+		name string
+		body storedBody
+	}{{"request", reqB}, {"response", respB}} {
+		if side.body.partial != "" {
+			b.WriteString(fmt.Sprintf("%s (%s body: %s)\n", partialMarker, side.name, side.body.partial))
+		}
+	}
+	return b.String()
 }
 
 // spill decides where one body lives. Small bodies stay inline. Large ones are
@@ -536,6 +1324,14 @@ func (t *Traffic) spill(body []byte, contentType string) storedBody {
 	}
 	if len(body) <= maxInlineBody {
 		return storedBody{inline: body, index: indexText()}
+	}
+	// A buffered body above the inline cutoff is the other place the recorder
+	// writes to the capture filesystem, so it stops at the same reserve as a
+	// streamed one: the preview stays inline and the row says the body is a
+	// prefix rather than writing a blob the volume cannot hold.
+	if reason := t.captureSpace(int64(len(body))); reason != "" {
+		log.Printf("[traffic] buffered body not stored in full: %s", reason)
+		return storedBody{inline: clipBytes(body, blobPreview), index: indexText(), partial: reason}
 	}
 
 	sum := sha256.Sum256(body)
@@ -634,6 +1430,15 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
+// nullIfZero stores "no task" as NULL rather than 0, so a row that belongs to no
+// run is distinguishable from a task id that could never exist.
+func nullIfZero(n int64) any {
+	if n == 0 {
+		return nil
+	}
+	return n
+}
+
 func headerLines(h map[string][]string) string {
 	var b strings.Builder
 	for k, vs := range h {
@@ -650,9 +1455,14 @@ func headerLines(h map[string][]string) string {
 // requestHeaderLines restores the HTTP Host header, which net/http stores on
 // Request.Host rather than in Header. Keeping it in request.http makes the raw
 // capture complete and directly replayable.
+//
+// Proxy-Authorization is the one header dropped: it carries the run's gateway
+// session credential, the gateway consumes it, and the capture is a plaintext
+// file tree served back through the traffic API.
 func requestHeaderLines(req *mproxy.Request) string {
 	headers := req.Header.Clone()
 	headers.Del("Host")
+	headers.Del("Proxy-Authorization")
 	host := req.URL.Host
 	if raw := req.Raw(); raw != nil && strings.TrimSpace(raw.Host) != "" {
 		host = raw.Host
@@ -672,6 +1482,13 @@ func sanitize(s string) string {
 	out := r.Replace(s)
 	if out == "" || out == "_" {
 		return "root"
+	}
+	// The store keeps its own directories (_index, _blobs, _ca,
+	// _delete_staging) beside the host directories, so no host may claim an
+	// underscore-prefixed name: a host called "_index" would otherwise map onto
+	// the store's own index, which a delete or archive then moves away.
+	if strings.HasPrefix(out, "_") {
+		out = "host" + out
 	}
 	if len(out) > 120 {
 		out = out[:120]
@@ -748,7 +1565,7 @@ func (t *Traffic) BlobRange(hash string, offset, length int64) (data []byte, tot
 	return buf[:n], size, nil
 }
 
-// ExchangeMeta is one row of the index (returned by Search).
+// ExchangeMeta is one row of the index (returned by Page and query).
 type ExchangeMeta struct {
 	ID          string `json:"id"`
 	TS          int64  `json:"ts"`
@@ -760,35 +1577,9 @@ type ExchangeMeta struct {
 	ContentType string `json:"content_type"`
 	RespLen     int    `json:"resp_len"`
 	Path        string `json:"path"`
-}
-
-// Search returns paged exchange metadata (never bodies).
-func (t *Traffic) Search(host string, page, size int) ([]ExchangeMeta, error) {
-	if size <= 0 || size > 500 {
-		size = 100
-	}
-	q := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges`
-	args := []any{}
-	if host != "" {
-		q += ` WHERE host=?`
-		args = append(args, host)
-	}
-	q += ` ORDER BY ts DESC LIMIT ? OFFSET ?`
-	args = append(args, size, page*size)
-	rows, err := t.db.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ExchangeMeta
-	for rows.Next() {
-		var m ExchangeMeta
-		if err := rows.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType, &m.RespLen, &m.Path); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
+	// TaskID is the engagement task whose run made the request, 0 when no run
+	// owns it (an ingested exchange, or one recorded before this was captured).
+	TaskID int64 `json:"task_id,omitempty"`
 }
 
 // ftsFilter builds the SQL condition restricting rows to those whose indexed
@@ -811,18 +1602,19 @@ func ftsQuote(s string) string {
 }
 
 // PageQuery bundles the optional filters and sort order for Page. Every filter
-// is combined with AND; an empty string skips that filter, and RespMin/RespMax
-// of -1 skip the response-size bounds. An empty Sort/Order defaults to
-// newest-first by timestamp.
+// is combined with AND; an empty string skips that filter, and a non-positive
+// RespMin/RespMax skips the response-size bound, so the zero value lists
+// everything. An empty Sort/Order defaults to newest-first by timestamp.
 type PageQuery struct {
 	Host    string // host substring
+	TaskID  int64  // exact task id; 0 skips
 	Method  string // exact method (case-insensitive)
 	Query   string // broad search box: metadata columns OR captured text
 	Body    string // content box: captured request/response text only (full-text)
 	Path    string // url_template substring — the vulnerability's path
 	Status  string // exact code ("404") or class bucket ("4xx")
-	RespMin int64  // minimum resp_len, or -1 when unset
-	RespMax int64  // maximum resp_len, or -1 when unset
+	RespMin int64  // minimum resp_len, or <=0 when unset
+	RespMax int64  // maximum resp_len, or <=0 when unset
 	Sort    string // ts | status | resp_len (default ts)
 	Order   string // asc | desc (default desc)
 }
@@ -877,6 +1669,9 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	if h := strings.TrimSpace(f.Host); h != "" {
 		add("host LIKE ?", "%"+h+"%")
 	}
+	if f.TaskID > 0 {
+		add("task_id=?", f.TaskID)
+	}
 	if m := strings.TrimSpace(f.Method); m != "" {
 		add("method=?", strings.ToUpper(m))
 	}
@@ -886,10 +1681,10 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	if cond, sargs, ok := statusFilter(f.Status); ok {
 		add(cond, sargs...)
 	}
-	if f.RespMin >= 0 {
+	if f.RespMin > 0 {
 		add("resp_len>=?", f.RespMin)
 	}
-	if f.RespMax >= 0 {
+	if f.RespMax > 0 {
 		add("resp_len<=?", f.RespMax)
 	}
 	if s := strings.TrimSpace(f.Query); s != "" {
@@ -925,7 +1720,7 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	}
 	// id embeds capture timestamp + sequence, so a trailing id DESC makes the order
 	// total and pagination stable even when the sort column has many ties.
-	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges` +
+	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path,COALESCE(task_id,0) FROM exchanges` +
 		where + ` ORDER BY ` + col + ` ` + dir + `, id DESC LIMIT ? OFFSET ?`
 	qargs := append(append([]any{}, args...), size, page*size)
 	rs, err := t.db.Query(sel, qargs...)
@@ -935,7 +1730,7 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	defer rs.Close()
 	for rs.Next() {
 		var m ExchangeMeta
-		if err := rs.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType, &m.RespLen, &m.Path); err != nil {
+		if err := rs.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType, &m.RespLen, &m.Path, &m.TaskID); err != nil {
 			return nil, 0, err
 		}
 		rows = append(rows, m)
@@ -1024,6 +1819,14 @@ func (t *Traffic) Count() (int, error) {
 	return n, err
 }
 
+// likeContains builds a LIKE pattern matching s literally anywhere in the
+// value. `_` and `%` are LIKE wildcards and a hostname may contain either, so
+// both — and the escape character itself — are escaped: without this, deleting
+// "a_b" also deleted "axb".
+func likeContains(s string) string {
+	return "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(s) + "%"
+}
+
 // DeleteHost removes every recorded exchange whose host contains the given
 // substring — mirroring the UI's host filter, so what you filtered is what gets
 // deleted. Everything lives in SQLite, so the deletion is one transaction across
@@ -1031,12 +1834,12 @@ func (t *Traffic) Count() (int, error) {
 // blobs are shared across hosts and so are garbage-collected afterwards rather
 // than deleted by host. Returns rows deleted.
 func (t *Traffic) DeleteHost(host string) (int64, error) {
-	like := "%" + host + "%"
+	like := likeContains(host)
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
 	// Resolved before the rows go away: with a substring match, the index is the
 	// only record of which host directories the filter actually hit.
-	legacy, err := t.hostTrees(`host LIKE ?`, like)
+	legacy, err := t.hostTrees(`host LIKE ? ESCAPE '\'`, like)
 	if err != nil {
 		return 0, err
 	}
@@ -1045,14 +1848,14 @@ func (t *Traffic) DeleteHost(host string) (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once committed
-	n, err := t.deleteWhere(tx, `host LIKE ?`, like)
+	n, err := t.deleteWhere(tx, `host LIKE ? ESCAPE '\'`, like)
 	if err != nil {
 		return 0, err
 	}
 	// Staged before the commit so a filesystem failure can still abort the whole
 	// deletion, and before gcBlobs so reference collection sees the correct live
 	// set — a staged tree is invisible to it.
-	stageDir, moves, err := t.stageTrees(legacy)
+	stageDir, moves, err := t.stageTrees(legacy, nil)
 	if err != nil {
 		return 0, errors.Join(err, restoreTrees(stageDir, moves))
 	}
@@ -1101,7 +1904,7 @@ func (t *Traffic) DeleteAll() (deleted int64, reclaimed int64, err error) {
 	}
 	// Staged before the commit so a filesystem failure can still abort the whole
 	// deletion, exactly as in DeleteHost.
-	stageDir, moves, err := t.stageTrees(trees)
+	stageDir, moves, err := t.stageTrees(trees, nil)
 	if err != nil {
 		return 0, 0, errors.Join(err, restoreTrees(stageDir, moves))
 	}
@@ -1231,12 +2034,27 @@ type stagedTrafficPath struct {
 	staged string
 }
 
+// A staging journal has one of two scopes, and recovery must never convert one
+// into the other: a version-2 journal was written by an operation that selected
+// exact exchange IDs, so replaying it may only remove those IDs.
+const (
+	// hostDeleteStageVersionHosts is a host-scoped stage (the page's exact-host
+	// delete, and every archive compaction written before ID scoping). Recovery
+	// finishes it by deleting the journal's hosts, which is what its writer did.
+	hostDeleteStageVersionHosts = 1
+	// hostDeleteStageVersionExchanges is a task- or archive-scoped stage. It
+	// carries the exact IDs and no host, because a task operation never selects
+	// by host.
+	hostDeleteStageVersionExchanges = 2
+)
+
 type hostDeleteStageJournal struct {
-	Version   int                   `json:"version"`
-	ArchiveID int64                 `json:"archive_id,omitempty"`
-	TaskID    int64                 `json:"task_id,omitempty"`
-	Hosts     []string              `json:"hosts,omitempty"`
-	Moves     []hostDeleteStageMove `json:"moves"`
+	Version     int                   `json:"version"`
+	ArchiveID   int64                 `json:"archive_id,omitempty"`
+	TaskID      int64                 `json:"task_id,omitempty"`
+	Hosts       []string              `json:"hosts,omitempty"`
+	ExchangeIDs []string              `json:"exchange_ids,omitempty"`
+	Moves       []hostDeleteStageMove `json:"moves,omitempty"`
 }
 
 type hostDeleteStageMove struct {
@@ -1251,12 +2069,10 @@ const hostDeleteStageJournalName = "journal.json"
 // reversible until the transaction commits, and the tree stops being visible to
 // blob reference collection right away (legacyBlobRefs skips underscore-prefixed
 // directories, so anything under _delete_staging is already out of the live set).
-// An empty stageDir is returned when there was nothing to stage.
-func (t *Traffic) stageTrees(dirs []string) (stageDir string, moves []stagedTrafficPath, err error) {
-	return t.stageTreesForArchive(dirs, nil, 0, 0)
-}
-
-func (t *Traffic) stageTreesForArchive(dirs, hosts []string, archiveID, taskID int64) (stageDir string, moves []stagedTrafficPath, err error) {
+// hosts is the journal's host list, which is what tells recovery whether the
+// rows of a host-scoped stage are already gone. An empty stageDir is returned
+// when there was nothing to stage.
+func (t *Traffic) stageTrees(dirs, hosts []string) (stageDir string, moves []stagedTrafficPath, err error) {
 	seen := make(map[string]struct{}, len(dirs))
 	planned := make([]stagedTrafficPath, 0, len(dirs))
 	for _, source := range dirs {
@@ -1264,6 +2080,13 @@ func (t *Traffic) stageTreesForArchive(dirs, hosts []string, archiveID, taskID i
 			continue
 		}
 		seen[source] = struct{}{}
+		// Only a direct child of the store, and never one of the store's own
+		// underscore-prefixed directories, may be moved: a host named "_index"
+		// must not take the index, the blobs or the CA with it.
+		if base := filepath.Base(source); strings.HasPrefix(base, "_") || filepath.Dir(filepath.Clean(source)) != filepath.Clean(t.dir) {
+			log.Printf("[traffic] refusing to stage %s: not a host directory", source)
+			continue
+		}
 		if _, err := os.Lstat(source); err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -1272,10 +2095,11 @@ func (t *Traffic) stageTreesForArchive(dirs, hosts []string, archiveID, taskID i
 		}
 		planned = append(planned, stagedTrafficPath{source: source})
 	}
-	// The archive path must still work even when there is not a single historical host directory (traffic on a fresh install lands only in SQLite + _blobs)
-	// it must still leave a journal: if the crash point falls between the PostgreSQL commit and the SQLite commit, then after restart
-	// the SQLite transaction is rolled back, and only this journal lets the recovery process finish deleting the host rows. Without it,
-	// Exclusive traffic from cooled tasks will remain permanently in the hot store.
+	// A host-scoped delete must still leave a journal when there is not a single
+	// historical host directory to move (traffic on a fresh install lands only in
+	// SQLite + _blobs): if the crash point falls between the SQLite commit and
+	// the background unlink, the journal's hosts are what tell recovery the rows
+	// are already gone instead of restoring trees whose rows no longer exist.
 	uniqueHosts := uniqueArchiveHosts(hosts)
 	if len(planned) == 0 && len(uniqueHosts) == 0 {
 		return "", nil, nil
@@ -1287,7 +2111,7 @@ func (t *Traffic) stageTreesForArchive(dirs, hosts []string, archiveID, taskID i
 	if stageDir, err = os.MkdirTemp(parent, "hosts-"); err != nil {
 		return "", nil, fmt.Errorf("create traffic staging directory: %w", err)
 	}
-	journal := hostDeleteStageJournal{Version: 1, ArchiveID: archiveID, TaskID: taskID, Hosts: uniqueHosts}
+	journal := hostDeleteStageJournal{Version: hostDeleteStageVersionHosts, Hosts: uniqueHosts}
 	for i := range planned {
 		planned[i].staged = filepath.Join(stageDir, fmt.Sprintf("%d-%s", i, filepath.Base(planned[i].source)))
 		journal.Moves = append(journal.Moves, hostDeleteStageMove{Source: planned[i].source, Staged: planned[i].staged})
@@ -1385,12 +2209,12 @@ func (t *Traffic) DeleteHostsExact(hosts []string) (int64, error) {
 	return deleted, nil
 }
 
-// HostDeleteStage keeps the SQLite delete transaction open so a task deletion
-// can be coordinated with PostgreSQL: the traffic side is staged here and only
-// committed once the caller's own transaction has succeeded. The Traffic write
-// lock is held until Commit or Rollback, so no recorder can add rows or a blob
-// reference for a host that is mid-deletion. Rolling back is just a transaction
-// rollback now that nothing is moved on disk.
+// HostDeleteStage keeps the SQLite delete transaction open so a task deletion or
+// archive compaction can be coordinated with PostgreSQL: the traffic side is
+// staged here and only committed once the caller's own transaction has
+// succeeded. The Traffic write lock is held until Commit or Rollback, so no
+// recorder can add rows or a blob reference for the exchanges that are
+// mid-deletion. Rollback restores any staged host tree and drops the journal.
 type HostDeleteStage struct {
 	traffic  *Traffic
 	tx       *sql.Tx
@@ -1409,40 +2233,10 @@ func (s *HostDeleteStage) Deleted() int64 {
 }
 
 // StageDeleteHostsExact prepares a reversible exact-host deletion. Callers must
-// finish every successful stage with Commit or Rollback.
-// Passing the task id records it in the staging journal, so a process exit
-// between the PostgreSQL and SQLite commits can be resolved on restart; without
-// it the journal cannot tell "the task is gone" from "the traffic must return".
-func (t *Traffic) StageDeleteHostsExact(hosts []string, taskID ...int64) (*HostDeleteStage, error) {
-	var id int64
-	if len(taskID) > 0 {
-		id = taskID[0]
-	}
-	return t.stageDeleteHostsExact(hosts, 0, id, nil)
-}
-
-// StageDeleteHostsExactForArchive ties the reversible traffic deletion to a
-// persistent task archive. Startup recovery uses archiveCommitted to decide
-// whether an interrupted stage must be completed or rolled back.
-// Passing the per-host counts from ExportHostsCounted enables the growth guard;
-// omitting them keeps the unconditional behaviour.
-func (t *Traffic) StageDeleteHostsExactForArchive(hosts []string, archiveID, taskID int64, expected ...map[string]int64) (*HostDeleteStage, error) {
-	if archiveID <= 0 || taskID <= 0 {
-		return nil, errors.New("archive and task ids must be positive")
-	}
-	var counts map[string]int64
-	if len(expected) > 0 {
-		counts = expected[0]
-	}
-	return t.stageDeleteHostsExact(hosts, archiveID, taskID, counts)
-}
-
-// ErrTrafficGrewDuringArchive means a host gained exchanges after the archive
-// snapshot was written. Deleting them would destroy evidence that is in neither
-// the package nor the hot store, so the compaction is refused instead.
-var ErrTrafficGrewDuringArchive = errors.New("traffic captured after the archive snapshot; hot-store compaction skipped")
-
-func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64, expected map[string]int64) (*HostDeleteStage, error) {
+// finish every successful stage with Commit or Rollback. The journal names the
+// hosts, so recovery can tell a committed stage (rows already gone) from one
+// whose transaction rolled back (trees must come home).
+func (t *Traffic) StageDeleteHostsExact(hosts []string) (*HostDeleteStage, error) {
 	t.wmu.Lock()
 	stage := &HostDeleteStage{traffic: t}
 	fail := func(cause error) (*HostDeleteStage, error) {
@@ -1475,18 +2269,6 @@ func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64,
 		legacy = append(legacy, filepath.Join(t.dir, sanitize(h)))
 	}
 
-	if expected != nil {
-		for _, h := range unique {
-			var live int64
-			if err := t.db.QueryRow(`SELECT count(*) FROM exchanges WHERE host=?`, h).Scan(&live); err != nil {
-				return abort(err)
-			}
-			if live > expected[h] {
-				return abort(fmt.Errorf("%w: host %s has %d rows, %d were archived", ErrTrafficGrewDuringArchive, h, live, expected[h]))
-			}
-		}
-	}
-
 	tx, err := t.db.Begin()
 	if err != nil {
 		return abort(err)
@@ -1500,16 +2282,172 @@ func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64,
 		stage.deleted += n
 	}
 
-	stage.stageDir, stage.moves, err = t.stageTreesForArchive(legacy, unique, archiveID, taskID)
+	stage.stageDir, stage.moves, err = t.stageTrees(legacy, unique)
 	if err != nil {
 		return fail(err)
 	}
 	return stage, nil
 }
 
-// RecoverHostDeleteStages resolves filesystem moves left by a process exit.
-// SQLite rolls open transactions back on restart, while the supplied callback
-// identifies task archives whose PostgreSQL compaction already committed.
+// dbResidentPath restricts a task operation to rows whose bodies live in SQLite.
+// A row with a legacy path still has its bodies in a pre-SQLite host tree, which
+// a task operation never moves, so such a row is left in place rather than
+// guessed at.
+const dbResidentPath = `COALESCE(path,'')=''`
+
+// exchangeIDBatch bounds one IN (...) statement. SQLite's default parameter
+// ceiling is 32766, and one task can own more exchanges than that.
+const exchangeIDBatch = 512
+
+// StageDeleteTask stages deletion of every exchange with task_id = taskID.
+// Ownership is the whole selection: hosts are never consulted, so a capture at a
+// host with no registered asset is still deleted, while another run's exchanges
+// and unattributed history at the same host are untouched.
+func (t *Traffic) StageDeleteTask(taskID int64) (*HostDeleteStage, error) {
+	if taskID <= 0 {
+		return nil, errors.New("task id must be positive")
+	}
+	return t.stageExchanges(func(tx *sql.Tx) ([]string, int, error) {
+		return t.selectExchangeIDs(tx, `task_id=? AND `+dbResidentPath, taskID)
+	}, 0, taskID)
+}
+
+// StageDeleteExchangesForArchive stages deletion of exactly ids, each re-checked
+// as task_id = taskID. The archive worker passes the IDs it exported, so rows
+// captured after the snapshot stay hot and a re-selection by task can never
+// delete evidence the package does not contain.
+func (t *Traffic) StageDeleteExchangesForArchive(ids []string, archiveID, taskID int64) (*HostDeleteStage, error) {
+	if archiveID <= 0 || taskID <= 0 {
+		return nil, errors.New("archive and task ids must be positive")
+	}
+	return t.stageExchanges(func(tx *sql.Tx) ([]string, int, error) {
+		var selected []string
+		var legacy int
+		for start := 0; start < len(ids); start += exchangeIDBatch {
+			batch := ids[start:min(start+exchangeIDBatch, len(ids))]
+			clause, args := inClause(batch)
+			found, skipped, err := t.selectExchangeIDs(tx, `id IN (`+clause+`) AND task_id=? AND `+dbResidentPath, append(args, taskID)...)
+			if err != nil {
+				return nil, 0, err
+			}
+			selected = append(selected, found...)
+			legacy += skipped
+		}
+		return selected, legacy, nil
+	}, archiveID, taskID)
+}
+
+// stageExchanges deletes the rows chosen by selectIDs and journals their exact
+// IDs. The traffic write lock is held until Commit or Rollback, so no recorder
+// can add a row or a blob reference to a task that is mid-deletion.
+func (t *Traffic) stageExchanges(selectIDs func(*sql.Tx) ([]string, int, error), archiveID, taskID int64) (*HostDeleteStage, error) {
+	t.wmu.Lock()
+	stage := &HostDeleteStage{traffic: t}
+	fail := func(cause error) (*HostDeleteStage, error) {
+		if rollbackErr := stage.rollbackLocked(); rollbackErr != nil {
+			return nil, errors.Join(cause, fmt.Errorf("rollback traffic deletion: %w", rollbackErr))
+		}
+		return nil, cause
+	}
+	tx, err := t.db.Begin()
+	if err != nil {
+		t.wmu.Unlock()
+		stage.done = true
+		return nil, err
+	}
+	stage.tx = tx
+	ids, legacy, err := selectIDs(tx)
+	if err != nil {
+		return fail(err)
+	}
+	if legacy > 0 {
+		log.Printf("[traffic] task %d: %d exchange(s) still point at a pre-SQLite host tree and were left in place", taskID, legacy)
+	}
+	if len(ids) == 0 {
+		return stage, nil
+	}
+	for start := 0; start < len(ids); start += exchangeIDBatch {
+		batch := ids[start:min(start+exchangeIDBatch, len(ids))]
+		clause, args := inClause(batch)
+		n, err := t.deleteWhere(tx, `id IN (`+clause+`)`, args...)
+		if err != nil {
+			return fail(err)
+		}
+		stage.deleted += n
+	}
+	stage.stageDir, err = t.writeExchangeStageJournal(ids, archiveID, taskID)
+	if err != nil {
+		return fail(err)
+	}
+	return stage, nil
+}
+
+// selectExchangeIDs returns the IDs matched by where, split into rows whose
+// bodies live in SQLite and rows that still point at a pre-SQLite host tree.
+func (t *Traffic) selectExchangeIDs(tx *sql.Tx, where string, args ...any) (ids []string, legacy int, err error) {
+	rows, err := tx.Query(`SELECT id,COALESCE(path,'') FROM exchanges WHERE `+where+` ORDER BY id`, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, path string
+		if err := rows.Scan(&id, &path); err != nil {
+			return nil, 0, err
+		}
+		if path != "" {
+			legacy++
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, legacy, rows.Err()
+}
+
+func inClause(values []string) (string, []any) {
+	placeholders := make([]string, len(values))
+	args := make([]any, len(values))
+	for i, value := range values {
+		placeholders[i] = "?"
+		args[i] = value
+	}
+	return strings.Join(placeholders, ","), args
+}
+
+// writeExchangeStageJournal records the exact IDs a task or archive stage
+// deleted. Nothing is moved on disk, so this journal exists only to let restart
+// recovery finish a deletion whose SQLite commit was lost — and it names no
+// host, so recovery cannot widen it.
+func (t *Traffic) writeExchangeStageJournal(ids []string, archiveID, taskID int64) (string, error) {
+	parent := filepath.Join(t.dir, "_delete_staging")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", fmt.Errorf("create traffic staging directory: %w", err)
+	}
+	stageDir, err := os.MkdirTemp(parent, "exchanges-")
+	if err != nil {
+		return "", fmt.Errorf("create traffic staging directory: %w", err)
+	}
+	journal := hostDeleteStageJournal{
+		Version:     hostDeleteStageVersionExchanges,
+		ArchiveID:   archiveID,
+		TaskID:      taskID,
+		ExchangeIDs: ids,
+	}
+	if err := writeHostDeleteStageJournal(filepath.Join(stageDir, hostDeleteStageJournalName), journal); err != nil {
+		_ = os.RemoveAll(stageDir)
+		return "", err
+	}
+	return stageDir, nil
+}
+
+// RecoverHostDeleteStages resolves stages left by a process exit. SQLite rolls
+// open transactions back on restart, while the supplied callback identifies task
+// archives (and task deletions) whose PostgreSQL commit already happened.
+//
+// A version-1 journal is host-scoped and is finished the way its writer would
+// have finished it. A version-2 journal carries the exact exchange IDs of a task
+// or archive operation and no host, so replaying it can only remove those IDs —
+// it can never widen back to a host.
 func (t *Traffic) RecoverHostDeleteStages(archiveCommitted func(int64, int64) (bool, error)) error {
 	if t == nil {
 		return nil
@@ -1546,7 +2484,7 @@ func (t *Traffic) RecoverHostDeleteStages(archiveCommitted func(int64, int64) (b
 			errs = append(errs, fmt.Errorf("read traffic staging journal %s: %w", stageDir, err))
 			continue
 		}
-		if journal.Version != 1 {
+		if journal.Version != hostDeleteStageVersionHosts && journal.Version != hostDeleteStageVersionExchanges {
 			errs = append(errs, fmt.Errorf("traffic staging journal %s has unsupported version %d", stageDir, journal.Version))
 			continue
 		}
@@ -1600,12 +2538,20 @@ func (t *Traffic) RecoverHostDeleteStages(archiveCommitted func(int64, int64) (b
 			}
 		}
 		if !committed {
+			// Nothing was committed, so an ID-scoped stage has nothing to put
+			// back: its transaction rolled back with every row intact. Restoring
+			// also drops the now-stale journal.
 			if err := restoreTrees(stageDir, moves); err != nil {
 				errs = append(errs, err)
 			}
 			continue
 		}
-		if err := t.deleteArchivedHosts(journal.Hosts); err != nil {
+		if journal.Version == hostDeleteStageVersionExchanges {
+			if err := t.deleteArchivedExchanges(journal.ExchangeIDs); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		} else if err := t.deleteArchivedHosts(journal.Hosts); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -1645,6 +2591,25 @@ func (t *Traffic) deleteArchivedHosts(hosts []string) error {
 	defer tx.Rollback() //nolint:errcheck
 	for _, host := range hosts {
 		if _, err := t.deleteWhere(tx, `host=?`, host); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// deleteArchivedExchanges finishes a committed ID-scoped stage. The IDs are the
+// ones the journal recorded, so a row captured after that point is never
+// selected, whatever task it belongs to.
+func (t *Traffic) deleteArchivedExchanges(ids []string) error {
+	tx, err := t.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	for start := 0; start < len(ids); start += exchangeIDBatch {
+		batch := ids[start:min(start+exchangeIDBatch, len(ids))]
+		clause, args := inClause(batch)
+		if _, err := t.deleteWhere(tx, `id IN (`+clause+`)`, args...); err != nil {
 			return err
 		}
 	}

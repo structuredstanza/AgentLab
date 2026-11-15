@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
 
 // A 502 carrying the proxy's failure header is the proxy's answer, not the
@@ -27,7 +28,7 @@ func TestProxyLabelledFailureIsNotTheTargetsResponse(t *testing.T) {
 	defer proxy.Close()
 
 	var log observationLog
-	engine := New(as, Options{Workers: 1, Proxy: proxy.URL, CAFile: foreignCA(t), Observe: log.add})
+	engine := New(as, Options{Workers: 1, Proxy: proxy.URL, CAFile: foreignCA(t), Observe: log.add, Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 
 	target := "http://203.0.113.7/probe"

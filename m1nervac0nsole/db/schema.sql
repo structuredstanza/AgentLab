@@ -1010,6 +1010,15 @@ DROP TRIGGER IF EXISTS trg_tools_upd ON tools;
 CREATE TRIGGER trg_tools_upd BEFORE UPDATE ON tools
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- Runtime tool manifests (TOML text). A row whose id equals a built-in manifest
+-- id overrides it; any other row is a custom template. Deleting the row restores
+-- the built-in, so the shipped set is never rewritten.
+CREATE TABLE IF NOT EXISTS tool_manifests (
+    id         TEXT PRIMARY KEY,
+    toml       TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- =====================================================================
 -- I. Sessions (chat page)
 -- =====================================================================
@@ -1702,6 +1711,99 @@ CREATE TABLE IF NOT EXISTS task_scope_rules (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_task_scope_rules_task ON task_scope_rules(task_id);
+
+-- ---------------------------------------------------------------------------
+-- Network policy authorization (docs/design/network-boundary-implementation-plan.md,
+-- section B and resolved decision 3). task_scope_rules is the only operator-written,
+-- discovery-free boundary table; the columns below turn one row into an explicit
+-- grant. A row that existed before this migration keeps authorized=false, so no
+-- existing row and no discovered asset becomes authorization by migration.
+-- ---------------------------------------------------------------------------
+ALTER TABLE task_scope_rules ADD COLUMN IF NOT EXISTS protocol   TEXT NOT NULL DEFAULT 'any';
+ALTER TABLE task_scope_rules ADD COLUMN IF NOT EXISTS ports      INT[] NOT NULL DEFAULT '{}';
+ALTER TABLE task_scope_rules ADD COLUMN IF NOT EXISTS authorized BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE task_scope_rules ADD COLUMN IF NOT EXISTS approved_by TEXT;
+ALTER TABLE task_scope_rules ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+-- The authorizer reads one task's rules through idx_task_scope_rules_task;
+-- research reads the authorized includes of every live task, which is the set
+-- this partial index narrows to.
+CREATE INDEX IF NOT EXISTS idx_task_scope_rules_grants
+    ON task_scope_rules(task_id) WHERE authorized AND effect = 'include';
+ALTER TABLE task_scope_rules DROP CONSTRAINT IF EXISTS task_scope_rules_protocol_check;
+ALTER TABLE task_scope_rules ADD CONSTRAINT task_scope_rules_protocol_check
+    CHECK (protocol IN ('any','http','ws','tcp','udp','dns'));
+
+-- An origin certificate exception is bound to one task and one authority, and
+-- expires. It never disables verification globally.
+CREATE TABLE IF NOT EXISTS cert_exceptions (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    authority  TEXT NOT NULL,
+    reason     TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cert_exceptions_authority ON cert_exceptions(task_id, authority);
+
+-- Every policy change is auditable. task_id is nullable for a change that is not
+-- about one task (an operator-wide decision), and the detail carries the values.
+CREATE TABLE IF NOT EXISTS policy_audit (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
+    actor      TEXT NOT NULL DEFAULT '',
+    action     TEXT NOT NULL,
+    detail     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_policy_audit_task ON policy_audit(task_id, created_at DESC);
+
+-- The policy revision is the cache and connection generation: any change to what
+-- a task may reach moves it, so a cached verdict or a pooled connection issued
+-- under the old revision is never trusted again.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS policy_revision BIGINT NOT NULL DEFAULT 0;
+
+-- bump_policy_revision is the single place the revision moves. The triggers below
+-- call it, so a change made by any path (operator API, discovery, a migration
+-- script) is counted exactly once per row.
+CREATE OR REPLACE FUNCTION bump_policy_revision(target BIGINT) RETURNS BIGINT AS $$
+DECLARE rev BIGINT;
+BEGIN
+    IF target IS NULL OR target <= 0 THEN
+        RETURN 0;
+    END IF;
+    UPDATE tasks SET policy_revision = policy_revision + 1
+     WHERE id = target
+    RETURNING policy_revision INTO rev;
+    RETURN COALESCE(rev, 0);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION netpolicy_bump_revision() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        PERFORM bump_policy_revision(OLD.task_id);
+        RETURN OLD;
+    END IF;
+    PERFORM bump_policy_revision(NEW.task_id);
+    -- A row moved to another task changes both tasks' policy.
+    IF TG_OP = 'UPDATE' AND NEW.task_id IS DISTINCT FROM OLD.task_id THEN
+        PERFORM bump_policy_revision(OLD.task_id);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_task_scope_rules_policy ON task_scope_rules;
+CREATE TRIGGER trg_task_scope_rules_policy AFTER INSERT OR UPDATE OR DELETE ON task_scope_rules
+    FOR EACH ROW EXECUTE FUNCTION netpolicy_bump_revision();
+
+DROP TRIGGER IF EXISTS trg_cert_exceptions_policy ON cert_exceptions;
+CREATE TRIGGER trg_cert_exceptions_policy AFTER INSERT OR UPDATE OR DELETE ON cert_exceptions
+    FOR EACH ROW EXECUTE FUNCTION netpolicy_bump_revision();
+
+DROP TRIGGER IF EXISTS trg_task_scope_policy ON task_scope;
+CREATE TRIGGER trg_task_scope_policy AFTER INSERT OR UPDATE OR DELETE ON task_scope
+    FOR EACH ROW EXECUTE FUNCTION netpolicy_bump_revision();
 
 -- ---------------------------------------------------------------------------
 -- Scoped read-only API tokens for external agent harnesses, and the MCP call

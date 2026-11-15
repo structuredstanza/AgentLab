@@ -10,7 +10,7 @@ timeout = { type = "number", label = "Page timeout (s)", default = "30" }
 
 [command]
 program = "gowitness"
-args = ["scan", "single", "{{ target.value }}", "--write-json", "/dev/stdout", "--screenshot-path", "/tmp/gowitness", "--timeout", "{{ params.timeout }}", "--chrome-header", "User-Agent: {{ useragent }}", "--chrome-proxy", "{{ proxy }}"]
+args = ["scan", "single", "{{ target.value }}", "--write-json", "/dev/stdout", "--screenshot-path", "/tmp/gowitness", "--timeout", "{{ params.timeout }}", "--chrome-header", "User-Agent: {{ useragent }}", "{{ proxy | --chrome-proxy }}"]
 timeout_seconds = 300
 
 [emit]

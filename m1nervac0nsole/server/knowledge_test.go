@@ -24,7 +24,7 @@ func memoryTestServer(t *testing.T) (*Manager, *Server, string) {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
+	s := newFixtureServer(t, m)
 	token, err := signJWT(s.jwtKey)
 	if err != nil {
 		t.Fatal(err)

@@ -1,5 +1,7 @@
 <!-- Design record (2026-11-12). Every item is either shipped or deliberately not built; see the implementation plan for status. -->
 
+<!-- Superseded in part (2026-11-14): the Playwright MCP browser weighed below as the cheap alternative is retired. The testing browser is the native Chromium driver (`browser/`, `server/browser_registry.go`) and the research browser is Obscura (`obscura mcp --stealth`); the Playwright MCP and CLI launchers are no longer installed. -->
+
 # Executioner -> m1nervac0nsole: what is worth pulling
 
 Source: github.com/structuredstanza/executioner at c21c844 (v0.0.8), MIT, copyright dbx0. Electron + TypeScript pnpm monorepo; it drives external agent CLIs (Claude Code, Codex, ...) through a local MCP server instead of calling a model API. Reviewed read-only by four agents; a fifth mapped what m1nervac0nsole already has. Nothing was built or run.

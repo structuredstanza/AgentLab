@@ -5,13 +5,33 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/execbox"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/mcphttp"
 	"github.com/structuredstanza/norma/mcp"
 	actool "github.com/structuredstanza/norma/tool"
 )
+
+// envList renders an MCP server's configured environment as KEY=VALUE entries
+// for the isolated session, in a stable order.
+func envList(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out
+}
 
 // mcpClient is the shared surface of a connected MCP server (stdio, Streamable HTTP,
 // or legacy SSE),
@@ -37,7 +57,20 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 		if m.Command == "" {
 			return nil, errors.New(errMCPStdioNoCommand)
 		}
-		return mcp.NewStdioClient(ctx, m.Name, m.Command, jsonStrMap(m.Env), jsonStrSlice(m.Args)...)
+		// The MCP server is untrusted code. It is started by the supervisor
+		// inside a session, through the bridge, so it cannot reach the
+		// controller's network, files or credentials. A caller with no session
+		// gets the capability error rather than an unisolated child.
+		sess, err := execbox.RequireSession(ctx)
+		if err != nil {
+			return nil, err
+		}
+		argv := append([]string{m.Command}, jsonStrSlice(m.Args)...)
+		command, args, env, err := execbox.BridgeCommand(sess, argv, envList(jsonStrMap(m.Env)))
+		if err != nil {
+			return nil, err
+		}
+		return mcp.NewStdioClient(ctx, m.Name, command, env, args...)
 	case "http":
 		if m.URL == "" {
 			return nil, errors.New(errMCPHTTPNoURL)
@@ -57,6 +90,10 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 // discoverAndCacheMCP connects to one MCP, lists its tools, and persists the tool
 // names to mcp_tools_cache so the UI shows them without a live connection.
 func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error {
+	// Discovery is a backend lookup with no task, so it runs as unbound research.
+	// A stdio server started without a session refuses with the capability error
+	// instead of running unisolated.
+	ctx = s.discoverySessionContext(ctx)
 	cl, err := connectMCP(ctx, m)
 	if err != nil {
 		_ = s.m.pg.UpdateMCPHealth(m.ID, false, err.Error())

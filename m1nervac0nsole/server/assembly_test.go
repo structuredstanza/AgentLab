@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/agent"
@@ -89,5 +91,108 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	defer c2()
 	if !hasSkillTool(combined) {
 		t.Fatalf("AugmentTools should surface the Skill meta-tool")
+	}
+}
+
+// The research child is launched with the gateway as its --proxy argument, and
+// the credential is revoked once the child is gone. Every other server is
+// launched exactly as stored, and the stored row is never rewritten.
+func TestResearchServerGetsTheGatewayProxy(t *testing.T) {
+	prev := researchProxyFor
+	t.Cleanup(func() { researchProxyFor = prev })
+
+	revoked := false
+	researchProxyFor = func(context.Context) (string, string, func(), error) {
+		return "http://cred@127.0.0.1:8788", "", func() { revoked = true }, nil
+	}
+	row := &db.MCPServer{Name: "obscura", Transport: "stdio", Command: "obscura", Args: json.RawMessage(`["mcp","--stealth"]`)}
+	launch, revoke, err := researchServer(context.Background(), row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"mcp", "--stealth", "--proxy", "http://cred@127.0.0.1:8788"}
+	if got := jsonStrSlice(launch.Args); !reflect.DeepEqual(got, want) {
+		t.Fatalf("launch args = %v, want %v", got, want)
+	}
+	if got := jsonStrSlice(row.Args); !reflect.DeepEqual(got, []string{"mcp", "--stealth"}) {
+		t.Fatalf("the stored row was rewritten: %v", got)
+	}
+	if revoke == nil {
+		t.Fatal("the run has no way to revoke the credential")
+	}
+	revoke()
+	if !revoked {
+		t.Fatal("the credential was not revoked")
+	}
+
+	// Another server keeps its args and gets no credential.
+	other := &db.MCPServer{Name: "rea", Args: json.RawMessage(`["mcp"]`)}
+	launch, revoke, err = researchServer(context.Background(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch != other || revoke != nil {
+		t.Fatal("a non-research server was rewritten")
+	}
+
+	// No gateway runs: no proxy argument, and no credential to revoke.
+	researchProxyFor = func(context.Context) (string, string, func(), error) { return "", "", nil, nil }
+	launch, revoke, err = researchServer(context.Background(), row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := jsonStrSlice(launch.Args); !reflect.DeepEqual(got, []string{"mcp", "--stealth"}) {
+		t.Fatalf("launch args without a gateway = %v", got)
+	}
+	if revoke != nil {
+		t.Fatal("a credential was revoked without being issued")
+	}
+}
+
+// The recorder re-signs every certificate it forwards, so the research child
+// must trust its CA: without SSL_CERT_FILE every HTTPS page fails verification
+// and the research browser is useless. The CA is set only while a recorder
+// runs; with none it is removed rather than left pointing at a deleted file.
+func TestResearchServerTrustsTheRecorderCA(t *testing.T) {
+	prev := researchProxyFor
+	t.Cleanup(func() { researchProxyFor = prev })
+
+	row := &db.MCPServer{
+		Name: "obscura", Transport: "stdio", Command: "obscura",
+		Args: json.RawMessage(`["mcp","--stealth"]`),
+		Env:  json.RawMessage(`{"PAGER":"cat","SSL_CERT_FILE":"/stale/ca.pem"}`),
+	}
+
+	researchProxyFor = func(context.Context) (string, string, func(), error) {
+		return "http://cred@127.0.0.1:8788", "/state/ca.pem", nil, nil
+	}
+	launch, _, err := researchServer(context.Background(), row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := jsonStrMap(launch.Env)
+	if env["SSL_CERT_FILE"] != "/state/ca.pem" {
+		t.Errorf("SSL_CERT_FILE = %q, want the recorder CA", env["SSL_CERT_FILE"])
+	}
+	if env["PAGER"] != "cat" {
+		t.Errorf("the stored env was dropped: %v", env)
+	}
+	if got := jsonStrMap(row.Env); got["SSL_CERT_FILE"] != "/stale/ca.pem" {
+		t.Errorf("the stored row was rewritten: %v", got)
+	}
+
+	// No recorder: the variable goes, so the child does not verify against a CA
+	// nothing maintains.
+	researchProxyFor = func(context.Context) (string, string, func(), error) { return "", "", nil, nil }
+	launch, _, err = researchServer(context.Background(), row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = jsonStrMap(launch.Env)
+	if _, ok := env["SSL_CERT_FILE"]; ok {
+		t.Errorf("SSL_CERT_FILE survived with no recorder: %v", env)
+	}
+	if env["PAGER"] != "cat" {
+		t.Errorf("the stored env was dropped: %v", env)
 	}
 }

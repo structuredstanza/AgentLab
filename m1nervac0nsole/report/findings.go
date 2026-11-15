@@ -17,10 +17,17 @@ import (
 // Renders as individual Markdown or as CSV. JSON is serialized directly into a DTO by the server layer,
 // it is not handled here.
 
+// sevRankOf ranks a severity for sorting. The comparison is case-insensitive:
+// a stored "High" must not take the zero value of a missing map key and sort as
+// "critical".
+func sevRankOf(severity string) int {
+	return sevRank[strings.ToLower(severity)]
+}
+
 // sortFindingsForExport sorts by severity in descending order, then by time in reverse order. This is the same as the grouping in the summary report.
 func sortFindingsForExport(fs []*db.DBFinding) {
 	sort.SliceStable(fs, func(i, j int) bool {
-		ri, rj := sevRank[fs[i].Severity], sevRank[fs[j].Severity]
+		ri, rj := sevRankOf(fs[i].Severity), sevRankOf(fs[j].Severity)
 		if ri != rj {
 			return ri < rj // sevRank: the smaller the value, the more severe
 		}
@@ -47,7 +54,7 @@ func FindingsMarkdown(fs []*db.DBFinding, generatedAt time.Time) string {
 	// Summary: aggregated counts by severity.
 	counts := map[string]int{}
 	for _, f := range items {
-		counts[f.Severity]++
+		counts[strings.ToLower(f.Severity)]++
 	}
 	b.WriteString("## Summary\n\n")
 	b.WriteString("| Severity | Count |\n| --- | --- |\n")
@@ -165,7 +172,7 @@ func FindingsCSV(fs []*db.DBFinding) []byte {
 	w := csv.NewWriter(&buf)
 	_ = w.Write([]string{"ID", "Name", "Type", "Severity", "Status", "Parent task", "Found at", "Overview", "Traffic evidence count", "Traffic evidence IDs"})
 	for _, f := range items {
-		_ = w.Write([]string{
+		row := []string{
 			fmt.Sprintf("%d", f.ID),
 			findingTitle(f),
 			f.VulnClass,
@@ -175,10 +182,28 @@ func FindingsCSV(fs []*db.DBFinding) []byte {
 			f.CreatedAt.Format("2006-01-02 15:04:05"),
 			strings.TrimSpace(f.Summary),
 			fmt.Sprint(len(f.TrafficBindings)), findingTrafficIDs(f),
-		})
+		}
+		for i := range row {
+			row[i] = csvCell(row[i])
+		}
+		_ = w.Write(row)
 	}
 	w.Flush()
 	return buf.Bytes()
+}
+
+// csvCell neutralises a spreadsheet formula. A cell whose first character is
+// =, +, -, @, tab or CR is executed by Excel and Sheets, and every string here
+// can come from an agent or a target, so it is prefixed with a literal quote.
+func csvCell(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
 }
 
 func findingTrafficIDs(f *db.DBFinding) string {

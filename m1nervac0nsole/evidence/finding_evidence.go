@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -19,6 +20,12 @@ import (
 // this size is content-addressed on disk instead; the row keeps a path.
 const InlineEvidenceLimit = 8 << 10
 
+// findingEvidenceDir is the per-task directory holding spilled evidence. Keying
+// it by task is what lets an archive or a delete carry the whole set at once.
+func (s *Store) findingEvidenceDir(taskID int64) string {
+	return filepath.Join(s.Dir, "findings", strconv.FormatInt(taskID, 10))
+}
+
 // WriteFindingEvidence stores a finding's evidence as a content-addressed file
 // and returns the path relative to the evidence directory.
 //
@@ -31,7 +38,7 @@ func (s *Store) WriteFindingEvidence(taskID int64, text string) (string, error) 
 	}
 	sum := sha256.Sum256([]byte(text))
 	digest := hex.EncodeToString(sum[:])
-	dir := filepath.Join(s.Dir, "findings", fmt.Sprintf("%d", taskID))
+	dir := s.findingEvidenceDir(taskID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create evidence dir: %w", err)
 	}
@@ -97,4 +104,35 @@ func (s *Store) relPath(full string) string {
 		return rel
 	}
 	return full
+}
+
+// CopyFindingEvidence copies one task's spilled evidence into dest, the archive
+// payload's evidence directory, so a portable package carries the proof its
+// findings rows still point at. A task with nothing spilled copies nothing.
+func (s *Store) CopyFindingEvidence(taskID int64, dest string) error {
+	src := s.findingEvidenceDir(taskID)
+	if _, err := os.Stat(src); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return os.CopyFS(filepath.Join(dest, "findings", strconv.FormatInt(taskID, 10)), os.DirFS(src))
+}
+
+// InstallFindingEvidence puts a task's spilled evidence back from an extracted
+// archive package; the restored findings rows still carry their evidence_path.
+func (s *Store) InstallFindingEvidence(taskID int64, source string) error {
+	src := filepath.Join(source, "findings", strconv.FormatInt(taskID, 10))
+	if _, err := os.Stat(src); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	dst := s.findingEvidenceDir(taskID)
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		return fmt.Errorf("create evidence dir: %w", err)
+	}
+	return os.CopyFS(dst, os.DirFS(src))
 }

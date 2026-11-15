@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -12,28 +13,38 @@ import (
 const fetchReplyTimeout = 5 * time.Second
 
 // enableFetch turns on request-level interception when the caller supplied a
-// scope. Without a callback the browser is left alone, so a driver with no
-// scope pays no round trip per request.
+// scope, and authentication handling when the launch carries a proxy
+// credential. Without either the browser is left alone, so a driver that needs
+// neither pays no round trip per request.
 func (d *Driver) enableFetch(ctx context.Context, c conn) error {
 	d.mu.Lock()
 	allow := d.allowRequest
+	auth := d.proxyUser != "" || d.proxyPass != ""
 	d.mu.Unlock()
-	if allow == nil {
+	if allow == nil && !auth {
 		return nil
 	}
-	_, err := c.Send(ctx, "Fetch.enable", map[string]any{
+	params := map[string]any{
 		"patterns": []any{map[string]any{"urlPattern": "*", "requestStage": "Request"}},
-	})
+	}
+	if auth {
+		// Every paused request is still continued by requestPaused; this only
+		// adds the challenge event the proxy credential answers.
+		params["handleAuthRequests"] = true
+	}
+	_, err := c.Send(ctx, "Fetch.enable", params)
 	return err
 }
 
 // requestPaused judges one request before it leaves the browser. It fails
 // closed: a callback error blocks the request and records its host for the
-// next tool result.
-func (d *Driver) requestPaused(params json.RawMessage) {
+// next tool result. The session is the target that paused it: a popup's
+// request can only be answered on the popup's session.
+func (d *Driver) requestPaused(session string, params json.RawMessage) {
 	var ev struct {
-		RequestID string `json:"requestId"`
-		Request   struct {
+		RequestID    string `json:"requestId"`
+		ResourceType string `json:"resourceType"`
+		Request      struct {
 			URL string `json:"url"`
 		} `json:"request"`
 	}
@@ -50,14 +61,51 @@ func (d *Driver) requestPaused(params json.RawMessage) {
 	if allow != nil {
 		if err := allow(ev.Request.URL); err != nil {
 			d.recordBlocked(ev.Request.URL)
-			_, _ = d.Send(ctx, "Fetch.failRequest", map[string]any{
+			_, _ = d.sendIn(ctx, session, "Fetch.failRequest", map[string]any{
 				"requestId":   ev.RequestID,
 				"errorReason": "BlockedByClient",
 			})
 			return
 		}
 	}
-	_, _ = d.Send(ctx, "Fetch.continueRequest", map[string]any{"requestId": ev.RequestID})
+	if session != "" && ev.ResourceType == "Document" {
+		// A popup's destination is only known once it asks for its document: an
+		// image or a script it loads is not where it is going.
+		d.namePopup(session, ev.Request.URL)
+	}
+	_, _ = d.sendIn(ctx, session, "Fetch.continueRequest", map[string]any{"requestId": ev.RequestID})
+}
+
+// authRequired answers an HTTP authentication challenge. Chromium ignores
+// credentials embedded in --proxy-server, so a proxy challenge is the only way
+// the testing browser authenticates to the gateway: the launch credential is
+// supplied here, never on the command line. A challenge from an origin is
+// cancelled, which is what a headless browser with no credentials does.
+func (d *Driver) authRequired(session string, params json.RawMessage) {
+	var ev struct {
+		RequestID     string `json:"requestId"`
+		AuthChallenge struct {
+			Source string `json:"source"`
+		} `json:"authChallenge"`
+	}
+	if json.Unmarshal(params, &ev) != nil || ev.RequestID == "" {
+		return
+	}
+
+	d.mu.Lock()
+	user, pass := d.proxyUser, d.proxyPass
+	d.mu.Unlock()
+
+	answer := map[string]any{"response": "CancelAuth"}
+	if strings.EqualFold(ev.AuthChallenge.Source, "Proxy") && (user != "" || pass != "") {
+		answer = map[string]any{"response": "ProvideCredentials", "username": user, "password": pass}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fetchReplyTimeout)
+	defer cancel()
+	_, _ = d.sendIn(ctx, session, "Fetch.continueWithAuth", map[string]any{
+		"requestId":             ev.RequestID,
+		"authChallengeResponse": answer,
+	})
 }
 
 // recordBlocked notes the host once per drain window, so a page that hammers

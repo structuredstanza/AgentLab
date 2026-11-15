@@ -20,7 +20,9 @@ import (
 
 // WebFetchConfig tunes the network behavior of a WebFetch tool.
 type WebFetchConfig struct {
-	// Proxy, when set, routes requests through this http(s) proxy URL. Empty = direct.
+	// Proxy, when set, routes requests through this http(s) proxy URL and is the
+	// only route: a transport failure through it is returned as the tool error
+	// rather than retried directly. Empty = direct.
 	Proxy string
 	// CACert, when set, is a path to a PEM CA certificate added to the system
 	// trust pool. This lets WebFetch *verify* HTTPS fetched through a MITM/recording
@@ -99,33 +101,6 @@ func newFetchClient(cfg WebFetchConfig) *http.Client {
 	return &http.Client{Transport: tr}
 }
 
-// proxyLikelyErr reports whether a fetch error is the kind a recording/MITM proxy
-// introduces — a closed tunnel (EOF / connection reset), a failed CONNECT, or a
-// TLS/HTTP2 mismatch — so a direct (no-proxy) retry may succeed. Name-resolution
-// failures and caller cancellation/timeout are target- or caller-side problems a
-// direct retry won't fix, so those return false (no retry).
-func proxyLikelyErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	for _, n := range []string{"no such host", "context canceled", "context deadline", "timeout"} {
-		if strings.Contains(s, n) {
-			return false
-		}
-	}
-	for _, p := range []string{
-		"eof", "connection reset", "connection refused", "proxyconnect",
-		"broken pipe", "forcibly closed", "malformed", "http2", "http/2",
-		"tls:", "protocol error",
-	} {
-		if strings.Contains(s, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // staticAssetExts are file extensions WebFetch refuses: linked resources (scripts,
 // styles, source maps, images, fonts, media, wasm) that are not page content.
 var staticAssetExts = map[string]bool{
@@ -159,14 +134,10 @@ func staticAssetExt(rawURL string) string {
 
 func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *ToolContext) (Result, error) {
 	client := newFetchClient(cfg)
-	// direct is the no-proxy fallback used when a proxied fetch fails for a
-	// proxy-caused reason (closed tunnel / failed CONNECT / TLS or HTTP2 mismatch):
-	// it bypasses the configured proxy so a recording/MITM hiccup doesn't fail an
-	// otherwise-reachable URL. nil when no proxy is configured (nothing to bypass).
-	var direct *http.Client
-	if cfg.Proxy != "" {
-		direct = newFetchClient(WebFetchConfig{InsecureTLS: cfg.InsecureTLS})
-	}
+	// A configured proxy is the only route: a transport failure through it is the
+	// tool's answer, classified as such, and is never retried directly, because a
+	// direct retry would silently bypass the recording/MITM proxy the operator chose.
+	proxied := cfg.Proxy != ""
 	return func(ctx context.Context, input json.RawMessage, _ *ToolContext) (Result, error) {
 		var in struct {
 			URL     string `json:"url"`
@@ -189,20 +160,10 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 		}
 		req.Header.Set("user-agent", "norma/0.4")
 		resp, err := client.Do(req)
-		// One direct retry when the proxied attempt failed for a proxy-caused reason.
-		// A non-proxy error (bad host, caller timeout/cancel) is returned as-is — a
-		// direct retry wouldn't fix it. The direct response is NOT captured by the proxy.
-		if err != nil && direct != nil && proxyLikelyErr(err) {
-			if r2, e2 := http.NewRequestWithContext(cctx, http.MethodGet, in.URL, nil); e2 == nil {
-				r2.Header.Set("user-agent", "norma/0.4")
-				if resp2, err2 := direct.Do(r2); err2 == nil {
-					resp, err = resp2, nil
-				} else {
-					err = err2 // surface the direct failure (more representative of the target)
-				}
-			}
-		}
 		if err != nil {
+			if proxied {
+				return Errorf("Error fetching URL through the configured proxy (transport failure, no direct fallback): " + err.Error()), nil
+			}
 			return Errorf("Error fetching URL: " + err.Error()), nil
 		}
 		defer resp.Body.Close()

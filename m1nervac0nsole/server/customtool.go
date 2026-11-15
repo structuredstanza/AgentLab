@@ -3,9 +3,12 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/useragent"
 	"io"
@@ -14,18 +17,23 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/agent"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/enrich"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/execbox"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	"github.com/structuredstanza/norma/permission"
 	actool "github.com/structuredstanza/norma/tool"
 )
 
 // This file implements the custom tool executor (docs/\u81ea\u5b9a\u4e49\u5de5\u5177\u8bbe\u8ba1.md). Rows in tools with system=false are dispatched by
-// kind: command (render the command, then reuse the low-level run of Bash), script (Python only; write a temporary file,
-// stdin = argument JSON + env TOOL_*, use the configured interpreter), http (native request with an optional proxy). These tools
+// kind: command (render the command, then reuse the low-level run of Bash), script (Python only; run inside the run's
+// session, stdin = body + argument JSON, env TOOL_*, use the configured interpreter), http (native request with an optional proxy). These tools
 // Like the traffic/orchestration tools, seed is not needed (they already live in the tools table); they are injected via hostTools and filtered by binding.
 
 // ---------- Custom tool CRUD ----------
@@ -55,7 +63,34 @@ const (
 	errCustomToolBadBody            = "The request body is invalid"
 	errCustomToolShellNoExec        = "A shell-type tool is a bash environment declaration, so there is nothing to execute"
 	errCustomToolUnknownKindPrefix  = "Unknown tool type: "
+	errCustomToolNoSession          = "The test run could not be given an isolated session, so nothing was executed: "
 )
+
+// createCustomTool is the one validate-and-insert path for a new custom tool,
+// shared by POST /api/tools/custom and the tool curator's toolbox_propose_tool
+// so a proposal can never store what the editor would refuse. It returns the
+// HTTP status that fits the failure alongside the user-facing message.
+func createCustomTool(pg *db.DB, req customToolReq) (int, error) {
+	if !reToolKey.MatchString(req.Key) {
+		return 400, errors.New(errCustomToolKeyFormat)
+	}
+	if req.Kind != "command" && req.Kind != "script" && req.Kind != "http" && req.Kind != "shell" {
+		return 400, errors.New(errCustomToolKindInvalid)
+	}
+	if req.Kind == "http" && !hasSchemaProps(req.Schema) {
+		return 400, errors.New(errCustomToolHTTPSchemaRequired)
+	}
+	if exist, _ := pg.GetTool(req.Key); exist != nil {
+		return 409, errors.New(errCustomToolKeyExists)
+	}
+	if err := pg.CreateCustomTool(&db.Tool{
+		Key: req.Key, Description: req.Description, Schema: req.Schema, Agents: req.Agents,
+		Enabled: req.Enabled, Kind: req.Kind, Exec: req.Exec, Deferred: req.Deferred,
+	}); err != nil {
+		return 500, err
+	}
+	return 200, nil
+}
 
 func (s *Server) pgCreateCustomTool(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
@@ -68,27 +103,8 @@ func (s *Server) pgCreateCustomTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Key = strings.TrimSpace(req.Key)
-	if !reToolKey.MatchString(req.Key) {
-		writeErr(w, 400, errCustomToolKeyFormat)
-		return
-	}
-	if req.Kind != "command" && req.Kind != "script" && req.Kind != "http" && req.Kind != "shell" {
-		writeErr(w, 400, errCustomToolKindInvalid)
-		return
-	}
-	if req.Kind == "http" && !hasSchemaProps(req.Schema) {
-		writeErr(w, 400, errCustomToolHTTPSchemaRequired)
-		return
-	}
-	if exist, _ := pg.GetTool(req.Key); exist != nil {
-		writeErr(w, 409, errCustomToolKeyExists)
-		return
-	}
-	if err := pg.CreateCustomTool(&db.Tool{
-		Key: req.Key, Description: req.Description, Schema: req.Schema, Agents: req.Agents,
-		Enabled: req.Enabled, Kind: req.Kind, Exec: req.Exec, Deferred: req.Deferred,
-	}); err != nil {
-		writeErr(w, 500, err.Error())
+	if status, err := createCustomTool(pg, req); err != nil {
+		writeErr(w, status, err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]any{"key": req.Key})
@@ -147,17 +163,25 @@ func (s *Server) pgDeleteCustomTool(w http.ResponseWriter, r *http.Request) {
 
 // testToolReq is a dry-run request from the editor: run the given (possibly unsaved)
 // exec spec with sample params, without persisting the tool. Same executor path as a
-// real tool call — it runs arbitrary command/script/http on the server, which the
-// custom-tool feature already allows, so no new capability is granted.
+// real tool call, under a short-lived session of its own.
 type testToolReq struct {
 	Kind   string          `json:"kind"` // command | script | http
 	Exec   json.RawMessage `json:"exec"`
 	Params map[string]any  `json:"params"`
+	// TaskID binds the test run to an engagement task, so its session is judged
+	// against that task's rules. Zero runs as research, which reaches no target.
+	TaskID int64 `json:"task_id"`
 }
 
 // pgTestCustomTool executes an exec spec once and returns its raw output + error
 // flag, so the editor can debug a tool before saving it. Per-kind timeouts still
 // apply from the exec spec (with defaults); the outer ceiling is a hard backstop.
+//
+// A test is not a run, so it is given a session of its own: research by default,
+// testing when the editor names a task. The credential is revoked when ctx ends,
+// which covers completion, a client disconnect and the ceiling below, so a test
+// leaves no live session behind. Without one a script or command would have no
+// isolated boundary and an http request no recorded, authorized path.
 func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {
@@ -168,13 +192,37 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errCustomToolBadBody)
 		return
 	}
+	// The kind is checked before a session is minted: a request with nothing to
+	// run must not leave a credential behind.
+	switch req.Kind {
+	case "command", "script", "http":
+	case "shell":
+		writeErr(w, 400, errCustomToolShellNoExec)
+		return
+	default:
+		writeErr(w, 400, errCustomToolUnknownKindPrefix+req.Kind)
+		return
+	}
 	params := req.Params
 	if params == nil {
 		params = map[string]any{}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
-	tc := &actool.ToolContext{WorkingDir: s.m.dir} // run in the project dir, like a real call
+	purpose := netpolicy.PurposeResearch
+	if req.TaskID > 0 {
+		purpose = netpolicy.PurposeTesting
+	}
+	sess, err := s.session(ctx, netpolicy.CallerChat, req.TaskID, 0, purpose)
+	if err != nil {
+		writeErr(w, 409, errCustomToolNoSession+err.Error())
+		return
+	}
+	ctx = execbox.WithSession(ctx, sess)
+	// The session's private /tmp: the backend's own directory is not a writable
+	// root, so a spawn there is refused. The env is the run's proxy env, so a
+	// script's HTTP is recorded and authorized like a real call's.
+	tc := &actool.ToolContext{Env: agent.ProxyEnv(netpolicy.ProxyURL(sess, s.m.ProxyAddr()), s.m.ProxyCACert())}
 	var res actool.Result
 	switch req.Kind {
 	case "command":
@@ -182,13 +230,14 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 	case "script":
 		res, _ = s.runScriptTool(ctx, "test", req.Exec, params, tc)
 	case "http":
-		res, _ = s.runHTTPTool(ctx, req.Exec, params, tc)
-	case "shell":
-		writeErr(w, 400, errCustomToolShellNoExec)
-		return
-	default:
-		writeErr(w, 400, errCustomToolUnknownKindPrefix+req.Kind)
-		return
+		// The editor has no direct path to an origin: the test request goes
+		// through the recording proxy of the session above, and is refused when
+		// none is reachable.
+		var spec httpExec
+		_ = json.Unmarshal(req.Exec, &spec)
+		spec.UseRecordingProxy = true
+		execRaw, _ := json.Marshal(spec)
+		res, _ = s.runHTTPTool(ctx, execRaw, params, tc)
 	}
 	writeJSON(w, 200, map[string]any{"output": res.Flatten(), "is_error": res.IsError})
 }
@@ -361,19 +410,60 @@ func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, pa
 	return actool.NewBash().Call(ctx, bashIn, tc)
 }
 
-// ---------- script (Python only): temp file + stdin JSON + env ----------
+// ---------- script (Python only): session + stdin body + env ----------
 
+// What one script tool call may deliver. The body travels on stdin, so it no
+// longer competes with ARG_MAX; a TOOL_<NAME> entry is an execve environment
+// string, so it has to stay under the kernel's per-string limit or the spawn
+// fails with E2BIG instead of a message the model can act on.
+const (
+	maxScriptBytes  = 1 << 20   // the body, buffered once by this backend
+	maxToolEnvBytes = 128 << 10 // MAX_ARG_STRLEN, per "TOOL_<NAME>=<value>"
+	maxToolEnvTotal = 1 << 20   // the whole TOOL_* set, well inside ARG_MAX
+)
+
+// scriptBootstrap is the fixed program a script tool starts. It copies the body
+// from stdin into the file named on its command line, then runs the interpreter
+// on that file. Neither the body nor the params therefore reach argv, which the
+// guest records, and a body larger than ARG_MAX still runs. The params follow
+// the body on the same stream, so a script keeps reading its JSON from stdin.
+const scriptBootstrap = `d=$(dirname "$2") && mkdir -p "$d" && (umask 077 && head -c "$1" > "$2") && exec "$3" "$2"`
+
+// runScriptTool runs a custom Python tool inside the run's isolated session, the
+// boundary the command kind already gets through Bash. A fixed bootstrap takes
+// the body and the params on stdin, writes the body into the session's working
+// directory and executes it, so a script still reads its params from stdin JSON
+// and TOOL_<NAME> and never sees the backend's own environment. stdin EOF
+// follows the write, so a script that reads its params to EOF finishes instead
+// of hanging.
+//
+// There is no direct-execution fallback: without an installed client or without
+// a session the call refuses, so a script tool can never run as root in the
+// backend's network namespace.
 func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.RawMessage, params map[string]any, tc *actool.ToolContext) (actool.Result, error) {
 	var spec scriptExec
 	_ = json.Unmarshal(execRaw, &spec)
 	if strings.TrimSpace(spec.Code) == "" {
 		return actool.Errorf("script code is empty"), nil
 	}
+	if len(spec.Code) > maxScriptBytes {
+		return actool.Errorf(fmt.Sprintf("script code is %d bytes; the limit is %d", len(spec.Code), maxScriptBytes)), nil
+	}
+	client, ok := execbox.Installed()
+	if !ok {
+		return actool.Errorf(fmt.Sprintf("%v: no execution client is installed, so the script was not started", execbox.ErrUnavailable)), nil
+	}
+	sess, err := execbox.RequireSession(ctx)
+	if err != nil {
+		return actool.Errorf(err.Error()), nil
+	}
 	interp := s.pythonInterpreter()
 	if interp == "" {
 		return actool.Errorf("no Python interpreter is configured or detected (set one in system settings)"), nil
 	}
-	workDir := s.m.dir
+	// The working directory mirrors the command kind: the tool context's, and the
+	// session's private /tmp when it names none.
+	workDir := "/tmp"
 	var sessionEnv []string
 	if tc != nil {
 		if tc.WorkingDir != "" {
@@ -381,53 +471,108 @@ func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.Raw
 		}
 		sessionEnv = tc.Env
 	}
-	body, err := execPython(ctx, interp, key, spec.Code, params, workDir, sessionEnv, timeoutOr(spec.TimeoutMs, 120000))
+	env, err := scriptEnv(sessionEnv, params)
 	if err != nil {
 		return actool.Errorf(err.Error()), nil
 	}
-	return actool.Text(actool.Capture(tc, body)), nil
+	script := scriptPath(workDir, key, spec.Code)
+	runCtx, cancel := context.WithTimeout(ctx, timeoutOr(spec.TimeoutMs, 120000))
+	defer cancel()
+	if tc != nil {
+		runCtx = execbox.WithArtifacts(runCtx, execbox.ArtifactCall{Dir: tc.WorkingDir, ToolUseID: tc.ToolUseID})
+	}
+	rwc, err := client.Run(runCtx, sess, execbox.Spec{
+		Argv:        scriptArgv(interp, key, script, len(spec.Code)),
+		Dir:         workDir,
+		Env:         env,
+		MergeStderr: true,
+	})
+	if err != nil {
+		if errors.Is(err, execbox.ErrUnavailable) {
+			return actool.Errorf(err.Error()), nil
+		}
+		return actool.Text(actool.Capture(tc, "[exit: "+err.Error()+"]")), nil
+	}
+	proc, ok := execbox.ProcessOf(rwc)
+	if !ok {
+		_ = rwc.Close()
+		return actool.Errorf("the execution client cannot signal stdin EOF, so the script was not started"), nil
+	}
+	defer proc.Close()
+	// The body goes first, exactly the bytes the bootstrap copies to the script
+	// file, then the params JSON the script reads. The write runs beside the
+	// output drain: a body larger than the socket buffer must not wait on a
+	// program whose output nobody is reading yet.
+	stdinDone := make(chan struct{})
+	go func() {
+		defer close(stdinDone)
+		_, _ = proc.Write([]byte(spec.Code))
+		pj, _ := json.Marshal(params)
+		_, _ = proc.Write(pj)
+		_ = proc.CloseStdin()
+	}()
+	var out bytes.Buffer
+	_, _ = io.Copy(&out, proc)
+	select {
+	case <-stdinDone:
+	case <-runCtx.Done():
+	}
+	code, waitErr := proc.Wait()
+	body := out.String()
+	switch {
+	case runCtx.Err() == context.DeadlineExceeded:
+		body += "\n... [terminated on timeout] ..."
+	case waitErr != nil:
+		body += "\n[exit: " + waitErr.Error() + "]"
+	case code != 0:
+		body += fmt.Sprintf("\n[exit: exit status %d]", code)
+	}
+	// The file is the record of what ran: the export carries the workspace, and
+	// the turn's tool result names the exact path. The capture pointer names the
+	// process's own stdin and output, which the workspace file does not hold.
+	body += "\n[script: " + script + "]"
+	return actool.Text(actool.Capture(tc, withArtifactRef(body, execbox.ArtifactPointer(proc)))), nil
 }
 
-// execPython writes the code to a temp .py under workDir/.tools, runs it via interp
-// with the params JSON on stdin + scalar params mirrored to TOOL_<NAME> env, and
-// returns combined stdout+stderr (with a timeout/exit note). Standalone + testable.
-func execPython(ctx context.Context, interp, key, code string, params map[string]any, workDir string, sessionEnv []string, timeout time.Duration) (string, error) {
-	toolsDir := filepath.Join(workDir, ".tools")
-	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
-		return "", err
-	}
-	f, err := os.CreateTemp(toolsDir, key+"-*.py")
-	if err != nil {
-		return "", err
-	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if _, err := f.WriteString(code); err != nil {
-		f.Close()
-		return "", err
-	}
-	f.Close()
+// scriptArgv starts the fixed bootstrap with the body's byte length, the file it
+// must land in and the interpreter to run. No content travels in argv, which the
+// guest records; $0 is the tool key, so the process is identifiable.
+func scriptArgv(interp, key, file string, bodyLen int) []string {
+	return []string{"bash", "-c", scriptBootstrap, key, strconv.Itoa(bodyLen), file, interp}
+}
 
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	c := exec.CommandContext(runCtx, interp, tmp)
-	c.Dir = workDir
-	c.Env = append(os.Environ(), sessionEnv...) // Session proxy env
-	for k, v := range params {                  // Mirror scalar parameters into TOOL_<NAME>
-		if sv, ok := scalarStr(v); ok {
-			c.Env = append(c.Env, "TOOL_"+strings.ToUpper(k)+"="+sv)
+// scriptPath is where the bootstrap writes the body inside the session: a
+// content-addressed file under the run's working directory, so the export
+// carries exactly the bytes that ran and the name doubles as an integrity check.
+func scriptPath(workDir, key, code string) string {
+	sum := sha256.Sum256([]byte(code))
+	return path.Join(workDir, ".tool-scripts", key+"-"+hex.EncodeToString(sum[:8])+".py")
+}
+
+// scriptEnv is the minimal environment a script tool runs with: the run's own
+// proxy env plus the scalar params mirrored to TOOL_<NAME>. The backend's
+// environment is deliberately absent, so a controller secret cannot reach a
+// script through an unrelated variable. The supervisor adds PATH/HOME/TMPDIR.
+// A parameter too large for an environment string is refused here, where the
+// caller can say which one, instead of failing the spawn with E2BIG.
+func scriptEnv(sessionEnv []string, params map[string]any) ([]string, error) {
+	env := append([]string(nil), sessionEnv...)
+	total := 0
+	for k, v := range params {
+		sv, ok := scalarStr(v)
+		if !ok {
+			continue
 		}
+		kv := "TOOL_" + strings.ToUpper(k) + "=" + sv
+		if len(kv) >= maxToolEnvBytes {
+			return nil, fmt.Errorf("parameter %q is too large for the script environment (%d bytes; the limit is %d)", k, len(kv), maxToolEnvBytes-1)
+		}
+		if total += len(kv); total > maxToolEnvTotal {
+			return nil, fmt.Errorf("the script parameters are too large for the script environment (%d bytes; the limit is %d)", total, maxToolEnvTotal)
+		}
+		env = append(env, kv)
 	}
-	pj, _ := json.Marshal(params)
-	c.Stdin = bytes.NewReader(pj) // Parameter JSON is passed via stdin
-	out, err := c.CombinedOutput()
-	body := string(out)
-	if runCtx.Err() == context.DeadlineExceeded {
-		body += "\n... [terminated on timeout] ..."
-	} else if err != nil {
-		body += "\n[exit: " + err.Error() + "]"
-	}
-	return body, nil
+	return env, nil
 }
 
 // ---------- http: native request + proxy ----------
@@ -458,7 +603,11 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000)}
-	if tr := s.httpProxyTransport(spec); tr != nil {
+	tr, err := s.httpProxyTransport(ctx, spec)
+	if err != nil {
+		return actool.Errorf(err.Error()), nil
+	}
+	if tr != nil {
 		client.Transport = tr
 	}
 	resp, err := client.Do(req)
@@ -473,22 +622,30 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 }
 
 // httpProxyTransport builds a Transport for the http tool's proxy config, or nil
-// (direct). use_recording_proxy routes through the recording proxy + trusts its CA.
-func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
+// (direct). use_recording_proxy routes through the recording proxy + trusts its
+// CA; with no recording proxy reachable, or a run with no session to attribute
+// the request to, it fails instead of silently going direct.
+//
+// The recording proxy is the gateway, which accepts no anonymous request, so the
+// URL carries the credential of the session this run was issued.
+func (s *Server) httpProxyTransport(ctx context.Context, spec httpExec) (*http.Transport, error) {
 	proxyStr := strings.TrimSpace(spec.Proxy)
 	var caFile string
 	if spec.UseRecordingProxy {
-		if addr := s.m.ProxyAddr(); addr != "" {
-			proxyStr = "http://" + addr
-			caFile = s.m.ProxyCACert()
+		proxyStr = execbox.ProxyURL(ctx, s.m.ProxyAddr())
+		if proxyStr == "" {
+			return nil, fmt.Errorf("use_recording_proxy is set but this run has no gateway session or no recording proxy is running; refusing to send the request directly")
 		}
+		caFile = s.m.ProxyCACert()
 	}
 	if proxyStr == "" {
-		return nil
+		return nil, nil
 	}
 	pu, err := url.Parse(proxyStr)
-	if err != nil {
-		return nil
+	if err != nil || pu.Host == "" {
+		// The URL may be the operator's own proxy with a password in its user
+		// part; the message keeps the address and drops the credential.
+		return nil, fmt.Errorf("invalid proxy URL %q", enrich.RedactProxyURL(proxyStr))
 	}
 	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
 	if caFile != "" {
@@ -499,7 +656,7 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 			}
 		}
 	}
-	return tr
+	return tr, nil
 }
 
 // ---------- helpers ----------

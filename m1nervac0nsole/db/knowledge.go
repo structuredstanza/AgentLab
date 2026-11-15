@@ -275,7 +275,8 @@ func scanKnowledge(sc interface{ Scan(dest ...any) error }, extra ...any) (Knowl
 // promotion is the only way out of a task. A machine write is also generalised
 // with the task's own identifiers, so it reads as a rule for the next target
 // rather than a report about this one. Re-writing the same title inside a task
-// updates that entry instead of creating a second one.
+// updates that entry instead of creating a second one, unless the existing row
+// is the operator's: a machine write never overwrites an operator body.
 func (d *DB) AddKnowledge(ctx context.Context, in KnowledgeInput) (KnowledgeEntry, int, error) {
 	in, redactions, err := d.prepareKnowledge(ctx, in)
 	if err != nil {
@@ -308,15 +309,21 @@ WHERE scope='task' AND task_id=$1 AND source<>'operator'`, in.TaskID).Scan(&coun
 
 	// origin_intent_id is deliberately not in the SET list: a same-title
 	// refresh keeps the intent that first learned the entry, not the one that
-	// repeated it.
+	// repeated it. The WHERE keeps a machine write from overwriting an operator
+	// row's body: the conflicting row simply is not updated, and the caller
+	// below reports it instead of pretending the write landed.
 	row := d.QueryRowContext(ctx, `
 INSERT INTO knowledge_entries(scope,company_id,task_id,kind,title,body,tags,status,source,origin_task_id,origin_intent_id)
 VALUES($1,NULLIF($2,0),NULLIF($3,0),$4,$5,$6,COALESCE($7::text[],'{}'::text[]),$8,$9,NULLIF($10,0),$11)
 ON CONFLICT (task_id, lower(title)) WHERE scope='task'
 DO UPDATE SET body=EXCLUDED.body, tags=EXCLUDED.tags, updated_at=now()
+WHERE EXCLUDED.source = 'operator' OR knowledge_entries.source <> 'operator'
 RETURNING `+knowledgeColumns,
 		in.Scope, in.CompanyID, in.TaskID, in.Kind, in.Title, in.Body, in.Tags, in.Status, in.Source, in.OriginTaskID, in.OriginIntentID)
 	entry, err := scanKnowledge(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return KnowledgeEntry{}, 0, fmt.Errorf("knowledge title %q is owned by the operator: %w", in.Title, ErrMemoryInvalid)
+	}
 	if err != nil {
 		return KnowledgeEntry{}, 0, fmt.Errorf("add knowledge: %w", err)
 	}

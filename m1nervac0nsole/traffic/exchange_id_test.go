@@ -11,7 +11,7 @@ import (
 // 10000, so a burst inside one second reused ids and INSERT OR REPLACE
 // silently overwrote captures that were already stored.
 func TestExternalIngestKeepsEveryExchangeWithinOneSecond(t *testing.T) {
-	tr, err := Open(t.TempDir(), "127.0.0.1:0")
+	tr, err := OpenWithTransport(t.TempDir(), "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

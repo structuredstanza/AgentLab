@@ -2,10 +2,15 @@
 """AgentLab guest supervisor (stdlib only; runs as guest root via `msb exec`).
 
 Start order: lock -> PostgreSQL (/state/postgres, loopback TCP + /run/postgresql socket)
--> m1nervac0nsole DB role/database -> tcpdump (must report "listening on") -> m1nervac0nsole under strace.
-Stop order on SIGTERM/SIGINT or m1nervac0nsole exit: m1nervac0nsole group -> tcpdump (SIGINT, flushes pcap)
--> PostgreSQL (pg_ctl -m fast).
+-> m1nervac0nsole DB role/database -> tcpdump (must report "listening on")
+-> execbox supervisor (privileged, must pass its own session probe)
+-> m1nervac0nsole under strace.
+Stop order on SIGTERM/SIGINT or m1nervac0nsole exit: m1nervac0nsole group -> execbox (SIGTERM)
+-> tcpdump (SIGINT, flushes pcap) -> PostgreSQL (pg_ctl -m fast).
 
+The execbox supervisor owns every namespace, cgroup and firewall change for tool
+processes; the backend only talks to it over /run/m1nervac0nsole/execbox.sock and
+never runs inside a session itself.
 Exit: m1nervac0nsole's exit code (128+signal if killed), 1 on any failure, 3 if another supervisor holds the lock.
 Outputs: /state/runtime/{m1nervac0nsole,jwt.key,status.json,secrets/m1nervac0nsole-db.dsn,logs/...}
          /state/captures/<session-id>/{manifest.json,pcap/,strace/,logs/}
@@ -60,7 +65,10 @@ SKILL_MANIFEST = f"{STATE}/skills/.guest-dist.json"
 BROWSERS_DIR = "/opt/ms-playwright"
 # Guest-local capture proxy; not the host native provider proxy, which also listens on 8788.
 M1NERVAC0NSOLE_ARGS = ["-addr", ":8787", "-proxy", "127.0.0.1:8788", "-data", M1NERVAC0NSOLE_DATA]
-STRACE_ARGS = ["-ff", "-ttt", "-T", "-yy", "-s256", "-e", "trace=process,file,network"]
+# Decoded string arguments per syscall. 256 cut real paths, argv elements and
+# payload fragments mid-value, so a trace could not be read back as evidence.
+STRACE_STRING_LIMIT = 4096
+STRACE_ARGS = ["-ff", "-ttt", "-T", "-yy", f"-s{STRACE_STRING_LIMIT}", "-e", "trace=process,file,network"]
 
 
 def now_iso():
@@ -80,13 +88,48 @@ RING_GB_DEFAULT = 64
 # next session's early writes: 20% of the volume, never less than this floor.
 # Without it the ring can fill the volume - a live engagement reached 100% on a
 # 5.8 GB filesystem and took the whole stack down with it.
-RING_RESERVE_MB = 1536
+#
+# This is the single definition of the capture reserve in the deployed lab: the
+# packet ring below and the recording proxy's stream/WebSocket capture both stop
+# at it. The proxy gets the same numbers through app_env, so the two cannot
+# drift; its own constants are only the standalone default for a run outside the
+# lab.
+CAPTURE_RESERVE_MB_DEFAULT = 1536
+CAPTURE_RESERVE_PCT_DEFAULT = 20
+
+
+def capture_reserve():
+    """(floor_mb, pct) for the capture filesystem reserve, from the environment."""
+    floor_mb = CAPTURE_RESERVE_MB_DEFAULT
+    raw = os.environ.get("AGENTLAB_CAPTURE_RESERVE_MB", "").strip()
+    try:
+        if raw:
+            floor_mb = int(raw)
+            if floor_mb <= 0:
+                raise ValueError(raw)
+    except ValueError:
+        log(f"AGENTLAB_CAPTURE_RESERVE_MB={raw!r} is not a positive integer; using {CAPTURE_RESERVE_MB_DEFAULT}")
+        floor_mb = CAPTURE_RESERVE_MB_DEFAULT
+    pct = CAPTURE_RESERVE_PCT_DEFAULT
+    raw = os.environ.get("AGENTLAB_CAPTURE_RESERVE_PCT", "").strip()
+    try:
+        if raw:
+            pct = int(raw)
+            if not 1 <= pct < 100:
+                raise ValueError(raw)
+    except ValueError:
+        log(f"AGENTLAB_CAPTURE_RESERVE_PCT={raw!r} is not a percentage in 1..99; using {CAPTURE_RESERVE_PCT_DEFAULT}")
+        pct = CAPTURE_RESERVE_PCT_DEFAULT
+    return floor_mb, pct
+
+
+CAPTURE_RESERVE_MB, CAPTURE_RESERVE_PCT = capture_reserve()
 
 
 def ring_reserve_mb(st):
-    """Free space to keep on the capture filesystem: 20% of it, floor 1536 MB."""
+    """Free space to keep on the capture filesystem: CAPTURE_RESERVE_PCT of it, floor CAPTURE_RESERVE_MB."""
     total_mb = st.f_blocks * st.f_frsize // (1024 * 1024)
-    return max(RING_RESERVE_MB, total_mb // 5)
+    return max(CAPTURE_RESERVE_MB, total_mb * CAPTURE_RESERVE_PCT // 100)
 
 
 def ring_ceiling_segments():
@@ -142,6 +185,21 @@ EGRESS_RPM = int(os.environ.get("AGENTLAB_EGRESS_RPM", "100"))
 # can raise these for a dedicated box without rebuilding.
 MAX_SCANS = int(os.environ.get("AGENTLAB_MAX_SCANS", "3"))
 MAX_SCANS_PER_TARGET = int(os.environ.get("AGENTLAB_MAX_SCANS_PER_TARGET", "3"))
+# Unprivileged execution boundary. The supervisor is a privileged process of its
+# own: it owns every namespace, cgroup and firewall change, and the backend only
+# asks it over a Unix socket. It must be up before the backend starts, because the
+# backend installs its client at startup, and its socket lives under /run so a
+# session's mount namespace cannot see it. The backend itself never runs inside a
+# session: it is the controller, not a tool.
+EXECBOX_SOCKET_DIR = "/run/m1nervac0nsole"
+EXECBOX_SOCKET = f"{EXECBOX_SOCKET_DIR}/execbox.sock"
+EXECBOX_TIMEOUT = 30
+# The only directories a tool process may write that outlive it: task workspaces
+# (worker, planner, main agent, browser profiles and downloads) and chat session
+# workspaces. A session also gets a private tmpfs at /tmp, which no other process
+# can see and which dies with the session. Everything else is read-only or
+# absent, and the app's data root, keys and database socket are never mounted.
+EXECBOX_WORKSPACES = f"{M1NERVAC0NSOLE_DATA}/tasks,{M1NERVAC0NSOLE_DATA}/sessions"
 CAPTURE_LIMITS = {
     "tool": "tcpdump",
     "interface": "any",
@@ -150,9 +208,13 @@ CAPTURE_LIMITS = {
     "rotation": f"-C {SEGMENT_MB} (~{SEGMENT_MB} million bytes per segment) -W {MAX_SEGMENTS}",
     "max_segments": MAX_SEGMENTS,
     "approx_max_bytes": SEGMENT_MB * 1_000_000 * MAX_SEGMENTS,
+    "reserve_mb": CAPTURE_RESERVE_MB,
+    "reserve_pct": CAPTURE_RESERVE_PCT,
+    "reserve": f"the packet ring and the recording proxy keep max({CAPTURE_RESERVE_MB} MiB, {CAPTURE_RESERVE_PCT}%) free on {M1NERVAC0NSOLE_DATA}; the proxy stops spooling at that floor (labelled partial) and keeps forwarding",
     "overflow": "ring: after max_segments the oldest segment is overwritten; wrap_suspected=true when all slots are in use",
     "privileges": "-Z root (no privilege drop; output directory is root-only)",
-    "not_captured": "HTTPS/TLS payloads are ciphertext; no key material is captured",
+    "strace": f"m1nervac0nsole under strace: process/file/network syscalls, string arguments up to {STRACE_STRING_LIMIT} bytes",
+    "not_captured": "HTTPS/TLS payloads are ciphertext in the pcap; the gateway's origin TLS keys are in tls/keys.log inside this session, so the pcap decrypts with them",
     "tamper": "guest root can modify or delete captures and this manifest",
     "native_transport": "Provider sockets run in the host native provider proxy; guest PCAP captures the host API and task traffic. Host provider-proxy network syscalls are exported separately.",
 }
@@ -270,7 +332,8 @@ class Session:
         self.logs = os.path.join(self.dir, "logs")
         self.pcap = os.path.join(self.dir, "pcap")
         self.strace = os.path.join(self.dir, "strace")
-        for d in (self.dir, self.logs, self.pcap, self.strace):
+        self.tls = os.path.join(self.dir, "tls")
+        for d in (self.dir, self.logs, self.pcap, self.strace, self.tls):
             os.makedirs(d, mode=0o700, exist_ok=True)
         self.m = {
             "schema": "agentlab.capture-session/1",
@@ -282,8 +345,13 @@ class Session:
             "supervisor": proc_info(os.getpid()),
             "postgres": {"status": "not_started"},
             "capture": {"status": "not_started", "limits": CAPTURE_LIMITS},
+            # The gateway's origin TLS secrets, so the captured pcap can be
+            # decrypted. crypto/tls writes the file 0600; it lives inside the
+            # session, so it is exported with the capture and never stored in
+            # the database.
+            "tls": {"keylog": "tls/keys.log", "status": "enabled"},
             "m1nervac0nsole": {"status": "not_started", "strace_args": STRACE_ARGS,
-                      "strace_notes": "process/file/network syscalls; decoded string arguments limited to 256 bytes"},
+                      "strace_notes": f"process/file/network syscalls; decoded string arguments limited to {STRACE_STRING_LIMIT} bytes"},
             "errors": [],
         }
         self.save()
@@ -421,7 +489,7 @@ def admin_password():
     return pw
 
 
-def app_env(dsn, admin_pw):
+def app_env(dsn, admin_pw, keylog=None):
     # Explicit allowlist: no model/provider variables and no inherited supervisor environment.
     env = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -433,6 +501,10 @@ def app_env(dsn, admin_pw):
         "PLAYWRIGHT_BROWSERS_PATH": BROWSERS_DIR,
         "M1NERVAC0NSOLE_NATIVE_PROXY_URL": "http://host.microsandbox.internal:8788",
         "M1NERVAC0NSOLE_NATIVE_PROXY_TOKEN_FILE": "/run/secrets/agentlab-native-proxy",
+        # The capture reserve, from the one definition above: the recording proxy
+        # stops spooling at the same floor the packet ring keeps free.
+        "M1NERVAC0NSOLE_CAPTURE_RESERVE_MB": str(CAPTURE_RESERVE_MB),
+        "M1NERVAC0NSOLE_CAPTURE_RESERVE_PCT": str(CAPTURE_RESERVE_PCT),
     }
     # Route target-bound HTTP through the identity proxy. The host native proxy
     # is excluded from it, or model calls would be rewritten as target traffic.
@@ -460,6 +532,11 @@ def app_env(dsn, admin_pw):
         "M1NERVAC0NSOLE_MAX_SCANS_PER_TARGET": str(MAX_SCANS_PER_TARGET),
         "M1NERVAC0NSOLE_MAX_REQUESTS_PER_MINUTE": str(EGRESS_RPM),
     })
+    if keylog:
+        # The gateway reads this once at startup and appends each origin
+        # handshake's secrets to it, which is what makes the captured pcap
+        # decryptable. The path is inside the capture session.
+        env["SSLKEYLOGFILE"] = keylog
     if admin_pw is not None:
         env["M1NERVAC0NSOLE_ADMIN_PASSWORD"] = admin_pw
     return env
@@ -597,6 +674,77 @@ def stop_egress(sess, p):
             p.kill()
         except Exception:
             pass
+
+
+def start_execbox(sess, binary):
+    """Start the unprivileged execution boundary and prove it can enforce.
+
+    The supervisor runs as root in a session of its own, before the backend: the
+    backend installs its client at startup and refuses to spawn a tool process
+    without it. The probe is the gate, not a formality - it runs one real session
+    through every namespace, the firewall, the cgroup and the uid drop - so a
+    configured but unexercised boundary never reaches a task. A supervisor that
+    cannot isolate stops the start instead of degrading to unconfined execution.
+
+    The probe runs before the backend because the backend installs its execution
+    client at startup: the boundary must be proven before the first task, not
+    after it. The probe works in state and cgroup directories of its own, so it
+    leaves a running supervisor's sessions and staging alone.
+    """
+    os.makedirs(EXECBOX_SOCKET_DIR, mode=0o700, exist_ok=True)
+    workspaces = EXECBOX_WORKSPACES.split(",")
+    for root in workspaces:
+        os.makedirs(root, exist_ok=True)
+    log_path = os.path.join(sess.logs, "execbox.log")
+    cmd = [binary, "execbox", "serve", "-socket", EXECBOX_SOCKET, "-workspace", EXECBOX_WORKSPACES]
+    with open(log_path, "ab") as logf:
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
+                             start_new_session=True)
+    try:
+        sess.m["execbox"] = {"status": "starting", "pid": p.pid, "socket": EXECBOX_SOCKET,
+                             "workspaces": workspaces, "log": log_path, "argv": cmd,
+                             "started_at": now_iso()}
+        sess.save()
+        deadline = time.monotonic() + EXECBOX_TIMEOUT
+        while not os.path.exists(EXECBOX_SOCKET):
+            if p.poll() is not None:
+                raise Fatal(f"execbox supervisor exited during start (rc={p.returncode}); see {log_path}")
+            if time.monotonic() > deadline:
+                raise Fatal(f"execbox supervisor did not create {EXECBOX_SOCKET} within {EXECBOX_TIMEOUT}s")
+            time.sleep(0.2)
+        probe = subprocess.run([binary, "execbox", "probe", "-workspace", EXECBOX_WORKSPACES],
+                               capture_output=True, timeout=EXECBOX_TIMEOUT)
+        report = (probe.stdout + probe.stderr).decode(errors="replace").strip()
+        if probe.returncode != 0:
+            raise Fatal(f"execbox probe failed (rc={probe.returncode}): {report}")
+        sess.m["execbox"].update(status="running", process=proc_info(p.pid), probe=report)
+        sess.save()
+    except BaseException:
+        try:
+            stop_execbox(sess, p)
+        except Exception as error:
+            sess.error(f"execbox startup cleanup failed: {error}")
+        raise
+    log(f"execbox supervisor up on {EXECBOX_SOCKET}")
+    return p
+
+
+def stop_execbox(sess, p):
+    """Stop the supervisor with SIGTERM so it tears down every live session."""
+    if p is None:
+        return
+    box = sess.m.setdefault("execbox", {})
+    if p.poll() is None:
+        p.send_signal(signal.SIGTERM)
+        try:
+            p.wait(EXECBOX_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            sess.error(f"execbox supervisor ignored SIGTERM for {EXECBOX_TIMEOUT}s; killed, live sessions may leak")
+            p.kill()
+            p.wait()
+    box.update(status="stopped" if p.returncode == 0 else "exited", exit_code=p.returncode,
+               stopped_at=now_iso())
+
 
 def start_vpn(sess):
     """Bring up the OpenVPN tunnel an operator supplied, and prove it carries traffic.
@@ -806,13 +954,16 @@ def stop_app(sess, p):
 
 # ---------- lifecycle ----------
 
-def shutdown(sess, app, tcpd, bindir, vpn=None, egress=None):
+def shutdown(sess, app, tcpd, bindir, vpn=None, egress=None, execbox=None):
     try:
         sess.set_state("stopping")
     except Exception as error:
         sess.error(f"could not persist stopping state: {error}")
-    for name, process, stop in (("m1nervac0nsole", app, stop_app), ("capture", tcpd, stop_tcpdump),
-                                ("vpn", vpn, stop_vpn), ("egress", egress, stop_egress)):
+    # The app goes first: it is the only client of the supervisor, so stopping the
+    # boundary before the app would leave it unable to start or stop a tool.
+    for name, process, stop in (("m1nervac0nsole", app, stop_app), ("execbox", execbox, stop_execbox),
+                                ("capture", tcpd, stop_tcpdump), ("vpn", vpn, stop_vpn),
+                                ("egress", egress, stop_egress)):
         if process is not None:
             try:
                 stop(sess, process)
@@ -847,6 +998,7 @@ def main():
     app = None
     vpn = None
     egress = None
+    execbox = None
     rc = 0
     try:
         log(f"session {sess.id} -> {sess.dir}")
@@ -865,9 +1017,10 @@ def main():
         sess.m["m1nervac0nsole"]["sha256"] = digest
         if synced := sync_skills():
             log(f"skills: {synced} files synced from {DIST}/skills into {SKILLS_DIR}")
-        env = app_env(dsn, admin_password())
+        env = app_env(dsn, admin_password(), os.path.join(sess.tls, "keys.log"))
         vpn = start_vpn(sess)
         egress = start_egress(sess, binary)
+        execbox = start_execbox(sess, binary)
         tcpd = start_tcpdump(sess)
         if STOP["signal"] is None:
             app = start_app(sess, binary, env)
@@ -880,6 +1033,11 @@ def main():
             # resume egress over the host's own address.
             if egress.poll() is not None:
                 raise Fatal(f"egress proxy exited while m1nervac0nsole was running (rc={egress.returncode}); m1nervac0nsole stopped so no request leaves with the wrong identity")
+            # Kill switch: without the supervisor no new tool process can be
+            # isolated, and a live session's namespaces outlive it. Stop the app
+            # rather than let it keep running with a boundary it cannot enforce.
+            if execbox.poll() is not None:
+                raise Fatal(f"execbox supervisor exited while m1nervac0nsole was running (rc={execbox.returncode}); m1nervac0nsole stopped so no tool process runs outside the boundary")
             if vpn is not None and vpn.poll() is not None:
                 raise Fatal(f"openvpn exited while m1nervac0nsole was running (rc={vpn.returncode}); m1nervac0nsole stopped to avoid traffic leaving outside the tunnel")
             if time.monotonic() - last_sample >= 1:
@@ -896,7 +1054,7 @@ def main():
             sess.m["capture"]["status"] = "failed"
     finally:
         owned_pg = bindir if sess.m["postgres"]["status"] in ("starting", "running") else None
-        shutdown(sess, app, tcpd, owned_pg, vpn, egress)
+        shutdown(sess, app, tcpd, owned_pg, vpn, egress, execbox)
         try:
             with open(SUPERVISOR_PID) as stream:
                 owned_pid = stream.read().strip() == str(os.getpid())

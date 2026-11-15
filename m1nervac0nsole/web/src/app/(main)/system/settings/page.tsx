@@ -2,15 +2,7 @@
 
 import * as React from "react";
 
-import {
-  CpuIcon,
-  FlaskConicalIcon,
-  GlobeIcon,
-  KeyboardIcon,
-  RadioTowerIcon,
-  SearchIcon,
-  ShieldAlertIcon,
-} from "lucide-react";
+import { CpuIcon, FlaskConicalIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
@@ -87,7 +79,6 @@ export default function SystemSettingsPage() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // Experimental feature: noa context compression (disabled by default).
   const [noaCompaction, setNoaCompaction] = React.useState(false);
-  const [browserDriver, setBrowserDriver] = React.useState<"mcp" | "native">("mcp");
   // Pure frontend preference: does not go through /api/settings; reads and writes localStorage directly.
   const sendMode = useChatSendMode();
   const sendModeOptions = useChatSendModeOptions();
@@ -106,7 +97,6 @@ export default function SystemSettingsPage() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
-    setBrowserDriver(s.browser_driver === "native" ? "native" : "mcp");
   }, []);
 
   const saveWorkers = () => {
@@ -206,18 +196,6 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => {
         setNoaCompaction(!v); // revert on failure
-        toast.error(t("toast.saveFailed", { error: (e as Error).message }));
-      });
-  };
-
-  const saveBrowserDriver = (v: "mcp" | "native") => {
-    const prev = browserDriver;
-    setBrowserDriver(v);
-    api
-      .setSettings({ browser_driver: v })
-      .then(apply)
-      .catch((e) => {
-        setBrowserDriver(prev);
         toast.error(t("toast.saveFailed", { error: (e as Error).message }));
       });
   };
@@ -418,25 +396,6 @@ export default function SystemSettingsPage() {
               disabled={!loaded}
               onCheckedChange={toggleNoaCompaction}
             />
-          </div>
-        </Section>
-
-        <Section icon={GlobeIcon} title={t("browser.title")} desc={t.rich("browser.desc", richTags)}>
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <Label className="font-normal text-muted-foreground text-sm">{t("browser.driverLabel")}</Label>
-            <Select
-              value={browserDriver}
-              disabled={!loaded}
-              onValueChange={(v) => saveBrowserDriver(v as "mcp" | "native")}
-            >
-              <SelectTrigger className="w-56 shrink-0">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="native">{t("browser.driverNative")}</SelectItem>
-                <SelectItem value="mcp">{t("browser.driverMcp")}</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
         </Section>
 

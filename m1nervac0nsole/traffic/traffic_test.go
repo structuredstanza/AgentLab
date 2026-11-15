@@ -26,12 +26,34 @@ func TestRequestHeaderLinesIncludesHost(t *testing.T) {
 	}
 }
 
+// TestRequestHeaderLinesDropsTheProxyCredential: the tool-facing proxy URL
+// carries the run's session credential as its user part, so a plain-HTTP
+// request through the recorder arrives with Proxy-Authorization. The capture is
+// stored in plaintext and served back through the traffic API, so that header
+// must never be recorded.
+func TestRequestHeaderLinesDropsTheProxyCredential(t *testing.T) {
+	req := &mproxy.Request{
+		URL: &url.URL{Host: "target.example"},
+		Header: http.Header{
+			"Accept":              []string{"application/json"},
+			"Proxy-Authorization": []string{"Basic c2Vzc2lvbi1jcmVkZW50aWFsOg=="},
+		},
+	}
+	got := requestHeaderLines(req)
+	if strings.Contains(strings.ToLower(got), "proxy-authorization") || strings.Contains(got, "c2Vzc2lvbi1jcmVkZW50aWFsOg==") {
+		t.Fatalf("the proxy credential was recorded: %q", got)
+	}
+	if !strings.Contains(got, "Accept: application/json\n") {
+		t.Fatalf("a regular header was dropped with it: %q", got)
+	}
+}
+
 // TestDeleteHost verifies the delete contract: rows for hosts containing the
 // substring are removed together with their file trees, non-matching hosts are
 // untouched, and the count is right.
 func TestDeleteHost(t *testing.T) {
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +118,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 // most recent activity first.
 func TestHosts(t *testing.T) {
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +155,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 // the batch are harmless, and the per-host trees are removed.
 func TestDeleteHostsExact(t *testing.T) {
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +204,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 
 func TestDeleteHostsExactReportsTreeRemovalFailure(t *testing.T) {
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +238,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 
 func TestDeleteHostsExactRollsBackWholeIndexBatch(t *testing.T) {
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +275,7 @@ WHEN OLD.host='b.example.com' BEGIN SELECT RAISE(ABORT, 'forced delete failure')
 
 func TestStageDeleteHostsExactRollbackRestoresIndexAndTree(t *testing.T) {
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +320,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, 1, host, "GET", "/", "http://"+host+"/", 200
 
 func TestStageDeleteHostsExactRollbackReportsRestoreFailure(t *testing.T) {
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +353,7 @@ func TestStageDeleteHostsExactRollbackReportsRestoreFailure(t *testing.T) {
 // blobs still referenced (including shared ones) survive.
 func TestDeleteHostGCBlobs(t *testing.T) {
 	dir := t.TempDir()
-	tr, err := Open(dir, "127.0.0.1:0")
+	tr, err := OpenWithTransport(dir, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

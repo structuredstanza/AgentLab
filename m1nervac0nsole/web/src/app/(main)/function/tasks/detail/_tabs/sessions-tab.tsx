@@ -488,7 +488,17 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
   );
 }
 
-export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; taskPaused?: boolean }) {
+export function SessionsTab({
+  taskId,
+  taskPaused = false,
+  pendingIntercepts,
+}: {
+  taskId: string;
+  taskPaused?: boolean;
+  // Polled once by the task page and shared: the header's badge and this tab's
+  // per-session warning icons read the same pending rows.
+  pendingIntercepts: InterceptApprovalRow[];
+}) {
   const t = useTranslations("sessions");
   const approvalFocus = useApprovalFocus({ taskId });
   const [selectedSessionId, setActiveId] = React.useState(MAIN_ID);
@@ -651,8 +661,6 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
   const [taskTokens, setTaskTokens] = React.useState<TokenTotal | null>(null);
   const [sessionTokens, setSessionTokens] = React.useState<Record<string, SessionTokenUsage>>({});
   const [llmResolutions, setLLMResolutions] = React.useState<TaskLLMResolutions | null>(null);
-  // Pending intercept requests for this task — used to show warning icons on sessions.
-  const [pendingIntercepts, setPendingIntercepts] = React.useState<InterceptApprovalRow[]>([]);
 
   // Refs backing SSE/loading without re-render churn.
   const snapshotRef = React.useRef(0); // task-level snapshot cursor → SSE since=
@@ -856,25 +864,6 @@ export function SessionsTab({ taskId, taskPaused = false }: { taskId: string; ta
     return () => {
       alive = false;
       clearInterval(timer);
-    };
-  }, [taskId]);
-
-  React.useEffect(() => {
-    let alive = true;
-    const load = () =>
-      api
-        .interceptTask(taskId)
-        .then((rows) => {
-          if (alive) setPendingIntercepts(rows.filter((r) => r.status === "pending"));
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        });
-    void load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
     };
   }, [taskId]);
 

@@ -27,7 +27,7 @@ func trafficEvidenceServer(t *testing.T) (*Server, *db.RecordedFinding, func(str
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	t.Cleanup(func() { m.Close() })
-	m.traffic, err = traffic.Open(filepath.Join(m.dir, "traffic"), ":0")
+	m.traffic, err = traffic.OpenWithTransport(filepath.Join(m.dir, "traffic"), ":0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

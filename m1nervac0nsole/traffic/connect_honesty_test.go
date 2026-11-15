@@ -19,7 +19,7 @@ import (
 // recorder reports to agents, so that lie must not be reintroduced silently.
 func TestConnectToClosedPortIsRefused(t *testing.T) {
 	proxyAddr := freeLoopbackAddr(t)
-	tr, err := Open(t.TempDir(), proxyAddr)
+	tr, err := OpenWithTransport(t.TempDir(), proxyAddr, nil)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

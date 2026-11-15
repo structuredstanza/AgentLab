@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { sseUrl } from "@/lib/api";
+import { http, sseUrl } from "@/lib/api";
 import { MOCK } from "@/lib/mock/enabled";
 import type { LogLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -86,6 +86,7 @@ export default function LogsPage() {
   const [level, setLevel] = React.useState<"all" | LogLine["level"]>("all");
   const [paused, setPaused] = React.useState(false);
   const [loadingHistory, setLoadingHistory] = React.useState(false);
+  const [historyErr, setHistoryErr] = React.useState("");
   const [hasMore, setHasMore] = React.useState(false);
   const bottom = React.useRef<HTMLDivElement>(null);
   const stick = React.useRef(true);
@@ -129,11 +130,12 @@ export default function LogsPage() {
   async function loadOlderHistory() {
     if (loadingHistory) return;
     setLoadingHistory(true);
+    setHistoryErr("");
     try {
       const params = minDbId > 0 ? `?before=${minDbId}&limit=200` : `?limit=200`;
-      const res = await fetch(`/api/logs/history${params}`);
-      if (!res.ok) return;
-      const data = (await res.json()) as { items: LogLine[]; has_more: boolean };
+      // The history route is authenticated like every other API call; a bare
+      // fetch dropped the bearer and its 401 looked like "no older logs".
+      const data = await http<{ items: LogLine[]; has_more: boolean }>(`/logs/history${params}`);
       if (data.items?.length) {
         // Assign synthetic seq numbers below current minimum to keep dedup working.
         setLines((prev) => {
@@ -155,6 +157,8 @@ export default function LogsPage() {
         });
       }
       setHasMore(data.has_more ?? false);
+    } catch (e) {
+      setHistoryErr(e instanceof Error ? e.message : t("loadOlderFailed"));
     } finally {
       setLoadingHistory(false);
     }
@@ -240,7 +244,7 @@ export default function LogsPage() {
           className="h-[calc(100vh-14rem)] overflow-auto border border-border bg-card p-2 font-mono text-xs leading-relaxed"
         >
           {hasMore && (
-            <div className="flex justify-center py-2">
+            <div className="flex flex-wrap items-center justify-center gap-2 py-2">
               <Button
                 size="sm"
                 variant="outline"
@@ -250,6 +254,7 @@ export default function LogsPage() {
               >
                 {loadingHistory ? t("loading") : t("loadOlder")}
               </Button>
+              {historyErr && <span className="text-destructive text-xs">{historyErr}</span>}
             </div>
           )}
           {filtered.length === 0 ? (

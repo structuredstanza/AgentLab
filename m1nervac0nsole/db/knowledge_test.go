@@ -304,6 +304,35 @@ func TestKnowledgeDedupeIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestAddKnowledgeKeepsOperatorTitle: a machine write that reuses a title the
+// operator already owns must not overwrite the owner's body, and it must say so
+// rather than pretend the write landed.
+func TestAddKnowledgeKeepsOperatorTitle(t *testing.T) {
+	d := memoryTestDB(t)
+	tk := memoryTask(t, d)
+	ctx := context.Background()
+	owned := mustAddKnowledge(t, d, KnowledgeInput{
+		TaskID: tk.ID, Kind: "technique", Title: "proxy answers CONNECT", Body: "operator body", Source: "operator"})
+	_, _, err := d.AddKnowledge(ctx, KnowledgeInput{
+		TaskID: tk.ID, Kind: "technique", Title: "PROXY ANSWERS CONNECT", Body: "agent body", Source: "agent"})
+	if !errors.Is(err, ErrMemoryInvalid) {
+		t.Fatalf("agent overwrite of an operator title: err = %v, want ErrMemoryInvalid", err)
+	}
+	got, err := d.GetKnowledge(ctx, owned.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "operator body" {
+		t.Fatalf("agent write replaced the operator body with %q", got.Body)
+	}
+	// The owner still refreshes its own row through the same upsert.
+	again := mustAddKnowledge(t, d, KnowledgeInput{
+		TaskID: tk.ID, Kind: "technique", Title: "proxy answers CONNECT", Body: "operator refresh", Source: "operator"})
+	if again.ID != owned.ID || again.Body != "operator refresh" {
+		t.Fatalf("operator refresh: id=%d body=%q, want id=%d body=operator refresh", again.ID, again.Body, owned.ID)
+	}
+}
+
 // TestKnowledgeOriginIntentSurvivesOverwrite: knowledge_add stamps the writing
 // worker's intent, and a same-title refresh keeps the first origin: the entry
 // still points at the run that learned it, not at whoever repeated it.

@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
 # AgentLab guest image for microsandbox. Runtime only: nothing is compiled here.
-# Build context is /mnt/Research/AgentLab (see Dockerfile.dockerignore). Requires the upstream binary first:
+# Build context is /mnt/Research/AgentLab (see .dockerignore). Requires the upstream binary first:
 #   m1nervac0nsole/dist/<TARGETARCH>/m1nervac0nsole   (built with m1nervac0nsole/build.sh)
-#   docker build -f deployment/Dockerfile -t agentlab/m1nervac0nsole:local /mnt/Research/AgentLab
+# `./lab image-build` runs that build, then this Dockerfile, tagging <configured>-candidate.
 #
 # Tools mirror upstream m1nervac0nsole/Dockerfile (python/curl/git/jq/ripgrep/nmap/dns/netcat/whois, Node + Playwright + Chromium),
 # plus PostgreSQL server/client (Debian default, 15 on bookworm), tcpdump, strace and procps.
@@ -201,7 +201,7 @@ RUN set -eux; \
 # would fail even though the image is otherwise fine. Keep the browser when it is
 # already present and only fail when neither path yields one.
 RUN set -eux; \
-    npm install -g "playwright@${PLAYWRIGHT_VERSION}" @playwright/mcp@0.0.83 @playwright/cli@0.1.22; \
+    npm install -g "playwright@${PLAYWRIGHT_VERSION}"; \
     playwright install --with-deps chromium || echo "WARN: chromium download failed; relying on an existing browser"; \
     ls "$PLAYWRIGHT_BROWSERS_PATH"/*/chrome-linux*/chrome >/dev/null 2>&1 \
       || { echo "no Chromium present and the download failed"; exit 1; }; \
@@ -209,11 +209,11 @@ RUN set -eux; \
       "$PLAYWRIGHT_BROWSERS_PATH/current"; \
     rm -rf /var/lib/apt/lists/* /root/.npm
 
-# The browser MCP is spawned with --executable-path pointing at
-# $PLAYWRIGHT_BROWSERS_PATH/current/chrome: its own default is the branded
-# "chrome" channel, and its pinned Playwright expects a revision this image
-# does not carry, so both fail with "Chromium ... is not found". The link is
-# built above from whatever revision the install produced.
+# The native browser driver launches $PLAYWRIGHT_BROWSERS_PATH/current/chrome
+# (server/browser_registry.go): a stable link to whatever revision the install
+# produced, so a Playwright upgrade does not strand the driver on a path that
+# no longer exists. The Playwright MCP/CLI launchers are not installed; the
+# driver talks CDP to this Chromium directly.
 
 # REA reverse-engineering MCP (backs the `rea` skill). Pinned to the release
 # verified against this image; Node >=22.23.4 is required.
@@ -259,9 +259,15 @@ RUN set -eux; \
     binwalk --help >/dev/null
 
 # pwndbg gives gdb the heap/arena view the exploit-dev workflow depends on.
+# The declared pin is fetched by name (tag, branch or commit the server serves),
+# so the branch tip is never what gets installed.
 RUN set -eux; \
-    git clone --depth 1 https://github.com/pwndbg/pwndbg /opt/pwndbg; \
-    cd /opt/pwndbg && ./setup.sh >/dev/null; \
+    git init -q /opt/pwndbg; \
+    cd /opt/pwndbg; \
+    git remote add origin https://github.com/pwndbg/pwndbg; \
+    git fetch -q --depth 1 origin "$PWNDBG_COMMIT"; \
+    git checkout -q --detach FETCH_HEAD; \
+    ./setup.sh >/dev/null; \
     rm -rf /opt/pwndbg/.git; \
     TERM=xterm gdb -q -batch -ex 'python import pwndbg; print("pwndbg ok")' 2>&1 | grep -q "pwndbg ok"
 
@@ -310,7 +316,11 @@ RUN set -eux; \
 # against known exploits without a network round trip.
 ARG EXPLOITDB_COMMIT=main
 RUN set -eux; \
-    git clone --depth 1 https://gitlab.com/exploit-database/exploitdb /opt/exploitdb; \
+    git init -q /opt/exploitdb; \
+    cd /opt/exploitdb; \
+    git remote add origin https://gitlab.com/exploit-database/exploitdb; \
+    git fetch -q --depth 1 origin "$EXPLOITDB_COMMIT"; \
+    git checkout -q --detach FETCH_HEAD; \
     rm -rf /opt/exploitdb/.git; \
     ln -s /opt/exploitdb/searchsploit /usr/local/bin/searchsploit; \
     searchsploit --version >/dev/null 2>&1 || true

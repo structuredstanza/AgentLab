@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/browser"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/execbox"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
 
 // testBrowserServer is a Server with only the fields the registry touches: no
@@ -21,6 +23,63 @@ func addBrowserSession(s *Server, taskID string, lastUsed time.Time) *browser.Dr
 	drv := &browser.Driver{}
 	s.browsers.byID[taskID] = &browserSession{drv: drv, lastUsed: lastUsed}
 	return drv
+}
+
+func addBrowserSessionWithCred(s *Server, taskID, cred string, lastUsed time.Time) *browser.Driver {
+	drv := addBrowserSession(s, taskID, lastUsed)
+	s.browsers.byID[taskID].cred = cred
+	return drv
+}
+
+// The credential a launch ran under belongs to the browser alone, so closing
+// the browser revokes it instead of leaving it live until restart.
+func TestCloseBrowserRevokesLaunchCredential(t *testing.T) {
+	s := testBrowserServer()
+	s.m = &Manager{sessions: map[string]netpolicy.Session{"cred": {}}}
+	drv := addBrowserSessionWithCred(s, "7", "cred", time.Now())
+
+	s.closeBrowser("7")
+
+	if !drv.Closed() {
+		t.Fatal("closeBrowser did not close the driver")
+	}
+	if _, ok := s.m.sessions["cred"]; ok {
+		t.Fatal("the launch credential is still live after the browser closed")
+	}
+}
+
+// An evicted session's credential dies with it, like a closed one.
+func TestBrowserEvictRevokesLaunchCredential(t *testing.T) {
+	s := testBrowserServer()
+	s.m = &Manager{sessions: map[string]netpolicy.Session{"cred": {}}}
+	for i := 1; i <= browserMaxSessions; i++ {
+		addBrowserSession(s, strconv.Itoa(i), time.Now().Add(-time.Duration(i)*time.Minute))
+	}
+	s.browsers.byID["4"].cred = "cred"
+
+	if err := s.evictForCap(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.m.sessions["cred"]; ok {
+		t.Fatal("the evicted session's credential is still live")
+	}
+}
+
+// A launch in flight counts against the cap, so concurrent launches cannot
+// exceed it.
+func TestBrowserEvictForCapCountsLaunchesInFlight(t *testing.T) {
+	s := testBrowserServer()
+	for i := 1; i < browserMaxSessions; i++ {
+		addBrowserSession(s, strconv.Itoa(i), time.Now().Add(-time.Duration(i)*time.Hour))
+	}
+	s.browsers.launching = 1
+
+	if err := s.evictForCap(); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.browsers.byID) != browserMaxSessions-2 {
+		t.Fatalf("sessions = %d, want %d", len(s.browsers.byID), browserMaxSessions-2)
+	}
 }
 
 // A long scan between two browser steps must not lose the page: the reaper
@@ -127,9 +186,9 @@ func TestLaunchBrowserRefusesWhenAllBusy(t *testing.T) {
 		defer s.engine.decInflight(id)
 	}
 
-	_, err := s.launchBrowser(context.Background(), "5")
+	_, err := s.browserFor(context.Background(), "5")
 	if err == nil || !strings.Contains(err.Error(), "all 4 browser sessions are busy; close one or wait") {
-		t.Fatalf("launchBrowser error = %v", err)
+		t.Fatalf("browserFor error = %v", err)
 	}
 	if len(s.browsers.byID) != browserMaxSessions {
 		t.Fatalf("a refusal evicted a session: %d left", len(s.browsers.byID))
@@ -145,11 +204,11 @@ func TestBrowserExecutableEnvOverride(t *testing.T) {
 }
 
 // A launch carries the per-request boundary and a downloads folder under the
-// task directory.
+// task directory, and no proxy when none is configured.
 func TestBrowserLaunchOptions(t *testing.T) {
 	s := testBrowserServer()
 	s.m = &Manager{dir: t.TempDir()}
-	opts := browserLaunchOptions(s, "7")
+	opts := browserLaunchOptions(s, context.Background(), "7")
 	if opts.AllowRequest == nil {
 		t.Fatal("a launch with a task id must carry the request boundary")
 	}
@@ -158,5 +217,27 @@ func TestBrowserLaunchOptions(t *testing.T) {
 	}
 	if want := filepath.Join(s.m.dir, "tasks", "7", "browser-profile"); opts.UserDataDir != want {
 		t.Fatalf("UserDataDir = %q, want %q", opts.UserDataDir, want)
+	}
+	if opts.ProxyServer != "" {
+		t.Fatalf("ProxyServer = %q with no proxy configured", opts.ProxyServer)
+	}
+}
+
+// Chromium ignores credentials in --proxy-server, so the launch gets the bare
+// address and the credential separately, for the CDP challenge answer.
+func TestBrowserLaunchOptionsStripsProxyCredential(t *testing.T) {
+	s := testBrowserServer()
+	s.m = &Manager{dir: t.TempDir(), globalProxy: "127.0.0.1:8888"}
+	ctx := execbox.WithSession(context.Background(), netpolicy.Session{
+		ID: "sess", TaskID: 7, Purpose: netpolicy.PurposeTesting, Credential: "session-credential",
+	})
+
+	opts := browserLaunchOptions(s, ctx, "7")
+
+	if opts.ProxyServer != "http://127.0.0.1:8888" {
+		t.Fatalf("ProxyServer = %q, want the bare address", opts.ProxyServer)
+	}
+	if opts.ProxyUser != "session-credential" || opts.ProxyPass != "" {
+		t.Fatalf("proxy credential = %q/%q, want the session credential", opts.ProxyUser, opts.ProxyPass)
 	}
 }

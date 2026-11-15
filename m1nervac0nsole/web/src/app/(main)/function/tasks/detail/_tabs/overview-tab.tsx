@@ -117,6 +117,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [ruleBusy, setRuleBusy] = React.useState(false);
   const [ruleErr, setRuleErr] = React.useState("");
   const [editingRuleId, setEditingRuleId] = React.useState<number | null>(null);
+  // Rule id whose Approve / Revoke call is in flight.
+  const [authorizingRuleId, setAuthorizingRuleId] = React.useState<number | null>(null);
   // Per-model token usage (taken from the always-on llm_usage metering ledger, so it is accurate per call).
   const [modelTokens, setModelTokens] = React.useState<ModelTokenStat[]>([]);
   // Goal management: goal list + add form + inline edit state.
@@ -210,6 +212,21 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       await api.deleteTaskScopeRule(taskId, id);
     } catch {
       await loadScopeRules(); // Delete failed: re-fetch to restore.
+    }
+  };
+
+  // Approval is what turns a written include rule into a grant the gateway
+  // honours; a revoke takes it back without deleting the row.
+  const setRuleAuthorized = async (rule: TaskScopeRule, authorized: boolean) => {
+    setAuthorizingRuleId(rule.id);
+    setRuleErr("");
+    try {
+      await api.setTaskRuleAuthorized(taskId, rule.id, authorized);
+      await loadScopeRules();
+    } catch (e) {
+      setRuleErr(e instanceof Error ? e.message : t("scope.authorizeFailed"));
+    } finally {
+      setAuthorizingRuleId(null);
     }
   };
 
@@ -400,16 +417,16 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   React.useEffect(() => {
     let cancelled = false;
     let loading = false;
+    let first = true;
 
     const load = async () => {
       if (loading) return;
       loading = true;
       try {
-        const [taskResp, statsResp, intentsResp, findingsResp] = await Promise.all([
+        const [taskResp, statsResp, intentsResp] = await Promise.all([
           api.task(taskId),
           api.stats(taskId),
           api.intents(taskId),
-          api.findings(taskId),
         ]);
         if (cancelled) return;
         const activeTask = statsResp.active_task;
@@ -427,7 +444,14 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         );
         setStats(statsResp);
         setIntents(intentsResp);
-        setFindings(findingsResp);
+        // The findings list carries every evidence body, so it is refetched only
+        // while the task can still produce one, plus once when the tab opens.
+        if (first || taskResp.status === "running") {
+          const findingsResp = await api.findings(taskId);
+          if (cancelled) return;
+          setFindings(findingsResp);
+        }
+        first = false;
         // coverage is independent + may 503 when no asset store — fetch separately so
         // its failure never blocks the others.
         api
@@ -949,29 +973,55 @@ export function OverviewTab({ taskId }: { taskId: string }) {
               <span className="font-medium text-xs">{t("scope.rulesTitle")}</span>
               <span className="text-muted-foreground text-xs">{t("scope.rulesHint")}</span>
             </div>
-            {scopeRules.map((rule) => (
-              <div key={rule.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                <span
-                  className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
-                    rule.effect === "exclude" ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"
-                  }`}
-                >
-                  {t(`scope.effect.${rule.effect}`)}
-                </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-xs">{rule.pattern}</span>
-                {rule.note && (
-                  <span className="shrink-0 max-w-[30%] truncate text-muted-foreground text-xs">{rule.note}</span>
-                )}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-6 shrink-0 px-1.5"
-                  onClick={() => void removeScopeRule(rule.id)}
-                >
-                  <Trash2Icon className="size-3.5 text-destructive" />
-                </Button>
-              </div>
-            ))}
+            {scopeRules.map((rule) => {
+              // An exclude restricts without approval; an include grants only
+              // once approved, so its unapproved state says so plainly.
+              const state = rule.effect === "exclude" ? "restriction" : rule.authorized ? "authorized" : "pending";
+              return (
+                <div key={rule.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                  <span
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
+                      rule.effect === "exclude"
+                        ? "bg-destructive/10 text-destructive"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {t(`scope.effect.${rule.effect}`)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{rule.pattern}</span>
+                  <span
+                    title={t(`scope.stateHint.${state}`)}
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
+                      state === "authorized" ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {t(`scope.state.${state}`)}
+                  </span>
+                  {rule.effect === "include" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 shrink-0 px-1.5 text-xs"
+                      disabled={authorizingRuleId === rule.id}
+                      onClick={() => void setRuleAuthorized(rule, !rule.authorized)}
+                    >
+                      {rule.authorized ? t("scope.revoke") : t("scope.approve")}
+                    </Button>
+                  )}
+                  {rule.note && (
+                    <span className="shrink-0 max-w-[30%] truncate text-muted-foreground text-xs">{rule.note}</span>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-1.5"
+                    onClick={() => void removeScopeRule(rule.id)}
+                  >
+                    <Trash2Icon className="size-3.5 text-destructive" />
+                  </Button>
+                </div>
+              );
+            })}
             <div className="flex flex-wrap items-center gap-2">
               <select
                 aria-label={t("scope.effectLabel")}

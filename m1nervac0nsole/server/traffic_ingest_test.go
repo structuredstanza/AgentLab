@@ -25,7 +25,7 @@ func ingestServer(t *testing.T) (*Server, func(method, path, body string) *httpt
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Close() })
-	m.traffic, err = traffic.Open(filepath.Join(m.dir, "traffic"), ":0")
+	m.traffic, err = traffic.OpenWithTransport(filepath.Join(m.dir, "traffic"), ":0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

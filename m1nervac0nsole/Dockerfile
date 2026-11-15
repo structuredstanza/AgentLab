@@ -13,7 +13,8 @@
 FROM python:3.12-slim-bookworm
 ARG TARGETARCH
 # Commercial tools: a bundle of commonly used recon tools in addition to ripgrep / curl / vim (add or remove as needed).
-# Install Node 20.x from NodeSource: the default apt nodejs on bookworm is 18, and Playwright requires >=20.
+# Install Node 20.x from NodeSource: the default apt nodejs on bookworm is 18, and the
+# npm-installed tools below need a newer Node.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates ripgrep curl wget vim git jq unzip \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
@@ -73,19 +74,10 @@ RUN set -eux; \
     rm -rf /tmp/obscura /tmp/obscura.tgz; \
     obscura --version
 
-# Pre-install the Playwright MCP and CLI globally (so that npx does not download anything over the network at runtime).
-# @playwright/mcp: the browser MCP runs directly with `npx @playwright/mcp` (globally installed, -y/@latest not needed).
-# @playwright/cli: provides playwright-cli; after installation, check whether it can run via --help.
-# Next, install playwright (provides browser management), and use --with-deps to pre-install chromium and its system dependencies.
-# This way, the MCP/CLI inside the container can be used immediately on first startup, and the browser is not downloaded over the network.
 # REA (Reverse Engineer Anything) MCP server: `rea mcp` speaks stdio MCP and backs
 # the `rea` skill. Pinned; Node >=22.23.4 is required and provided by the base image.
 RUN npm install -g rea-agents@6.8.0 && rea --version
 
-RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@latest \
-    && playwright-cli --help \
-    && playwright install --with-deps chromium \
-    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # Pre-compiled binary for the matching architecture (dist/amd64/m1nervac0nsole or dist/arm64/m1nervac0nsole)
 COPY dist/${TARGETARCH}/m1nervac0nsole /app/m1nervac0nsole

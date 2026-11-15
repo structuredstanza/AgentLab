@@ -200,12 +200,19 @@ func TestManagerDeleteTaskRestoresFilesAndTrafficWhenPostgresDeleteFails(t *test
 	transcriptPath := filepath.Join(dataDir, "transcripts", fmt.Sprintf("exp%d-main.jsonl", task.ExpID))
 	createDeleteFixture(t, dataDir, filepath.Join("transcripts", filepath.Base(transcriptPath)), false)
 
-	tr, err := traffic.Open(filepath.Join(dataDir, "traffic"), "127.0.0.1:0")
+	tr, err := traffic.OpenWithTransport(filepath.Join(dataDir, "traffic"), "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.traffic = tr
-	trafficTree := filepath.Join(dataDir, "traffic", host, "GET", "1-0001")
+	// A task-owned, index-resident exchange: this is what the task delete stages.
+	if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,task_id,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,'')`, "1-0001", 1, taskID, host, "GET", "/", "https://"+host+"/", 200, "text/plain", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Unattributed history at the same host, whose body lives in the legacy tree:
+	// a task delete must leave both the row and the tree alone.
+	trafficTree := filepath.Join(dataDir, "traffic", host, "GET", "1-0002")
 	if err := os.MkdirAll(trafficTree, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +221,7 @@ func TestManagerDeleteTaskRestoresFilesAndTrafficWhenPostgresDeleteFails(t *test
 		t.Fatal(err)
 	}
 	if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
-VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "1-0001", 1, host, "GET", "/", "https://"+host+"/", 200, "text/plain", 0, 0, host+"/GET/1-0001"); err != nil {
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "1-0002", 1, host, "GET", "/", "https://"+host+"/", 200, "text/plain", 0, 0, host+"/GET/1-0002"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,11 +244,74 @@ FOR EACH ROW WHEN (OLD.id = %d) EXECUTE FUNCTION %s()`, triggerName, taskID, fun
 	assertPathExists(t, filepath.Join(dataDir, "tasks", task.ID))
 	assertPathExists(t, transcriptPath)
 	if got, err := os.ReadFile(trafficMarker); err != nil || string(got) != "original traffic" {
-		t.Fatalf("traffic tree was not restored: content=%q err=%v", got, err)
+		t.Fatalf("legacy traffic tree changed: content=%q err=%v", got, err)
 	}
 	var trafficRows int
-	if err := tr.DB().QueryRow(`SELECT COUNT(*) FROM exchanges WHERE host=?`, host).Scan(&trafficRows); err != nil || trafficRows != 1 {
-		t.Fatalf("traffic index was not restored: rows=%d err=%v", trafficRows, err)
+	if err := tr.DB().QueryRow(`SELECT COUNT(*) FROM exchanges WHERE task_id=?`, taskID).Scan(&trafficRows); err != nil || trafficRows != 1 {
+		t.Fatalf("task traffic index was not restored: rows=%d err=%v", trafficRows, err)
+	}
+	if err := tr.DB().QueryRow(`SELECT COUNT(*) FROM exchanges WHERE task_id IS NULL AND host=?`, host).Scan(&trafficRows); err != nil || trafficRows != 1 {
+		t.Fatalf("unattributed traffic was touched: rows=%d err=%v", trafficRows, err)
+	}
+}
+
+// A task delete selects by ownership, so it removes the run's exchanges even
+// when no asset row ever registered their host, and leaves another run's
+// exchanges and unattributed history at that host in place.
+func TestManagerDeleteTaskRemovesOnlyItsTraffic(t *testing.T) {
+	dataDir := t.TempDir()
+	m, err := NewManager(dataDir, "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	task, err := m.CreateTask("delete traffic", "delete traffic", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := mustTaskID(t, task.ID)
+	t.Cleanup(func() {
+		_, _ = m.DeleteTask(task.ID, DeleteTaskOptions{DeleteAssets: true, DeleteTraffic: true, DeleteFiles: true})
+	})
+	tr, err := traffic.OpenWithTransport(filepath.Join(dataDir, "traffic"), "127.0.0.1:0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.traffic = tr
+	// Deliberately no asset row for the host: ownership, not the asset graph,
+	// decides what a task delete removes.
+	host := fmt.Sprintf("delete-owned-%d.example.test", taskID)
+	seed := func(id string, owner int64) {
+		t.Helper()
+		var ownerArg any
+		if owner > 0 {
+			ownerArg = owner
+		}
+		if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,task_id,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,'')`, id, 1, ownerArg, host, "GET", "/"+id, "https://"+host+"/"+id, 200, "text/plain", 0, 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("1-0001", taskID)
+	seed("1-0002", 0)
+	seed("1-0003", taskID+1)
+
+	result, err := m.DeleteTask(task.ID, DeleteTaskOptions{DeleteTraffic: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TrafficDeleted != 1 {
+		t.Fatalf("TrafficDeleted=%d, want the one exchange the run owned", result.TrafficDeleted)
+	}
+	var rows int
+	if err := tr.DB().QueryRow(`SELECT COUNT(*) FROM exchanges WHERE id='1-0001'`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("the run's exchange survived: rows=%d err=%v", rows, err)
+	}
+	for _, id := range []string{"1-0002", "1-0003"} {
+		if err := tr.DB().QueryRow(`SELECT COUNT(*) FROM exchanges WHERE id=?`, id).Scan(&rows); err != nil || rows != 1 {
+			t.Fatalf("%s was deleted although the run did not own it: rows=%d err=%v", id, rows, err)
+		}
 	}
 }
 

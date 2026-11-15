@@ -15,6 +15,7 @@ package manifest
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -131,6 +132,9 @@ type Manifest struct {
 	// engagement policy can cap it. A tool that declares nothing is treated as
 	// an unbounded requester and is refused under a closed-world policy.
 	Limits Limits `toml:"limits"`
+	// Install is an optional bash recipe that puts the tool's binary on the
+	// box, so an operator can add a tool from the Toolbox without a rebuild.
+	Install Install `toml:"install"`
 }
 
 // RateUnit is what a tool's throughput parameter counts.
@@ -153,6 +157,17 @@ type Limits struct {
 	// the tool has a rate but no flag to set it, which the policy refuses.
 	Param string   `toml:"param"`
 	Unit  RateUnit `toml:"unit"`
+}
+
+// defaultInstallTimeoutSeconds bounds an install script that names no timeout:
+// package and git installs routinely outlast a scan's default.
+const defaultInstallTimeoutSeconds = 600
+
+// Install is how to obtain the tool on this machine.
+type Install struct {
+	// Script runs under `bash -c`. Empty means the manifest is not installable.
+	Script         string `toml:"script"`
+	TimeoutSeconds int    `toml:"timeout_seconds"`
 }
 
 // Set is a loaded collection of manifests, indexed by id.
@@ -179,6 +194,24 @@ func (s *Set) All() []*Manifest {
 	return out
 }
 
+// Overlay returns a new set holding this set plus extra, where an extra
+// manifest replaces the member with the same id. The receiver is not modified,
+// so a live set can be swapped atomically while readers still hold the old one.
+func (s *Set) Overlay(extra []*Manifest) *Set {
+	out := &Set{byID: make(map[string]*Manifest, len(s.byID)+len(extra))}
+	for id, m := range s.byID {
+		out.byID[id] = m
+	}
+	for _, m := range extra {
+		out.byID[m.ID] = m
+	}
+	for id := range out.byID {
+		out.ids = append(out.ids, id)
+	}
+	sort.Strings(out.ids)
+	return out
+}
+
 // Parse decodes and validates one manifest.
 func Parse(text string) (*Manifest, error) {
 	var m Manifest
@@ -197,6 +230,12 @@ func Parse(text string) (*Manifest, error) {
 	}
 	if err := m.validate(); err != nil {
 		return nil, err
+	}
+	if m.Install.TimeoutSeconds < 0 {
+		return nil, fmt.Errorf("%s: install.timeout_seconds must not be negative", m.ID)
+	}
+	if m.Install.Script != "" && m.Install.TimeoutSeconds == 0 {
+		m.Install.TimeoutSeconds = defaultInstallTimeoutSeconds
 	}
 	return &m, nil
 }

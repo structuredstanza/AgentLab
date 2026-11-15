@@ -149,3 +149,58 @@ func TestArchiveReferenceValidationAndCurrentWins(t *testing.T) {
 		})
 	}
 }
+
+// TestArchiveAcceptsLabelledPartialBodies: a partial capture keeps the declared
+// full length in resp_len and stores only the prefix it captured, labelled in
+// the head. Those exports must re-import; the same short body with no label is
+// corruption and must still be refused.
+func TestArchiveAcceptsLabelledPartialBodies(t *testing.T) {
+	const full = 4096
+	for _, tc := range []struct {
+		name string
+		mark string
+		ok   bool
+	}{
+		{"partial marker", partialMarker + "\n", true},
+		{"streamed marker", streamedMarker + "\n", true},
+		{"no marker", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, _ := openTraffic(t)
+			item := ArchiveExchange{
+				ID:       "partial-1",
+				Host:     "partial.example",
+				ReqHead:  "GET / HTTP/1.1\nHost: partial.example\n",
+				RespHead: "HTTP 200\nContent-Type: text/plain\n" + tc.mark,
+				RespBody: []byte("prefix only"),
+				RespLen:  full,
+			}
+			archive := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(archive, "blobs"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := json.Marshal(ArchiveSnapshot{Version: 1, Exchanges: []ArchiveExchange{item}})
+			if err := os.WriteFile(filepath.Join(archive, "traffic.json"), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			count, err := tr.ImportArchive(archive)
+			if !tc.ok {
+				if err == nil || count != 0 {
+					t.Fatalf("a short body with no partial label was imported: %d %v", count, err)
+				}
+				return
+			}
+			if err != nil || count != 1 {
+				t.Fatalf("a labelled partial capture failed to import: %d %v", count, err)
+			}
+			var head, body string
+			var respLen int
+			if err := tr.DB().QueryRow(`SELECT b.resp_head, b.resp_body, e.resp_len FROM exchanges e JOIN exchange_bodies b ON b.id=e.id WHERE e.id='partial-1'`).Scan(&head, &body, &respLen); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(head, strings.TrimSpace(tc.mark)) || respLen != full || body != "prefix only" {
+				t.Fatalf("imported row head=%q body=%q resp_len=%d, want the partial capture preserved", head, body, respLen)
+			}
+		})
+	}
+}

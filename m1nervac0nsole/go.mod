@@ -64,3 +64,8 @@ require (
 )
 
 replace github.com/structuredstanza/norma => ./third_party/norma
+
+// Pinned copy of go-mitmproxy v1.9.2 with the OriginTransport hook. See
+// third_party/go-mitmproxy/PATCH for the hunks; the module cache stays
+// untouched.
+replace github.com/lqqyt2423/go-mitmproxy => ./third_party/go-mitmproxy

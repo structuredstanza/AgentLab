@@ -393,3 +393,63 @@ func TestPrepareConfigUpdateRejectsMaskedInContainer(t *testing.T) {
 		t.Fatalf("a normal submission of new headers must not be blocked: %v", err)
 	}
 }
+
+// TestPrepareConfigUpdateReplacesEditedWebhookURL covers the edit the UI could not
+// make: the webhook URL is both the destination and a credential, so it is masked in
+// the API echo and the headers are masked too. Changing the URL therefore submitted a
+// real new URL next to a masked header, which the guard rejected, leaving the address
+// permanently uneditable. The new address must win, and the header that belonged to
+// the old address must be dropped rather than carried over.
+func TestPrepareConfigUpdateReplacesEditedWebhookURL(t *testing.T) {
+	stored := map[string]any{
+		"url":     "https://old.example.com/hook?token=OLD",
+		"headers": map[string]any{"Authorization": "Bearer REAL"},
+		"method":  "POST",
+	}
+	// Exactly what the form submits: the edited URL, the untouched header as the mask
+	// it was shown as, and the other fields echoed back.
+	incoming := map[string]any{
+		"url":           "https://new.example.com/hook?token=NEW",
+		"headers":       MaskedValue(`{"Authorization":"Bearer REAL"}`),
+		"method":        "POST",
+		"body_template": "",
+	}
+	merged, err := PrepareConfigUpdate(KindWebhook, stored, incoming)
+	if err != nil {
+		t.Fatalf("an edited webhook URL must be accepted, got %v", err)
+	}
+	if got := merged["url"]; got != "https://new.example.com/hook?token=NEW" {
+		t.Fatalf("the edited URL must replace the stored one, got %v", got)
+	}
+	if _, ok := merged["headers"]; ok {
+		t.Fatalf("the header belonged to the old address and must not travel to the new one, got %v", merged["headers"])
+	}
+}
+
+// TestPrepareConfigUpdateKeepsUntouchedMaskedWebhookURL is the other half: a save that
+// does not touch the URL keeps the stored address and the stored header.
+func TestPrepareConfigUpdateKeepsUntouchedMaskedWebhookURL(t *testing.T) {
+	stored := map[string]any{
+		"url":     "https://old.example.com/hook?token=OLD",
+		"headers": map[string]any{"Authorization": "Bearer REAL"},
+		"method":  "POST",
+	}
+	incoming := map[string]any{
+		"url":     MaskedValue("https://old.example.com/hook?token=OLD"),
+		"headers": MaskedValue(`{"Authorization":"Bearer REAL"}`),
+		"method":  "PUT",
+	}
+	merged, err := PrepareConfigUpdate(KindWebhook, stored, incoming)
+	if err != nil {
+		t.Fatalf("an untouched masked URL must keep the stored one, got %v", err)
+	}
+	if got := merged["url"]; got != "https://old.example.com/hook?token=OLD" {
+		t.Fatalf("the masked URL must keep the stored address, got %v", got)
+	}
+	if _, ok := merged["headers"]; !ok {
+		t.Fatal("an untouched masked header must keep the stored value")
+	}
+	if got := merged["method"]; got != "PUT" {
+		t.Fatalf("the edited method must be applied, got %v", got)
+	}
+}

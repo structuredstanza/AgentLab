@@ -34,67 +34,87 @@ type ArchiveExchange struct {
 	ContentType string `json:"content_type"`
 	ReqLen      int    `json:"req_len"`
 	RespLen     int    `json:"resp_len"`
-	ReqHead     string `json:"req_head"`
-	ReqBody     []byte `json:"req_body,omitempty"`
-	ReqBlob     string `json:"req_blob,omitempty"`
-	RespHead    string `json:"resp_head"`
-	RespBody    []byte `json:"resp_body,omitempty"`
-	RespBlob    string `json:"resp_blob,omitempty"`
+	// TaskID is the run the exchange belonged to. Omitted when no run owned it,
+	// and an archive written before it existed imports as 0.
+	TaskID   int64  `json:"task_id,omitempty"`
+	ReqHead  string `json:"req_head"`
+	ReqBody  []byte `json:"req_body,omitempty"`
+	ReqBlob  string `json:"req_blob,omitempty"`
+	RespHead string `json:"resp_head"`
+	RespBody []byte `json:"resp_body,omitempty"`
+	RespBlob string `json:"resp_blob,omitempty"`
 }
+
+// archiveRowQuery is the shared row selection for every export: the columns the
+// manifest needs, plus the legacy path, which decides where the bodies come from.
+const archiveRowQuery = `SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path,COALESCE(task_id,0)
+FROM exchanges WHERE `
 
 // ExportHosts writes an exact-host snapshot to dir. It holds the traffic writer
 // lock while reading SQLite and blobs, so each body and its index row come from
 // one consistent point in time.
 func (t *Traffic) ExportHosts(hosts []string, dir string) (int64, error) {
-	n, _, err := t.ExportHostsCounted(hosts, dir)
-	return n, err
+	if t == nil {
+		return 0, nil
+	}
+	unique := uniqueArchiveHosts(hosts)
+	if len(unique) == 0 {
+		return 0, nil
+	}
+	placeholders, args := inClause(unique)
+	ids, err := t.exportSnapshot(dir, archiveRowQuery+`host IN (`+placeholders+`) ORDER BY ts,id`, args...)
+	return int64(len(ids)), err
 }
 
-// ExportHostsCounted is ExportHosts plus the per-host row counts actually written
-// to the package. StageDeleteHostsExactForArchive compares against them so rows
-// captured after the snapshot are never deleted.
-func (t *Traffic) ExportHostsCounted(hosts []string, dir string) (int64, map[string]int64, error) {
-	if t == nil || len(hosts) == 0 {
+// ExportTask writes the version-1 manifest for the exchanges with task_id =
+// taskID and returns the exported IDs. Ownership is the only selection: hosts are
+// not consulted, so a capture at a host with no registered asset is still
+// archived, and another run's exchanges at the same host are never included.
+func (t *Traffic) ExportTask(taskID int64, dir string) (n int64, ids []string, err error) {
+	if t == nil {
 		return 0, nil, nil
 	}
+	if taskID <= 0 {
+		return 0, nil, errors.New("task id must be positive")
+	}
+	ids, err = t.exportSnapshot(dir, archiveRowQuery+`task_id=? ORDER BY ts,id`, taskID)
+	return int64(len(ids)), ids, err
+}
+
+// exportSnapshot streams every row matched by query into dir/traffic.json plus
+// the blobs those rows reference, and returns the exported IDs in order. The
+// version-1 manifest format lives here alone, so every export entry point writes
+// the same bytes.
+func (t *Traffic) exportSnapshot(dir, query string, args ...any) ([]string, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o700); err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
-	unique := uniqueArchiveHosts(hosts)
-	placeholders := make([]string, len(unique))
-	args := make([]any, len(unique))
-	for i, host := range unique {
-		placeholders[i] = "?"
-		args[i] = host
-	}
-	rows, err := t.db.Query(`SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path
-FROM exchanges WHERE host IN (`+strings.Join(placeholders, ",")+`) ORDER BY ts,id`, args...)
+	rows, err := t.db.Query(query, args...)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	defer rows.Close()
 	out, err := os.Create(filepath.Join(dir, "traffic.json"))
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	defer func() { _ = out.Close() }() // idempotent; the success path closes explicitly
 	// Field order is not significant to the reader, so older archives stay
 	// readable and this one is byte-compatible in meaning.
 	if _, err := out.Write([]byte(`{"version":1,"exchanges":[`)); err != nil {
-		return 0, nil, err
+		return nil, err
 	}
-	var written int
-	var writtenHosts []string
+	var ids []string
 	blobs := map[string]int64{}
 	var blobList []string
 	for rows.Next() {
 		var item ArchiveExchange
 		var legacyPath string
 		if err := rows.Scan(&item.ID, &item.TS, &item.Host, &item.Method, &item.URLTemplate,
-			&item.URL, &item.Status, &item.ContentType, &item.ReqLen, &item.RespLen, &legacyPath); err != nil {
-			return 0, nil, err
+			&item.URL, &item.Status, &item.ContentType, &item.ReqLen, &item.RespLen, &legacyPath, &item.TaskID); err != nil {
+			return nil, err
 		}
 		var reqBlob, respBlob sql.NullString
 		err := t.db.QueryRow(`SELECT req_head,req_body,req_blob,resp_head,resp_body,resp_blob
@@ -120,79 +140,74 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 				item.RespBody, err = io.ReadAll(response.preview)
 				return err
 			}(); err != nil {
-				return 0, nil, err
+				return nil, err
 			}
 		} else if err != nil {
-			return 0, nil, err
+			return nil, err
 		} else {
 			item.ReqBlob, item.RespBlob = reqBlob.String, respBlob.String
 		}
 		if err := normalizeArchiveExchange(&item); err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		if err := collectArchiveBlobs(blobs, item); err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		// Stream each exchange straight to the file so only one is ever in
 		// memory. Buffering them and calling json.Marshal afterwards held a
 		// second, base64-inflated copy of every body at the same time.
-		if written > 0 {
+		if len(ids) > 0 {
 			if _, err := out.Write([]byte(",")); err != nil {
-				return 0, nil, err
+				return nil, err
 			}
 		}
 		line, err := json.Marshal(item)
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		if _, err := out.Write(line); err != nil {
-			return 0, nil, err
+			return nil, err
 		}
-		written++
-		writtenHosts = append(writtenHosts, item.Host)
+		ids = append(ids, item.ID)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	for hash, expected := range blobs {
 		source, err := t.blobPath(hash)
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		data, err := os.ReadFile(source)
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		sum := sha256.Sum256(data)
 		if int64(len(data)) != expected || hex.EncodeToString(sum[:]) != hash {
-			return 0, nil, fmt.Errorf("traffic blob length or checksum mismatch: %s", hash)
+			return nil, fmt.Errorf("traffic blob length or checksum mismatch: %s", hash)
 		}
 		if err := os.WriteFile(filepath.Join(dir, "blobs", hash+".bin"), data, 0o600); err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		blobList = append(blobList, hash)
 	}
 	sort.Strings(blobList)
 	tail, err := json.Marshal(blobList)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	for _, chunk := range [][]byte{[]byte(`],"blobs":`), tail, []byte("}")} {
 		if _, err := out.Write(chunk); err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 	}
 	if err := out.Sync(); err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	if err := out.Close(); err != nil {
-		return 0, nil, err
+		return nil, err
 	}
-	counts := make(map[string]int64, len(writtenHosts))
-	for _, host := range writtenHosts {
-		counts[host]++
-	}
-	return int64(written), counts, nil
+	return ids, nil
 }
 
 // ImportArchive imports only missing exchange IDs. Current hot rows always win,
@@ -278,8 +293,8 @@ func (t *Traffic) ImportArchive(dir string) (int64, error) {
 	defer tx.Rollback() //nolint:errcheck
 	var imported int64
 	for _, item := range pending {
-		res, err := tx.Exec(`INSERT OR IGNORE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
-VALUES(?,?,?,?,?,?,?,?,?,?,'')`, item.ID, item.TS, item.Host, item.Method, item.URLTemplate,
+		res, err := tx.Exec(`INSERT OR IGNORE INTO exchanges(id,ts,task_id,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,'')`, item.ID, item.TS, nullIfZero(item.TaskID), item.Host, item.Method, item.URLTemplate,
 			item.URL, item.Status, item.ContentType, item.ReqLen, item.RespLen)
 		if err != nil {
 			return imported, err

@@ -3295,7 +3295,7 @@ export function agentDetail(key: string): AgentDetail {
     prompt: `You are m1nervac0nsole's "${a.name}".\nGoal: {{.Goal}}\nAsset overview: {{.AssetSummary}}\nRoute hint: {{.RouteHint}}\nAdvance exploration based on the information above, and write results back to the graph through tools.`,
     variables: promptVars,
     versions: promptVersions,
-    visibility: { mcp: [1, 2], skill: ["api-recon", "playwright-cli"] },
+    visibility: { mcp: [1, 2], skill: ["api-recon", "obscura"] },
     wrapup_prompt: "",
     wrapup_default:
       "The time/step budget will be exhausted soon. Summarize the confirmed findings and mark the intent as finished.",
@@ -3321,13 +3321,13 @@ export const mcpServers: MCPServer[] = [
   },
   {
     id: 2,
-    name: "playwright",
+    name: "obscura",
     transport: "stdio",
-    command: "npx",
-    args: ["-y", "@playwright/mcp"],
+    command: "obscura",
+    args: ["mcp", "--stealth"],
     env: {},
     enabled: true,
-    tools: ["browser_navigate", "browser_click", "browser_snapshot"],
+    tools: ["browser_navigate", "browser_markdown", "browser_links", "browser_extract", "browser_snapshot"],
   },
 ];
 
@@ -3338,9 +3338,11 @@ export const mcpToolsById: Record<number, MCPTool[]> = {
     { name: "dns_resolve", description: "DNS resolution" },
   ],
   2: [
-    { name: "browser_navigate", description: "Open a URL in the browser" },
-    { name: "browser_click", description: "Click an element" },
-    { name: "browser_snapshot", description: "Capture an accessibility snapshot" },
+    { name: "browser_navigate", description: "Load a public page in the research browser" },
+    { name: "browser_markdown", description: "Return the loaded page as markdown" },
+    { name: "browser_links", description: "List the links on the loaded page" },
+    { name: "browser_extract", description: "Extract structured content from the loaded page" },
+    { name: "browser_snapshot", description: "URL, title, controls and visible text of the loaded page" },
   ],
 };
 
@@ -3357,6 +3359,18 @@ export const skills: SkillItem[] = [
     tasks: 6,
     usage_agents: ["worker", "planner"],
     last_used: "2026-08-20T09:12:00Z",
+  },
+  {
+    name: "obscura",
+    description:
+      "Research browser. Read public documentation, repositories, advisories, CVE writeups and vendor pages that need a real JavaScript engine, without touching an engagement target and without a task. Use it for any lookup outside the engagement; a page on the target is the native browser's job.",
+    license: "Apache-2.0",
+    mcps: [],
+    files: ["SKILL.md"],
+    calls: 41,
+    tasks: 0,
+    usage_agents: ["auto", "pentest", "worker", "planner", "mainagent"],
+    last_used: "2026-08-20T09:40:00Z",
   },
 ];
 
