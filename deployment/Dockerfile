@@ -6,7 +6,8 @@
 # `./lab image-build` runs that build, then this Dockerfile, tagging <configured>-candidate.
 #
 # Tools mirror upstream m1nervac0nsole/Dockerfile (python/curl/git/jq/ripgrep/nmap/dns/netcat/whois, Node + Playwright + Chromium),
-# plus PostgreSQL server/client (Debian default, 15 on bookworm), tcpdump, strace and procps.
+# plus PostgreSQL server/client (Debian default, 15 on bookworm), tcpdump, strace, procps,
+# the ssh client, bc, and a certipy CLI shim for NetExec's console-script-less fork.
 FROM node:22-bookworm-slim
 ARG TARGETARCH
 ARG PLAYWRIGHT_VERSION=1.64.1
@@ -325,6 +326,22 @@ RUN set -eux; \
     ln -s /opt/exploitdb/searchsploit /usr/local/bin/searchsploit; \
     searchsploit --version >/dev/null 2>&1 || true
 
+# Gaps observed in real engagements (RedEye/TakeOff): the ssh client and bc
+# were absent mid-run (exit 127), and NetExec's pinned certipy fork installs
+# as a library with no console script, so `certipy` did not resolve. Kept in
+# its own final layer so the heavy layers above stay cacheable.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends openssh-client bc; \
+    rm -rf /var/lib/apt/lists/*; \
+    printf '#!/bin/sh\nexec python3 -c "from certipy.entry import main; main()" "$@"\n' > /usr/local/bin/certipy; \
+    chmod 0755 /usr/local/bin/certipy; \
+    for t in ssh ssh-keygen bc certipy; do \
+      command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; \
+    done; \
+    ssh -V 2>&1 | grep -qi openssh; \
+    echo '2+3' | bc | grep -q 5; \
+    certipy --help 2>&1 | grep -qi certipy
 COPY m1nervac0nsole/dist/${TARGETARCH}/m1nervac0nsole /opt/m1nervac0nsole/m1nervac0nsole
 COPY m1nervac0nsole/skills/ /opt/m1nervac0nsole/skills/
 COPY deployment/guest-start.py deployment/guest-export.py /opt/agentlab/
