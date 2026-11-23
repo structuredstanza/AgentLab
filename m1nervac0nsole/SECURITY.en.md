@@ -32,7 +32,7 @@ Including the following in your report speeds up triage:
 
 ## Supported scope
 
-This repository is a **self-hosted console for authorized security testing**, maintained by volunteers. Security fixes are provided against the **latest default branch**. We do not guarantee backports to earlier releases. If a vulnerability belongs to the upstream code regardless of localization, we recommend also reporting it to [BaaRai/m1nervac0nsole](https://github.com/BaaRai/m1nervac0nsole), the published upstream this fork tracks.
+This repository is a **self-hosted console for authorized security testing**, maintained by volunteers. Security fixes are provided against the **latest default branch**. We do not guarantee backports to earlier releases. If a vulnerability belongs to the upstream code regardless of localization, we recommend also reporting it to [structuredstanza/ARTEX](https://github.com/structuredstanza/ARTEX), the published upstream this fork tracks.
 
 ## Out of scope
 

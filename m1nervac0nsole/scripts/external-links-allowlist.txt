@@ -7,3 +7,9 @@
 # When adding a new entry, always leave a comment explaining why it cannot be fixed.
 #
 # Format: one URL per line. Text after `#` is a comment; blank and comment-only lines are ignored.
+https://facebook.github.io/create-react-app/docs/deployment
+https://facebook.github.io/create-react-app/docs/getting-started
+https://facebook.github.io/create-react-app/docs/running-tests
+# Upstream go-mitmproxy v1.9.2 web/client/README.md: Create React App is archived
+# and its facebook.github.io docs site is gone. Vendored text is preserved
+# verbatim; the repo link on the README's first line stays live.
