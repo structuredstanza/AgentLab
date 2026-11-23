@@ -177,7 +177,7 @@ Root-namespace FORWARD rules enforce direct-lane authorized scope, exclusions an
 - The browser-capture extension is unpacked and manual: it needs the `debugger` permission and a separate controlled browser profile, and is not installed by the deployment.
 - Memory retrieval is PostgreSQL full-text search, not embeddings; semantic recall is not implemented.
 - Updates are local rebuilds of this tree: no self-update client or automatic upstream merge.
-- Staged toolbox installs fail closed: the wrapped execution client cannot publish an installed artifact, so an install reports an error instead of staging a binary.
+- Toolbox installs publish through the wrapped execution client; a genuinely refused publish is a failed install by design.
 
 ## Development
 

@@ -17,6 +17,8 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - Evidence fidelity: the recorder stores the headers the gateway actually forwarded, and a refused CONNECT carries the gateway's reason body, so the model can tell a scope block from a credential fault.
 - Session INPUT chains drop any packet whose source is not the session's own address, so a raw-socket session cannot forge resolver or gateway traffic; unchanged lane rulesets skip `iptables-restore`.
 - Custom HTTP tool calls disable keep-alives per call, the gateway's speed-profile read leaves the cache lock with a deadline, and conversation sessions register revocation once.
+- Toolbox installs publish again: the direct-lane client wrapper delegates `Publish` and asserts `execbox.Publisher`, so a wrapped client no longer reports the boundary as unable to publish.
+- `tcp_probe` tries every authorized address before calling a host dark and reports the address that produced the outcome; `port_scan` writes the hostname's liveness once, after every address was judged (live if any replied, dark only if all were silent), and stores a dense host's open ports in one bulk UPDATE instead of one per port.
 - Guest supervision: the recorder-CA wait yields to SIGTERM and watched-process exits so the kill switches stay armed, and the supervisor tests no longer depend on the host's state directory.
 
 ### Local model removal and documentation

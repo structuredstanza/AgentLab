@@ -30,6 +30,15 @@ type directLaneClient struct {
 	snapshot func(context.Context, netpolicy.Session) (*execbox.DirectLane, error)
 }
 
+// The wrapper must keep every capability of the client it wraps, or a feature
+// that asserts for one (install publishing) treats isolation as unavailable.
+var _ execbox.Publisher = (*directLaneClient)(nil)
+
+// Publish delegates the staged-install publish; it needs no lane of its own.
+func (c *directLaneClient) Publish(ctx context.Context, s netpolicy.Session, name string) (execbox.Published, error) {
+	return execbox.PublishArtifact(c.Client, ctx, s, name)
+}
+
 type requireLaneKey struct{}
 
 func executionSessionContext(ctx context.Context, m *Manager, sess netpolicy.Session) context.Context {

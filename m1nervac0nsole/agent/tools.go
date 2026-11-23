@@ -2607,11 +2607,22 @@ func (t *ToolSet) tcpProbe() actool.CoreTool {
 				return actool.Errorf("tcp_probe refused: " + dec.Reason), nil
 			}
 			started := time.Now()
+			// Try every authorized address before calling the host dark: one
+			// dead A record among live ones is common, and the gateway's own dial
+			// already tries them in order.
+			used := net.IP(nil)
 			if err == nil {
 				var conn net.Conn
-				conn, err = (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", net.JoinHostPort(addrs[0].String(), strconv.Itoa(a.Port)))
-				if err == nil {
-					conn.Close()
+				for _, ip := range addrs {
+					conn, err = (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), strconv.Itoa(a.Port)))
+					used = ip
+					if err == nil {
+						conn.Close()
+						break
+					}
+					if ctx.Err() != nil {
+						break
+					}
 				}
 			}
 			result := classifyDial(err)
@@ -2626,16 +2637,18 @@ func (t *ToolSet) tcpProbe() actool.CoreTool {
 				default:
 					_ = t.as.MarkUnreachable(host)
 				}
-				if result == "connected" {
-					_ = t.as.AppendIPPort(addrs[0].String(), a.Port, "", db.PortProvenanceProbe)
+				if result == "connected" && used != nil {
+					_ = t.as.AppendIPPort(used.String(), a.Port, "", db.PortProvenanceProbe)
 				}
 			}
 			out := map[string]any{
 				"host": host, "port": a.Port, "result": result,
 				"duration_ms": time.Since(started).Milliseconds(),
 			}
-			if len(addrs) > 0 && addrs[0].String() != host {
-				out["address"] = addrs[0].String()
+			// Report the address that actually produced the outcome, not the
+			// first of the set.
+			if used != nil && used.String() != host {
+				out["address"] = used.String()
 			}
 			if err != nil && result == "error" {
 				out["detail"] = err.Error()
@@ -2775,29 +2788,31 @@ type portScanTally struct {
 	counts map[string]int
 }
 
-func (t *ToolSet) recordPortScanTally(host, addr string, tl *portScanTally) (map[string]any, bool) {
+// recordPortScanTally renders one address's result and writes its per-address
+// observations. The hostname's own liveness is the caller's job: it needs every
+// address's outcome before deciding, or the last one scanned wins.
+func (t *ToolSet) recordPortScanTally(addr string, tl *portScanTally) (map[string]any, bool) {
 	replied := tl.counts["open"]+tl.counts["refused"] > 0
 	result := map[string]any{"address": addr, "open": []int{}, "counts": tl.counts}
-	if len(tl.open) > maxCredibleOpenPorts {
-		result["note"] = fmt.Sprintf("answers on %d ports, likely a middlebox", len(tl.open))
-		return result, replied
+	open := tl.open
+	if len(open) > maxCredibleOpenPorts {
+		result["note"] = fmt.Sprintf("answers on %d ports, likely a middlebox", len(open))
+		open = nil
 	}
-	if len(tl.open) > 0 {
-		sort.Ints(tl.open)
-		result["open"] = tl.open
+	if len(open) > 0 {
+		sort.Ints(open)
+		result["open"] = open
 	}
 	// Best-effort observations; a scan entirely refused by policy learned nothing.
 	if t.as != nil {
-		for _, p := range tl.open {
-			_ = t.as.AppendIPPort(addr, p, "", db.PortProvenanceProbe)
+		if len(open) > 0 {
+			_ = t.as.SetIPOpenPorts(addr, open)
 		}
-		for _, key := range []string{addr, host} {
-			switch {
-			case replied:
-				_ = t.as.ClearUnreachable(key)
-			case tl.counts["timed_out"]+tl.counts["error"] > 0:
-				_ = t.as.MarkUnreachable(key)
-			}
+		switch {
+		case replied:
+			_ = t.as.ClearUnreachable(addr)
+		case tl.counts["timed_out"]+tl.counts["error"] > 0:
+			_ = t.as.MarkUnreachable(addr)
 		}
 	}
 	return result, replied
@@ -2936,10 +2951,20 @@ func (t *ToolSet) portScan() actool.CoreTool {
 			for i, ip := range targets {
 				addr := ip.String()
 				scanned = append(scanned, addr)
-				result, replied := t.recordPortScanTally(host, addr, &tallies[i])
+				result, replied := t.recordPortScanTally(addr, &tallies[i])
 				results = append(results, result)
 				if replied {
 					silent = false
+				}
+			}
+			// The hostname is live if any scanned address replied; dark only when
+			// every address was scanned and none did.
+			if t.as != nil {
+				switch {
+				case !silent:
+					_ = t.as.ClearUnreachable(host)
+				case len(others) == 0:
+					_ = t.as.MarkUnreachable(host)
 				}
 			}
 			out := map[string]any{

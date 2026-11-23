@@ -174,6 +174,44 @@ func TestAppendIPPort(t *testing.T) {
 	}
 }
 
+// The bulk write carries the same merge as AppendIPPort in one statement: a
+// named service survives a probe touch of the same port, and the array is
+// written once for a whole scan.
+func TestSetIPOpenPortsMergesLikeAppend(t *testing.T) {
+	d, av2, _ := testSetup(t)
+	t.Cleanup(func() { d.Close() })
+
+	id, err := av2.UpsertIP(UpsertIPReq{IP: "10.9.8.9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteAsset(d, id)
+	if err := av2.AppendIPPort("10.9.8.9", 22, "ssh", PortProvenanceModel); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := av2.SetIPOpenPorts("10.9.8.9", []int{22, 80, 443, 80}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := av2.GetByIDs([]int64{id})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("load asset %d: %v", id, err)
+	}
+	ports := map[float64]map[string]any{}
+	for _, entry := range rows[0].OpenPorts {
+		ports[entry["port"].(float64)] = entry
+	}
+	if len(ports) != 3 {
+		t.Fatalf("bulk write kept %d ports, want 3 unique: %v", len(ports), rows[0].OpenPorts)
+	}
+	if svc := ports[22]["service"]; svc != "ssh" || ports[22]["provenance"] != PortProvenanceModel {
+		t.Fatalf("model service lost to the probe touch: %v", ports[22])
+	}
+	if ports[80]["provenance"] != PortProvenanceProbe || ports[443]["provenance"] != PortProvenanceProbe {
+		t.Fatalf("probe entries not stored as probe: %v / %v", ports[80], ports[443])
+	}
+}
+
 // A port carries where it came from: model assertion by default, probe when a
 // connection observed it. A probe entry outranks a model one for the same port,
 // and rows written before the field existed stay readable.

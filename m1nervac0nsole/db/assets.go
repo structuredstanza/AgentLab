@@ -447,6 +447,42 @@ WHERE type = 'ip' AND ip = $2`, string(entry), ipStr)
 	return err
 }
 
+// SetIPOpenPorts writes one address's whole probe-derived open-port set in a
+// single UPDATE. AppendIPPort rewrites and re-indexes the array per port, so a
+// scan of a middlebox or a dense host costs one statement per port instead of
+// one per scan. The same merge as AppendIPPort keeps one entry per port and
+// prefers a named service.
+func (s *AssetStore) SetIPOpenPorts(ipStr string, ports []int) error {
+	if ipStr == "" || len(ports) == 0 {
+		return nil
+	}
+	entries := make([]string, 0, len(ports))
+	for _, p := range ports {
+		if p == 0 {
+			continue
+		}
+		b, _ := json.Marshal(map[string]any{"port": p, "service": "", "provenance": PortProvenanceProbe})
+		entries = append(entries, string(b))
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`
+UPDATE assets SET
+    open_ports = (
+        SELECT ARRAY(
+            SELECT DISTINCT ON ((elem->>'port')::int) elem
+            FROM unnest(open_ports || $1::jsonb[]) AS elem
+            ORDER BY (elem->>'port')::int,
+                     CASE WHEN elem->>'service' IS NOT NULL AND elem->>'service' <> '' THEN 0 ELSE 1 END,
+                     CASE WHEN elem->>'provenance' = 'probe' THEN 0 ELSE 1 END
+        )
+    ),
+    last_seen = now()
+WHERE type = 'ip' AND ip = $2`, entries, ipStr)
+	return err
+}
+
 // MarkUnreachable records that a direct probe could not reach host. graph_overview
 // exposes it, so a host that has gone dark is a machine fact the planner reads
 // instead of prose it must infer from a run of failures.

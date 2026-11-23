@@ -215,6 +215,32 @@ func TestToolboxInstallFailureIsRecordedAndNotPublished(t *testing.T) {
 	}
 }
 
+// The production boundary wraps the installed client in directLaneClient, which
+// adds lane methods by embedding. Publishing must survive that wrapping: the
+// embedded interface alone does not promote Publish, so without the delegate
+// every real install reports the client as unable to publish.
+func TestToolboxInstallPublishesThroughTheLaneWrapper(t *testing.T) {
+	s, _ := installTestServer(t)
+	f := &fakeExecbox{result: execbox.Result{ExitCode: 0, Output: []byte("ok\n")}}
+	wrapped := &directLaneClient{Client: f, snapshot: func(context.Context, netpolicy.Session) (*execbox.DirectLane, error) {
+		return nil, nil
+	}}
+	execbox.Install(wrapped)
+	t.Cleanup(func() { execbox.Install(f) })
+
+	text, isErr := callCuratorTool(t, toolCuratorTool(t, s, "toolbox_install"), `{"id":"srvtest-custom"}`)
+	if isErr {
+		t.Fatalf("install through the wrapper errored: %s", text)
+	}
+	var reply installReply
+	if err := json.Unmarshal([]byte(text), &reply); err != nil {
+		t.Fatalf("install reply is not JSON: %v: %s", err, text)
+	}
+	if reply.IsError || !reply.Provenance.Verified || f.publishes != 1 || reply.Provenance.Published == nil {
+		t.Fatalf("install through the wrapper did not publish: publishes=%d reply=%+v", f.publishes, reply)
+	}
+}
+
 // A publish the supervisor refuses is a failed install: the boundary is the only
 // path into the persistent bin directory, so nothing is reported as verified.
 func TestToolboxInstallPublishRefusalIsReported(t *testing.T) {

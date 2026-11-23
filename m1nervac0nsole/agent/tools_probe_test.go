@@ -408,6 +408,78 @@ func TestPortScanHostnameUsesAuthorizedAddresses(t *testing.T) {
 	}
 }
 
+// A hostname's liveness follows the whole address set: one dead address must
+// not leave a live host marked dark, and the host only goes dark when every
+// scanned address was silent.
+func TestPortScanLivenessFollowsEveryAddress(t *testing.T) {
+	d, ts, taskID := scanFixture(t)
+	as := d.Assets()
+	live, liveL := listenCounting(t, "127.0.0.1:0")
+	// A loopback port with no listener refuses instantly (a reply), so silence
+	// needs a routeless address: TEST-NET-1 blackholes until the timeout.
+	const silent = "192.0.2.1"
+	for _, ip := range []string{"127.0.0.1", silent} {
+		d.Exec(`DELETE FROM assets WHERE ip = $1`, ip)
+		t.Cleanup(func() { d.Exec(`DELETE FROM assets WHERE ip = $1`, ip) })
+	}
+	// The subdomain A record creates the domain row and binds both addresses,
+	// which is how agents record a multi-homed host.
+	if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{
+		Domain: "multi.test", RecordType: "A", RecordValue: []string{"127.0.0.1", silent}, TaskID: taskID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{
+		Domain: "dark.test", RecordType: "A", RecordValue: []string{silent}, TaskID: taskID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []netpolicy.Rule{
+		{Effect: "include", Pattern: "multi.test", Authorized: true},
+		{Effect: "include", Pattern: "dark.test", Authorized: true},
+		{Effect: "include", Pattern: "127.0.0.1", Authorized: true},
+		{Effect: "include", Pattern: silent, Authorized: true},
+	} {
+		if _, err := d.AddPolicyRule(t.Context(), taskID, r, "operator"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, host := range []string{"multi.test", "dark.test"} {
+		if err := as.MarkUnreachable(host); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The silent address is scanned last, yet the live one answered: the host
+	// must end live, and only the silent address is marked.
+	callPortScan(t, ts, map[string]any{"host": "multi.test", "ports": strconv.Itoa(live), "all_addresses": true, "timeout_ms": 300})
+	<-liveL
+	markers := map[string]bool{}
+	for _, host := range []string{"multi.test", "127.0.0.1", silent} {
+		var unreachable bool
+		if err := d.QueryRow(`SELECT last_unreachable_at IS NOT NULL FROM assets WHERE ip = $1 OR domain = $1`, host).Scan(&unreachable); err != nil {
+			t.Fatalf("read liveness for %s: %v", host, err)
+		}
+		markers[host] = unreachable
+	}
+	if markers["multi.test"] || markers["127.0.0.1"] {
+		t.Fatalf("a live address left the host marked unreachable: %v", markers)
+	}
+	if !markers[silent] {
+		t.Fatalf("the silent address stayed live: %v", markers)
+	}
+
+	// With every address silent the host goes dark.
+	callPortScan(t, ts, map[string]any{"host": "dark.test", "ports": strconv.Itoa(live), "timeout_ms": 200})
+	var dark bool
+	if err := d.QueryRow(`SELECT last_unreachable_at IS NOT NULL FROM assets WHERE domain = 'dark.test'`).Scan(&dark); err != nil {
+		t.Fatal(err)
+	}
+	if !dark {
+		t.Fatal("a host whose only address was scanned and silent stayed live")
+	}
+}
+
 func TestPortScanRefusesOperatorExit(t *testing.T) {
 	oldSrc, oldExit := NetPolicySource, OperatorExitConfigured
 	t.Cleanup(func() { NetPolicySource, OperatorExitConfigured = oldSrc, oldExit })
@@ -462,7 +534,7 @@ func TestPortScanSuppressesMiddleboxPorts(t *testing.T) {
 	ts := NewToolSet(nil, "worker")
 	for _, n := range []int{1000, 1001} {
 		tl := &portScanTally{open: make([]int, n), counts: map[string]int{"open": n}}
-		result, replied := ts.recordPortScanTally("scan.invalid", "192.0.2.1", tl)
+		result, replied := ts.recordPortScanTally("192.0.2.1", tl)
 		if !replied {
 			t.Fatal("scan reply reported as silence")
 		}
@@ -491,9 +563,14 @@ func TestPortScanKeepsMiddleboxRepliesOutOfAssets(t *testing.T) {
 	for i := range ports {
 		ports[i] = i + 1
 	}
-	ts.recordPortScanTally(addr, addr, &portScanTally{open: ports, counts: map[string]int{"open": len(ports)}})
-	if len(openPorts(t, d, id)) != 0 || !lastUnreachable(t, d, id).Valid {
-		t.Fatal("middlebox replies were persisted as port or liveness observations")
+	ts.recordPortScanTally(addr, &portScanTally{open: ports, counts: map[string]int{"open": len(ports)}})
+	if len(openPorts(t, d, id)) != 0 {
+		t.Fatal("middlebox replies were persisted as port observations")
+	}
+	// The address did answer, so its liveness marker clears even though the
+	// port list is suppressed.
+	if lastUnreachable(t, d, id).Valid {
+		t.Fatal("a replying middlebox address stayed marked unreachable")
 	}
 }
 
