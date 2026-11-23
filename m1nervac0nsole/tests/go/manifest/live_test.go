@@ -63,9 +63,13 @@ func TestLiveNmapAgainstLoopback(t *testing.T) {
 	}
 	out, err := exec.Command(m.Command.Program, args...).Output()
 	if err != nil {
-		// A SYN scan needs root; retry as a TCP connect scan so the test proves
-		// the XML shape rather than the caller's privileges.
-		args = append(args[:len(args)-1], "-sT", args[len(args)-1])
+		// A SYN scan needs CAP_NET_RAW; retry as a TCP connect scan so this
+		// host-side test proves the XML shape without the guest capability.
+		params["scan"] = "sT"
+		args, err = m.Resolve("127.0.0.1", params, "")
+		if err != nil {
+			t.Fatal(err)
+		}
 		out, err = exec.Command(m.Command.Program, args...).Output()
 		if err != nil {
 			t.Skipf("nmap cannot scan here: %v", err)

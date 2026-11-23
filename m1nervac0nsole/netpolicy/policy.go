@@ -13,23 +13,28 @@ import (
 // Decide judges one destination against the state, with the addresses the
 // caller resolved for it. It is pure: no clock, no resolver, no database.
 //
-// The gateway asks twice. Before dialing it calls Store.Authorize, which passes
-// no addresses (the policy stage); after resolving it calls
-// Store.AuthorizeResolved with every A/AAAA answer (the dns stage), so a
-// destination whose answers mix allowed and denied addresses is denied. A
-// research destination that is a name and not yet resolved is allowed at the
-// policy stage only because the dns stage is mandatory for it.
+// Before DNS the gateway calls Store.Authorize without addresses; after DNS
+// it calls Store.AuthorizeResolved with every A/AAAA answer. The latter is
+// mandatory even if the name itself was allowed. Task-recorded addresses are
+// not DNS answers and are checked separately by Store.AuthorizeRecorded.
 //
 // Research and install share the public-destination rule and are never judged by
 // a task's rules: an install is operator/curator-initiated, so it must not
 // inherit an engagement's target grants. Testing is the only purpose a grant
 // authorizes.
 func Decide(p Purpose, st State, d Destination, addrs []net.IP) Decision {
+	return decide(p, st, d, addrs, false)
+}
+
+func decide(p Purpose, st State, d Destination, addrs []net.IP, recorded bool) Decision {
 	host := normalizeHost(d.Host)
 	if host == "" {
 		return refuse(StagePolicy, "destination has no host")
 	}
 	d.Host = host
+	if recorded && p != PurposeTesting {
+		return refuse(StagePolicy, "only testing sessions may use task-recorded addresses")
+	}
 	switch p {
 	case PurposeResearch, PurposeInstall:
 		if dec, denied := publicRefusal(p, st, host, addrs); denied {
@@ -41,15 +46,14 @@ func Decide(p Purpose, st State, d Destination, addrs []net.IP) Decision {
 		}
 		return allow(StagePolicy, reason)
 	case PurposeTesting:
-		return decideRules(st, d, addrs)
+		return decideRules(st, d, addrs, recorded)
 	default:
 		return refuse(StagePolicy, fmt.Sprintf("unknown purpose %q", string(p)))
 	}
 }
 
-// decideRules applies the task's rules: an exclusion first, then an include that
-// covers the host or every address it resolved to.
-func decideRules(st State, d Destination, addrs []net.IP) Decision {
+// decideRules applies exclusions before deciding which includes can authorize.
+func decideRules(st State, d Destination, addrs []net.IP, recorded bool) Decision {
 	applicable := applicableRules(st.Rules, d)
 	if len(applicable) == 0 {
 		return refuse(StagePolicy, "no authorized rule covers "+describe(d))
@@ -62,32 +66,40 @@ func decideRules(st State, d Destination, addrs []net.IP) Decision {
 	hostIn := hostVerdict.Status == scope.In
 
 	if len(addrs) == 0 {
+		if recorded {
+			return refuse(StageDNS, "no recorded address for "+d.Host)
+		}
 		if hostIn {
 			return allow(StagePolicy, hostVerdict.Reason)
 		}
 		return refuse(StagePolicy, "no authorized rule covers "+describe(d))
 	}
 
+	kind := "resolved"
+	if recorded {
+		kind = "recorded"
+	}
 	allIn := true
 	for _, ip := range addrs {
-		v := scope.Evaluate(scope.ParseAsset(ip.String()), applicable)
+		addr := ip.String()
+		v := scope.Evaluate(scope.ParseAsset(addr), applicable)
 		if v.Status == scope.Out {
-			return refuse(StageDNS, "resolved address "+ip.String()+" is "+v.Reason)
+			return refuse(StageDNS, kind+" address "+addr+" is "+v.Reason)
 		}
 		if v.Status != scope.In {
 			allIn = false
 		}
 	}
-	// A hostname grant covers the name, not the network it happens to resolve
-	// to; a network grant covers the addresses, not the name. Either is enough,
-	// and an exclusion above already refused both.
-	if hostIn {
+	// DNS answers may be covered by either a hostname grant or a grant for
+	// every address. Task-recorded claims need their own address grants.
+	// Exclusions override both.
+	if hostIn && !recorded {
 		return allow(StagePolicy, hostVerdict.Reason)
 	}
 	if allIn {
-		return allow(StageDNS, "every resolved address of "+d.Host+" is authorized")
+		return allow(StageDNS, "every "+kind+" address of "+d.Host+" is authorized")
 	}
-	return refuse(StageDNS, "resolved addresses of "+d.Host+" are not all authorized")
+	return refuse(StageDNS, kind+" addresses of "+d.Host+" are not all authorized")
 }
 
 // applicableRules keeps the rules that were written for this protocol and port.
@@ -110,17 +122,17 @@ func applicableRules(rules []Rule, d Destination) []scope.Rule {
 		out = append(out, scope.Rule{
 			ID:      strconv.FormatInt(r.ID, 10),
 			Effect:  scope.Effect(r.Effect),
-			Pattern: rulePattern(r.Pattern),
+			Pattern: RulePattern(r.Pattern),
 			Note:    r.Note,
 		})
 	}
 	return out
 }
 
-// rulePattern turns a bare address into the single-host network the scope
+// RulePattern turns a bare address into the single-host network the scope
 // matcher understands. A hostname or CIDR pattern is already in that form, and
 // a bare address written as a hostname would never match an address.
-func rulePattern(pattern string) string {
+func RulePattern(pattern string) string {
 	p := strings.TrimSpace(pattern)
 	if addr, err := netip.ParseAddr(p); err == nil {
 		return netip.PrefixFrom(addr, addr.BitLen()).String()
@@ -237,7 +249,7 @@ func mustCIDR(s string) *net.IPNet {
 func matchesTarget(patterns []string, value string) (string, bool) {
 	asset := scope.ParseAsset(value)
 	for _, p := range patterns {
-		if scope.Evaluate(asset, []scope.Rule{{Effect: scope.Include, Pattern: rulePattern(p)}}).Status == scope.In {
+		if scope.Evaluate(asset, []scope.Rule{{Effect: scope.Include, Pattern: RulePattern(p)}}).Status == scope.In {
 			return p, true
 		}
 	}

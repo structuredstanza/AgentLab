@@ -57,7 +57,7 @@ func TestInsertAssetsSubdomainSideEffects(t *testing.T) {
 			map[string]any{
 				"type":         "subdomain",
 				"domain":       "ia-sub.sideeffect-test.com",
-				"record_type":  "A",
+				"record_type":  "a",
 				"record_value": []string{"7.8.9.10"},
 			},
 		},
@@ -101,7 +101,7 @@ func TestInsertAssetsSubdomainSideEffects(t *testing.T) {
 
 	// record_value stored as array
 	var rvRaw []byte
-	d.QueryRow(`SELECT array_to_json(record_value)::text FROM assets WHERE type='subdomain' AND domain='ia-sub.sideeffect-test.com'`).Scan(&rvRaw)
+	d.QueryRow(`SELECT array_to_json(record_value)::text FROM assets WHERE type='subdomain' AND domain='ia-sub.sideeffect-test.com' AND record_type='A'`).Scan(&rvRaw)
 	var rv []string
 	json.Unmarshal(rvRaw, &rv)
 	if len(rv) == 0 || rv[0] != "7.8.9.10" {

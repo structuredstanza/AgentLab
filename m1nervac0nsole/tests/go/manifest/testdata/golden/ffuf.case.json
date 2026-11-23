@@ -23,5 +23,5 @@
       "status_code": "301"
     }
   ],
-  "fixture": "ffuf.out.json"
+  "fixture": "ffuf.out.jsonl"
 }

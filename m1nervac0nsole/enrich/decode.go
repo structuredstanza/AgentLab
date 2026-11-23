@@ -18,10 +18,9 @@ import (
 var errUnsupportedEncoding = errors.New("unsupported content encoding")
 
 // decodeBody undoes a response's Content-Encoding chain over raw. The probe
-// advertises "gzip, deflate, br" and the masking proxy forwards a coding the
-// caller accepted untouched, so the raw bytes still need decoding here for the
-// title to be readable. The transport has compression handling disabled, which
-// also keeps what Observe sees raw and the same for every encoding.
+// advertises "gzip, deflate, br" and the origin picks one, so the raw bytes
+// still need decoding here for the title to be readable. The transport has
+// compression handling disabled, so every encoding arrives raw.
 //
 // encoded reports whether any coding was applied. The returned reader yields
 // decoded bytes; callers bound how much they read from it, which bounds the

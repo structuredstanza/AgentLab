@@ -12,7 +12,7 @@ A Go backend, a statically embedded Next.js interface and PostgreSQL as the syst
 
 ## Current status
 
-**Active development; self-hosted research software.** The current development build includes the m1nervac0nsole rebrand, the fixed minervacyb.org-inspired interface and the knowledge/curator workspace. It has been built and exercised locally; this is not a claim of production readiness, independent security certification or autonomous testing accuracy.
+**Active development; self-hosted research software.** m1nervac0nsole is based on [ARTEX](https://github.com/structuredstanza/ARTEX), the autonomous penetration-testing console, and extends it with a recursive self-improvement (RSI) loop, a hardened network boundary and the research environment described below. The current development build includes the m1nervac0nsole rebrand and the knowledge/curator workspace. It has been built and exercised locally; this is not a claim of production readiness, independent security certification or autonomous testing accuracy.
 
 The application can run without the AgentLab VM. The VM/capture layer is a separate, deployment-specific environment, not a turnkey installer for a fresh checkout. Model access, credentials and runtime state must be provisioned separately.
 
@@ -28,7 +28,7 @@ The application can run without the AgentLab VM. The VM/capture layer is a separ
 | Providers | Configurable model profiles, OpenAI-compatible transports and optional native provider-proxy integrations |
 | Research lab | Optional microsandbox VM, VPN-backed runs, packet/process/resource capture and reviewable training exports |
 
-The interface uses a fixed dark visual system with locally packaged Manrope and DM Mono. Theme, preset and font switches have been removed. Existing m1nervac0nsole module paths, environment variables, binary/database names, the `m1nervac0nsole_token` cookie and forensic markers remain compatibility contracts; the rebrand does not migrate those identifiers. The single operator account is `minerva`.
+Existing m1nervac0nsole module paths, environment variables, binary/database names, the `m1nervac0nsole_token` cookie and forensic markers remain compatibility contracts; the rebrand does not migrate those identifiers. The single operator account is `minerva`.
 
 ## A look inside
 
@@ -61,6 +61,14 @@ flowchart LR
 
 The browser is a static application embedded into the Go binary. PostgreSQL owns task, graph, finding and memory state; HTTP capture uses a separate file tree and SQLite index. Provider recording and evidence retention are separate from disposable traffic capture.
 
+Recorded HTTP follows the session recorder → gateway path: Chrome uTLS and selective tool-default User-Agent masking, with `navigation` headers for Stealth and `ua` masking for Careful/Standard/Unbound. Profiles are guidance, not request-rate ceilings; tool-run concurrency defaults to 16 globally and per target. Enrichment uses recorded gateway sessions with navigation masking.
+
+All testing subprocesses, including SDK/Bash, scripts and manifests, use the backend-wrapped execbox client. With live `tun0` and no operator global proxy, they can receive a scoped IPv4 direct lane; research/install stay relay-only. Interactive HTTP keeps recorder proxy settings. Standard/Unbound bulk-HTTP manifests declaring `RateRPS` omit proxy environment and argv only after a lane snapshot is available, and refuse execution if it disappears. Raw tools can use the lane regardless of HTTP proxy settings.
+
+Root-namespace FORWARD rules enforce authorized scope and exclusions in both directions, including established flows. They deny infrastructure (loopback, `10.98.0.0/16`, link-local, guest-local addresses, `host.microsandbox.internal` and configured native-provider/profile endpoints), not entire VPN destination ranges. DNS A grants are filtered, TTL-expiring and re-evaluated on policy updates; the session link has no IPv6. Policy refresh polls every second with a combined one-second read/apply deadline: revocation normally takes at most about two seconds plus kernel teardown/scheduling. Failures cancel processes rather than retain an old policy; supervisor apply failures kill sessions.
+
+Direct traffic has no gateway masking or HTTP recording. Preserve execution artifacts and pinned packet captures, and replay safe HTTP through the recorder for inspectable evidence. See the [network reference](m1nervac0nsole/docs/design/network-layer.md). These source behavior descriptions are not deployment or test claims.
+
 ### Repository layout
 
 | Path | Purpose |
@@ -70,6 +78,48 @@ The browser is a static application embedded into the Go binary. PostgreSQL owns
 | [`deployment/`](deployment/) | Guest image, supervision, provider-proxy integration, capture and export tooling |
 | [`tests/`](tests/) | Cross-layer test runners and Python suites |
 | [`.github/workflows/`](.github/workflows/) | CI workflows |
+
+## Relationship to upstream ARTEX
+
+m1nervac0nsole is a rebrand and extension of [ARTEX](https://github.com/structuredstanza/ARTEX), the autonomous penetration-testing console, under AGPL-3.0. The planner/worker orchestration, dual asset/exploration graphs, findings, traffic recording, interception approvals and human-in-the-loop chat come from ARTEX and keep their upstream shape. The deviations below are what this tree adds or replaces.
+
+| Deviation | What this tree does beyond ARTEX |
+| --- | --- |
+| RSI memory loop | ARTEX ships the RSI contract and shadow lessons; this tree adds the working memory layer: a knowledge base plus a per-task reflection pool, write-time credential scrubbing, task-private candidates, an owner-only promotion path and a propose-only curator, with usage telemetry. See [RSI.md](m1nervac0nsole/RSI.md). |
+| One outbound boundary | Recorded tool traffic leaves through a recording proxy whose origin side is a gateway: backend-issued session credentials, destination authorization against task scope, uTLS Chrome handshakes and selective tool-default identity masking; non-proxied tools take the kernel-scoped direct lane instead. ARTEX records traffic but has no authorization transport. |
+| Subprocess isolation | Every testing subprocess runs unprivileged in its own network namespace via `execbox`, admitted only to the gateway and the resolver, with kernel-enforced scope on the direct lane. ARTEX runs tools in the host process. |
+| Evidence pinning | Findings bind recorded exchanges, execution artifacts and content-addressed pcap flow slices pinned from the guest capture ring, so non-HTTP work keeps inspectable proof. |
+| Browser roles | Two browsers an agent cannot promote between: a research reader that refuses engagement targets, and a task-scoped Chromium under the same gateway boundary. |
+| Research environment | The repository root adds the `lab`/`deployment` layer: a microsandbox VM, VPN-backed runs with kill switches, packet/process/resource capture and reviewable training exports. |
+| Owned source trees | The vendored Norma SDK and a patched go-mitmproxy live in `third_party/` and travel with this tree; ARTEX consumes them as plain dependencies. |
+| English-only discipline | One message catalog and an ASCII-only source gate for every string that must match non-English input. |
+
+### Ingress and egress flow
+
+In the lab deployment the console, its recording proxy and the gateway all run inside the guest; the operator reaches the UI/API through a host loopback port map. Recorded traffic (HTTP/HTTPS tools, the testing browser, enrichment probes) enters the guest-local recording proxy and leaves only through the gateway; direct-lane traffic (nmap, SSH, UDP scanners and other non-proxied tools) is admitted by kernel rules scoped to the task's authorized addresses and is captured as packets instead of exchanges:
+
+```mermaid
+flowchart LR
+    O[Operator browser] -->|host loopback 127.0.0.1:8787| C[Console UI/API]
+    subgraph GUEST [Sandbox guest]
+        C
+        P[Recording proxy 127.0.0.1:8788<br/>SQLite index + file tree]
+        GW[Gateway<br/>authorize - resolve and pin -<br/>uTLS - selective masking]
+        NP[netpolicy session rules<br/>operator-approved scope]
+        T[Testing tools<br/>uid 1000, private netns]
+        CAP[tcpdump ring]
+    end
+    T -->|proxy env: every HTTP client| P
+    P --> GW
+    GW <--> NP
+    GW -->|authorized destinations only| NET((target scope))
+    T -->|direct lane: kernel-scoped<br/>FORWARD rules, IPv4| NET
+    T --> CAP
+    CAP -->|pinned flow slices| EV[evidence store]
+    P -->|recorded exchanges| EV
+```
+
+The host also runs a native provider proxy on its own :8788 for LLM provider traffic; it is a separate service from the guest-local recorder, not part of the tool path. Enrichment probes use recorded gateway sessions like any other client, so the direct lane is the only traffic without an HTTP record, and its evidence is the capture ring. The packet-level detail is in the [network reference](m1nervac0nsole/docs/design/network-layer.md).
 
 ## Getting started
 
@@ -104,7 +154,7 @@ After provisioning, run these commands from the repository root:
 
 `lab start` refreshes the host-built application through a read-only `/dist` mount. Change source and rebuild/restart; do not manually replace guest binaries. Use `./lab --help` for the command interface. A lab-provisioned UI is published on `http://127.0.0.1:8787`; credentials are local deployment state, not a public default login.
 
-To check a running lab end to end, run `python3 deployment/verify_capture.py` (needs host `tshark`; it drives the authenticated custom-tool test endpoint, so it needs no credential), `python3 deployment/verify_completeness.py` (nonces through HTTP, SSE, a large body and a WebSocket, plus a keylog fixture; it runs its own isolated gateway and recorder, so it needs no credential and changes no policy) and `python3 deployment/verify_reasoning.py` (starts the local model) for a reasoning round trip. All three are manual and read-only.
+To check a running lab end to end, run `python3 deployment/verify_capture.py` (needs host `tshark`; it drives the authenticated custom-tool test endpoint, so it needs no credential) and `python3 deployment/verify_completeness.py` (nonces through HTTP, SSE, a large body and a WebSocket, plus a keylog fixture; it runs its own isolated gateway and recorder, so it needs no credential and changes no policy). Both are manual and read-only.
 
 ## Capture, privacy and limitations
 
@@ -121,11 +171,9 @@ Important boundaries:
 
 ## Development and verification
 
-See the [contribution guide](m1nervac0nsole/CONTRIBUTING.en.md) for build and test commands and the [changelog](m1nervac0nsole/CHANGELOG.en.md) for implementation details.
+See the [contribution guide](m1nervac0nsole/CONTRIBUTING.en.md) for build and test commands and the [changelog](m1nervac0nsole/CHANGELOG.en.md) for implementation details. Verification work targets local fixtures or explicitly authorized scope only.
 
-The recent console refactor passed the embedded frontend/binary build, 49 frontend tests, selected Go notification/report checks and the documentation, ASCII and forensic-indicator gates. Browser verification covered all 22 navigation destinations, memory/curator workflows, desktop and mobile layouts, keyboard access and emulated 200% reflow. This was focused local verification, not a full Go-suite run, fresh-machine provisioning test or validation of every live provider integration.
-
-Database-backed Go tests can skip without `M1NERVAC0NSOLE_PG_DSN`; use a disposable test database, never a live engagement database. Verification work should target local fixtures or explicitly authorized scope only.
+Database-backed Go tests can skip without `M1NERVAC0NSOLE_PG_DSN`; use a disposable test database, never a live engagement database.
 
 ## Contributing and security
 

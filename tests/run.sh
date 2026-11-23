@@ -5,16 +5,15 @@
 #   tests/run.sh proxy      provider-proxy tests
 #   tests/run.sh python     deployment/lab tests
 #   tests/run.sh web        Next.js UI tests
-#   tests/run.sh dev        dev-launcher process contract
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AREA="${1:-all}"
 STATUS=0
 
 case "$AREA" in
-all | go | proxy | python | web | dev) ;;
+all | go | proxy | python | web) ;;
 *)
-	printf 'usage: %s [all|go|proxy|python|web|dev]\n' "${BASH_SOURCE[0]}" >&2
+	printf 'usage: %s [all|go|proxy|python|web]\n' "${BASH_SOURCE[0]}" >&2
 	exit 2
 	;;
 esac
@@ -59,15 +58,6 @@ esac
 case "$AREA" in
 all | web)
 	run "web (next)" bash -c 'cd "$0/m1nervac0nsole/web" && npx vitest run' "$ROOT"
-	;;
-esac
-
-# Proves the dev launcher's process contract: the masking proxy must report its
-# own readiness, cleanup must signal only the groups it started (never the
-# launching shell), and a failure must export nothing.
-case "$AREA" in
-all | dev)
-	run "dev launcher contract" "$ROOT/m1nervac0nsole/scripts/test-dev-egress.sh"
 	;;
 esac
 

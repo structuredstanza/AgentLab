@@ -108,6 +108,9 @@ recommend verifying that package directly with the method above before you open 
 
 ### Frontend (web)
 
+For web changes, Vitest, the static export (including TypeScript checks), and Biome
+are required merge gates. CI also checks the exported HTML for CJK text.
+
 ```bash
 cd web
 npm ci
@@ -119,15 +122,15 @@ npm run check        # Biome lint/format/a11y check (merge gate; must report zer
 npm run check:fix    # auto-fix
 ```
 
-If you do not have Node (version 20+) locally, or the installed native dependencies do not
-match your platform, you can verify the same way with Docker. Keeping `node_modules` in a named
+If you do not have Node 22 locally, or the installed native dependencies do not
+match your platform, run the three npm gates with Docker. Keeping `node_modules` in a named
 volume avoids clashing with your host's platform binaries (for example `@parcel/watcher` and
-Biome) and makes re-runs faster. This repository verifies web the same way as CI.
+Biome) and makes re-runs faster.
 
 ```bash
 docker run --rm -v "$PWD":/src -w /src/web \
   -v m1nervac0nsole-web-nm:/src/web/node_modules \
-  node:22 bash -c 'npm ci && npm run build:static'
+  node:22 bash -c 'npm ci && npm run test -- --run && npm run build:static && npm run check'
 ```
 
 Formatting and linting before commit are managed with Biome. `lint-staged` automatically runs
@@ -149,11 +152,11 @@ docker compose up -d     # start m1nervac0nsole + postgres → http://localhost:
 2. **Fork** the repository and create a topic branch. Prefix the branch name with the nature of
    the change, as in `feat/...`, `fix/...`, `docs/...`, `i18n/...`.
 3. Write the change and **run the relevant verification yourself.** For a Go change, make the
-   `build`/`vet`/`test` above pass. For a web change, make `npm run test -- --run`,
-   `npm run build:static` (which also type-checks) and `npm run check` (Biome) pass: `web.yml`
-   runs all three as merge gates, and Biome must report no errors (when you commit,
-   `lint-staged` automatically applies `biome check --write` to the files you staged). If you
-   changed documentation (`.md`), run `python3 -I scripts/check-doc-links.py` to confirm that
+   `build`/`vet`/`test` above pass. For a web change, all three
+   [web CI](../.github/workflows/web.yml) merge gates must pass: `npm run test -- --run`
+   (Vitest), `npm run build:static` (including TypeScript checks), and `npm run check`
+   (Biome, with zero errors). If you changed documentation (`.md`), run
+   `python3 -I scripts/check-doc-links.py` to confirm that
    in-repo link/image references and document anchor (`#heading`) links are not broken. Anchors
    are built from headings into slugs with the same rule as GitHub and matched, so if you change a
    heading's text without also fixing the anchor links that pointed to it, it is caught here (CI's

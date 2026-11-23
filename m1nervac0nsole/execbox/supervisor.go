@@ -22,6 +22,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
+	"golang.org/x/sys/unix"
 )
 
 var randReader io.Reader = rand.Reader
@@ -45,6 +46,11 @@ type Config struct {
 	WritableRoots []string
 	// ReadOnlyPaths are bind-mounted read-only into every session.
 	ReadOnlyPaths []string
+	// CACert is the recorder's public CA certificate on the supervisor's host.
+	// Each session gets a read-only copy of that certificate alone, mounted at
+	// this same path; the CA directory and its signing key are never exposed.
+	// Empty disables the mount.
+	CACert string
 	// ToolboxRoot holds the published tools (bin/) and the install staging
 	// prefixes (staging/). It lives under /state, so a published tool survives
 	// sandbox recreation.
@@ -77,6 +83,7 @@ func DefaultConfig() Config {
 		SessionUID:    1000,
 		SessionGID:    1000,
 		WritableRoots: []string{"/state/m1nervac0nsole/tasks"},
+		CACert:        DefaultCACert,
 		ReadOnlyPaths: []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/dist", "/sys"},
 		ToolboxRoot:   ToolboxRoot(),
 		Gateway:       "127.0.0.1:8788",
@@ -125,6 +132,7 @@ func (c Config) withDefaults() Config {
 	if len(c.ReadOnlyPaths) == 0 {
 		c.ReadOnlyPaths = d.ReadOnlyPaths
 	}
+	// An empty CACert is deliberate in a test config, so it is not defaulted.
 	if c.ToolboxRoot == "" {
 		c.ToolboxRoot = d.ToolboxRoot
 	}
@@ -173,6 +181,11 @@ type Supervisor struct {
 	sessions map[string]*session
 	wg       sync.WaitGroup
 	closed   chan struct{}
+
+	// caFP is the fingerprint of the recorder CA the last session saw, so a
+	// creation or rotation is logged once.
+	caMu sync.Mutex
+	caFP string
 }
 
 // NewSupervisor prepares the supervisor: it sweeps state left by a previous
@@ -357,6 +370,8 @@ func (s *Supervisor) handle(conn *net.UnixConn) {
 		s.startSession(w, req, extra)
 	case opPublish:
 		s.publish(w, req)
+	case opSetLane:
+		s.setLane(w, req)
 	default:
 		_ = w.write(frame{Type: frameError, Message: "unknown op " + req.Op})
 	}
@@ -433,7 +448,48 @@ func errorFrame(err error) frame {
 	if errors.As(err, &capErr) {
 		return frame{Type: frameError, Message: capErr.Error(), Missing: capErr.Missing, Detail: capErr.Detail}
 	}
+	var egErr *EgressError
+	if errors.As(err, &egErr) {
+		return frame{Type: frameError, Kind: "egress", Message: egErr.Reason, Detail: egErr.Iface}
+	}
 	return frame{Type: frameError, Message: err.Error()}
+}
+
+// setLane replaces every live lane of the identity. Failure terminates all
+// matching processes: retaining even one stale grant would defeat revocation.
+func (s *Supervisor) setLane(w *wireConn, req request) {
+	sess := sessionFromWire(req.Session)
+	if strings.TrimSpace(sess.ID) == "" {
+		_ = w.write(frame{Type: frameError, Message: "execbox: session identity is required"})
+		return
+	}
+	s.mu.Lock()
+	var live []*session
+	for _, c := range s.sessions {
+		if c.sess.ID == sess.ID && c.lane != nil {
+			live = append(live, c)
+		}
+	}
+	s.mu.Unlock()
+	fail := func(err error) {
+		for _, c := range live {
+			c.kill()
+		}
+		_ = w.write(errorFrame(err))
+	}
+	if req.Lane != nil {
+		if err := checkEgress(req.Lane.Egress); err != nil {
+			fail(err)
+			return
+		}
+	}
+	for _, c := range live {
+		if err := c.setLane(req.Lane); err != nil {
+			fail(err)
+			return
+		}
+	}
+	_ = w.write(frame{Type: frameLaneSet})
 }
 
 // privateTmp is the scratch directory every session gets as its own tmpfs. A
@@ -507,6 +563,11 @@ func (s *Supervisor) newSession(req request) (*session, error) {
 			return nil, fmt.Errorf("execbox: malformed environment entry %q", kv)
 		}
 	}
+	if spec.Lane != nil {
+		if err := checkEgress(spec.Lane.Egress); err != nil {
+			return nil, err
+		}
+	}
 	handle, err := newHandle()
 	if err != nil {
 		return nil, err
@@ -514,6 +575,10 @@ func (s *Supervisor) newSession(req request) (*session, error) {
 	rootIP, sessIP, err := randomSubnet()
 	if err != nil {
 		return nil, err
+	}
+	var lane *laneState
+	if spec.Lane != nil {
+		lane = &laneState{}
 	}
 	return &session{
 		sup:     s,
@@ -528,6 +593,7 @@ func (s *Supervisor) newSession(req request) (*session, error) {
 		netns:   netnsName(handle),
 		rootIP:  rootIP,
 		sessIP:  sessIP,
+		lane:    lane,
 	}, nil
 }
 
@@ -603,6 +669,8 @@ type session struct {
 	rootIP       string
 	sessIP       string
 	stopResolver func()
+	// lane is non-nil only for a session started with a direct lane.
+	lane *laneState
 
 	proc   *exec.Cmd
 	readyW *os.File
@@ -636,6 +704,10 @@ type session struct {
 func (s *session) start(extra []*os.File) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("execbox: session dir: %w", err)
+	}
+	caFile, err := s.sup.stageCA(s.dir)
+	if err != nil {
+		return err
 	}
 	if err := s.setupCgroup(); err != nil {
 		return err
@@ -696,6 +768,7 @@ func (s *session) start(extra []*os.File) error {
 		Env:        s.spec.Env,
 		TTY:        s.spec.TTY,
 		ExtraFiles: s.spec.ExtraFiles,
+		NetRaw:     s.spec.Lane != nil,
 		UID:        s.cfg.SessionUID,
 		GID:        s.cfg.SessionGID,
 		NewRoot:    filepath.Join(s.dir, "root"),
@@ -703,6 +776,8 @@ func (s *session) start(extra []*os.File) error {
 		Writable:   s.spec.Writable,
 		Prefix:     s.staging,
 		BinDir:     s.cfg.BinDir(),
+		PublicCA:   caFile,
+		PublicCAAt: s.cfg.CACert,
 		ResolvConf: "nameserver " + s.rootIP + "\n",
 		Setpriv:    s.cfg.Setpriv,
 		Hostname:   "execbox-" + s.handle,
@@ -820,6 +895,12 @@ func (s *session) closeStreams() {
 
 // pump relays the session's streams to the client until the program exits.
 func (s *session) pump(w *wireConn) int {
+	stopHangup, err := s.watchHangup(w.c)
+	if err != nil {
+		s.kill()
+		return s.wait()
+	}
+	defer stopHangup()
 	streamsDone := make(chan struct{})
 	go func() {
 		var wg sync.WaitGroup
@@ -983,14 +1064,30 @@ func (s *session) teardownResources() {
 	delete(s.sup.sessions, s.handle)
 	s.sup.mu.Unlock()
 	s.removeCgroup()
+	if s.lane != nil {
+		// A late DNS reply or SetDirectLane must not rebuild rules the next
+		// line removes.
+		s.lane.mu.Lock()
+		s.lane.closed = true
+		if s.lane.timer != nil {
+			s.lane.timer.Stop()
+		}
+		s.lane.mu.Unlock()
+	}
 	s.removeRules()
 	if s.vethOuter != "" {
 		_ = exec.Command("ip", "link", "del", s.vethOuter).Run()
 	}
-	unlinkSessionNetns(s.netns)
+	leftover := unlinkSessionNetns(s.netns)
 	if s.stopResolver != nil {
 		s.stopResolver()
 		s.stopResolver = nil
+	}
+	if leftover != nil {
+		// The state directory is the sweep's other record of this handle; keeping
+		// it means the next start reclaims what this teardown could not.
+		s.sup.cfg.Logf("[execbox] session %s left state behind: %v", s.handle, leftover)
+		return
 	}
 	_ = os.RemoveAll(s.dir)
 }
@@ -1090,22 +1187,37 @@ func (s *session) removeCgroup() {
 // directory may have left a cgroup, a network namespace, a veth pair, firewall
 // rules and scratch files. It runs before the capability self-test, so a crashed
 // run cannot make the next one look healthy.
+//
+// A namespace whose unlink failed while its processes were still alive outlives
+// its directory, which teardown removes regardless, so the directory alone would
+// leave it unreclaimable for every later start. Named namespaces are therefore a
+// second source, but only when no process is in them: a namespace found by name
+// alone carries no proof that this supervisor created it, and another
+// supervisor's live session (a test's, or the production one's) must survive
+// this start. A handle with a state directory under this supervisor's own
+// StateDir is its own by definition, so it is cleaned regardless.
 func (s *Supervisor) sweep() {
-	entries, err := os.ReadDir(s.cfg.StateDir)
-	if err != nil {
-		return
-	}
-	cleaned := 0
-	for _, e := range entries {
-		handle := e.Name()
-		if len(handle) != 12 {
-			continue
+	handles := map[string]bool{}
+	if entries, err := os.ReadDir(s.cfg.StateDir); err == nil {
+		for _, e := range entries {
+			if len(e.Name()) == 12 {
+				handles[e.Name()] = true
+			}
 		}
-		s.cleanHandle(handle)
-		cleaned++
 	}
-	if cleaned > 0 {
-		s.cfg.Logf("[execbox] swept %d stale session(s)", cleaned)
+	if entries, err := os.ReadDir(netnsDir); err == nil {
+		for _, e := range entries {
+			handle := strings.TrimPrefix(e.Name(), netnsPrefix)
+			if handle != e.Name() && len(handle) == 12 && !netnsInUse(e.Name()) {
+				handles[handle] = true
+			}
+		}
+	}
+	for handle := range handles {
+		s.cleanHandle(handle)
+	}
+	if len(handles) > 0 {
+		s.cfg.Logf("[execbox] swept %d stale session(s)", len(handles))
 	}
 }
 
@@ -1137,7 +1249,7 @@ func removeChain(chain string) {
 			continue
 		}
 		for _, rule := range strings.Split(string(rules), "\n") {
-			if !strings.Contains(rule, "-i "+outer) {
+			if !strings.Contains(rule, "-i "+outer) && !strings.Contains(rule, "-o "+outer) {
 				continue
 			}
 			args := strings.Fields(rule)
@@ -1162,6 +1274,64 @@ func removeChain(chain string) {
 			_ = exec.Command("iptables", append([]string{"-t", "nat"}, args...)...).Run()
 		}
 	}
+	// The lane's masquerade carries the session chain name as its comment.
+	post, err := exec.Command("iptables", "-t", "nat", "-S", "POSTROUTING").Output()
+	if err == nil {
+		for _, rule := range strings.Split(string(post), "\n") {
+			if !strings.Contains(rule, "--comment "+chain+" ") {
+				continue
+			}
+			args := strings.Fields(rule)
+			if len(args) == 0 || args[0] != "-A" {
+				continue
+			}
+			args[0] = "-D"
+			_ = exec.Command("iptables", append([]string{"-t", "nat"}, args...)...).Run()
+		}
+	}
 	_ = exec.Command("iptables", "-F", chain).Run()
 	_ = exec.Command("iptables", "-X", chain).Run()
+	_ = exec.Command("iptables", "-F", laneChain(handle)).Run()
+	_ = exec.Command("iptables", "-X", laneChain(handle)).Run()
+}
+
+// watchHangup detects controller death even while the frame reader is stuck
+// writing stdin to a process that never reads. Poll observes RDHUP without
+// consuming protocol bytes. A duplicated descriptor prevents fd reuse races.
+func (s *session) watchHangup(c *net.UnixConn) (func(), error) {
+	raw, err := c.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	fd := -1
+	var dupErr error
+	if err := raw.Control(func(original uintptr) {
+		fd, dupErr = unix.FcntlInt(original, unix.F_DUPFD_CLOEXEC, 0)
+	}); err != nil {
+		return nil, err
+	}
+	if dupErr != nil {
+		return nil, dupErr
+	}
+	done := make(chan struct{})
+	go func() {
+		defer unix.Close(fd)
+		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLRDHUP}}
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			_, err := unix.Poll(fds, 100)
+			if err == unix.EINTR {
+				continue
+			}
+			if err != nil || fds[0].Revents&(unix.POLLRDHUP|unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
+				s.kill()
+				return
+			}
+		}
+	}()
+	return func() { close(done) }, nil
 }

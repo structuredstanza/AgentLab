@@ -1042,8 +1042,9 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // Experimental feature: noa context compression (platform-level switch, read per run)
 	main.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	main.SetWebSearch(s.webSearchFor("mainagent"))
-	main.SetSteerWork(s.engine.SteerWork) // steer_work: real-time human course correction of a running work item
-	main.SetMemory(s.m.PG())              // recall / knowledge_add for the operator interface; reflect stays with planner and worker
+	main.SetSteerWork(s.engine.SteerWork)         // steer_work: real-time human course correction of a running work item
+	main.SetKillWork(s.engine.killWorkByOperator) // kill_work: confirmed operator stop
+	main.SetMemory(s.m.PG())                      // recall / knowledge_add for the operator interface; reflect stays with planner and worker
 	bundle := &taskAgentBundle{
 		runtime: goalRuntime, plannerRuntime: plannerRuntime, workerRuntime: workerRuntime,
 		mainRuntime: mainRuntime, pl: pl, wk: wk, main: main,

@@ -6,8 +6,15 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,25 +27,23 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
-	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/useragent"
 )
 
 // ---- fixtures ----------------------------------------------------------
 
-// recordingGate is a real egress.Gate that admits everything and records the
-// host of each request the proxy is about to forward. An absent host means no
-// request left for it.
+// recordingGate records the host of each CONNECT the stand-in recorder served.
+// An absent host means no request left for it.
 type recordingGate struct {
 	mu    sync.Mutex
 	hosts []string
 }
 
-func (g *recordingGate) Allow(_ context.Context, host, _ string) (bool, string) {
+func (g *recordingGate) add(host string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.hosts = append(g.hosts, host)
-	return true, ""
 }
 
 func (g *recordingGate) seen(host string) bool {
@@ -58,56 +63,70 @@ func (g *recordingGate) snapshot() []string {
 	return append([]string(nil), g.hosts...)
 }
 
-// startMaskingProxy runs the real masking egress proxy (the type `m1nervac0nsole
-// egress-proxy` serves) on a loopback port with a distinctive identity, and
-// returns its URL plus the CA path a client must trust. The identity an origin
-// sees can only come from this proxy, which is what makes assertions on it
-// meaningful.
-func startMaskingProxy(t *testing.T) (proxyURL, caFile string, gate *recordingGate) {
+// startConnectTunnel runs a CONNECT tunnel on loopback that stands in for the
+// recording proxy, and returns its
+// URL plus the CA a client must trust: the certificate every httptest TLS origin
+// presents. The real gateway + recorder path is covered in the server package.
+func startConnectTunnel(t *testing.T) (proxyURL, caFile string, gate *recordingGate) {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "user-agent.txt"), []byte("FixtureMask/1.0\n"), 0o600); err != nil {
+	gate = &recordingGate{}
+	p := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "only CONNECT is served", http.StatusBadGateway)
+			return
+		}
+		host, _, _ := net.SplitHostPort(r.Host)
+		gate.add(host)
+		up, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			up.Close()
+			return
+		}
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n")
+		go func() { _, _ = io.Copy(up, conn); up.Close() }()
+		go func() { _, _ = io.Copy(conn, up); conn.Close() }()
+	}))
+	t.Cleanup(p.Close)
+
+	origin := httptest.NewTLSServer(http.NotFoundHandler())
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: origin.Certificate().Raw})
+	origin.Close()
+	caFile = filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, pemBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ca, err := egress.LoadOrCreateCA(dir)
-	if err != nil {
-		t.Fatalf("create fixture CA: %v", err)
-	}
-	identity, err := egress.LoadIdentity(dir)
-	if err != nil {
-		t.Fatalf("load fixture identity: %v", err)
-	}
-	gate = &recordingGate{}
-	p, err := egress.New("127.0.0.1:0", ca, identity, gate)
-	if err != nil {
-		t.Fatalf("start fixture masking proxy: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = p.Serve(ctx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		_ = p.Close()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("fixture masking proxy did not stop")
-		}
-	})
-	return "http://" + p.Addr(), filepath.Join(dir, "ca.pem"), gate
+	return p.URL, caFile, gate
 }
 
-// foreignCA writes a CA unrelated to the masking proxy's.
+// foreignCA writes a CA unrelated to the origins' certificate.
 func foreignCA(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	if _, err := egress.LoadOrCreateCA(dir); err != nil {
-		t.Fatalf("create foreign CA: %v", err)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return filepath.Join(dir, "ca.pem")
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "foreign"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // deadProxyURL returns a loopback URL nothing listens on.
@@ -193,10 +212,17 @@ func loadAsset(t *testing.T, as *db.AssetStore, id int64) *db.Asset {
 	return rows[0]
 }
 
-// staticRoute is the probe route every fixture uses: a fixed masking proxy and
-// the network policy, which each probe asks before it dials.
+// staticRouteFunc is a fixed recorder route: one proxy and CA, no session to revoke.
+func staticRouteFunc(proxyURL, caFile string) Route {
+	return func(context.Context, int64) (string, string, func(), error) {
+		return proxyURL, caFile, func() {}, nil
+	}
+}
+
+// staticRoute is the probe route every fixture uses: a fixed recorder stand-in
+// and the network policy, which each probe asks before it dials.
 func staticRoute(d *db.DB, proxyURL, caFile string) Options {
-	return Options{Workers: 2, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)}
+	return Options{Workers: 2, Route: staticRouteFunc(proxyURL, caFile), Authorizer: netpolicy.NewAuthorizer(d)}
 }
 
 // ---- behaviors ---------------------------------------------------------
@@ -206,10 +232,10 @@ func staticRoute(d *db.DB, proxyURL, caFile string) Options {
 // process's own: the observable difference between a masked request and a
 // direct dial that merely carries a browser User-Agent.
 func TestEnrichProbePersistsResultThroughMaskingProxy(t *testing.T) {
-	t.Setenv("M1NERVAC0NSOLE_USER_AGENT", "GoClient/1.0")
+	// The probe keeps the engagement's own browser identity; the gateway masks the rest.
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, caFile, gate := startMaskingProxy(t)
+	proxyURL, caFile, gate := startConnectTunnel(t)
 
 	var mu sync.Mutex
 	var seenUA, seenPath string
@@ -251,14 +277,14 @@ func TestEnrichProbePersistsResultThroughMaskingProxy(t *testing.T) {
 	mu.Lock()
 	ua, path := seenUA, seenPath
 	mu.Unlock()
-	if ua != "FixtureMask/1.0" {
-		t.Fatalf("origin saw User-Agent %q, want the masking proxy's identity: the request did not go through the proxy", ua)
+	if ua != useragent.Get() || strings.HasPrefix(ua, "Go-http-client") {
+		t.Fatalf("origin saw User-Agent %q, want the engagement browser identity %q", ua, useragent.Get())
 	}
 	if path != "/" {
 		t.Fatalf("origin saw path %q, want /", path)
 	}
 	if !gate.seen("127.0.0.1") {
-		t.Fatalf("masking proxy never saw the target; gate recorded %v", gate.snapshot())
+		t.Fatalf("the recording proxy never saw the target; it recorded %v", gate.snapshot())
 	}
 }
 
@@ -267,7 +293,7 @@ func TestEnrichProbePersistsResultThroughMaskingProxy(t *testing.T) {
 func TestEnrichSkipsExcludedTarget(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, caFile, gate := startMaskingProxy(t)
+	proxyURL, caFile, gate := startConnectTunnel(t)
 
 	var mu sync.Mutex
 	hits := 0
@@ -303,7 +329,7 @@ func TestEnrichSkipsExcludedTarget(t *testing.T) {
 func TestEnrichChecksRedirectDestinations(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, caFile, gate := startMaskingProxy(t)
+	proxyURL, caFile, gate := startConnectTunnel(t)
 
 	t.Run("excluded destination is not followed", func(t *testing.T) {
 		var mu sync.Mutex
@@ -405,7 +431,7 @@ func TestEnrichFailsClosedWithoutMaskingProxy(t *testing.T) {
 func TestEnrichTrustsOnlyTheEgressCA(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, _, _ := startMaskingProxy(t)
+	proxyURL, _, _ := startConnectTunnel(t)
 
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "<html><title>Should Not Be Trusted</title></html>")
@@ -426,9 +452,6 @@ func TestEnrichTrustsOnlyTheEgressCA(t *testing.T) {
 // No configured proxy means HTTP enrichment is disabled, not pointed at a
 // guessed loopback port that some unrelated process may hold.
 func TestEnrichHTTPDisabledWithoutConfiguredProxy(t *testing.T) {
-	t.Setenv("M1NERVAC0NSOLE_EGRESS_PROXY", "")
-	t.Setenv("M1NERVAC0NSOLE_EGRESS_CA", "")
-	t.Setenv("SSL_CERT_FILE", "")
 	d, as := testDB(t)
 	task := testTask(t, d)
 
@@ -464,7 +487,7 @@ func TestEnrichHTTPDisabledWithoutConfiguredProxy(t *testing.T) {
 func TestEnrichDropsJobsWithoutTaskContext(t *testing.T) {
 	d, as := testDB(t)
 	_ = d
-	proxyURL, caFile, gate := startMaskingProxy(t)
+	proxyURL, caFile, gate := startConnectTunnel(t)
 
 	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
@@ -489,7 +512,7 @@ func TestEnrichDropsJobsWithoutTaskContext(t *testing.T) {
 // Close rejects new work and leaves nothing queued or running, so Wait cannot
 // block afterwards and no job can outlive the database.
 func TestEnrichCloseRejectsNewJobsAndReleasesQueued(t *testing.T) {
-	e := New(nil, Options{Workers: 1, Proxy: deadProxyURL(t), CAFile: foreignCA(t)})
+	e := New(nil, Options{Workers: 1, Route: staticRouteFunc(deadProxyURL(t), foreignCA(t))})
 	for i := int64(1); i <= 50; i++ {
 		e.ProbeSite(1, i, "http://127.0.0.1:1/")
 	}
@@ -546,7 +569,7 @@ func TestRedactProxyURLDropsCredentials(t *testing.T) {
 func TestEnrichTruncatedBodyDoesNotStoreCapAsLength(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, caFile, _ := startMaskingProxy(t)
+	proxyURL, caFile, _ := startConnectTunnel(t)
 
 	big := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -600,113 +623,12 @@ func TestEnrichCooldownSuppressesRepeat(t *testing.T) {
 	}
 }
 
-type observationLog struct {
-	mu  sync.Mutex
-	obs []Observation
-}
-
-func (l *observationLog) add(o Observation) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.obs = append(l.obs, o)
-}
-
-func (l *observationLog) all() []Observation {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]Observation(nil), l.obs...)
-}
-
-// Every redirect hop is observed uniformly, exact bodies are offered as
-// Complete, and a body over the cap is offered as the prefix that was read with
-// the response's full length — never as if the prefix were the whole response.
-func TestEnrichObservesEveryHopAndMarksAnOverCapBodyPartial(t *testing.T) {
-	d, as := testDB(t)
-	task := testTask(t, d)
-	proxyURL, caFile, _ := startMaskingProxy(t)
-
-	final := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, "<html><title>Final</title></html>")
-	}))
-	defer final.Close()
-	hop := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, final.URL+"/landing", http.StatusFound)
-	}))
-	defer hop.Close()
-	// Over the observation cap but under the probe's 1 MiB read cap, so the whole
-	// body is read and its length is exact whether the response declares it or
-	// not.
-	bigBody := "<title>Big</title>" + strings.Repeat("x", 400<<10)
-	big := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, bigBody)
-	}))
-	defer big.Close()
-
-	var log observationLog
-	engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile, Observe: log.add, Authorizer: netpolicy.NewAuthorizer(d)})
-	defer engine.Close()
-
-	hopID := upsertSite(t, as, task.ID, hop.URL+"/start")
-	engine.ProbeSite(task.ID, hopID, hop.URL+"/start")
-	engine.Wait()
-	got := log.all()
-	if len(got) != 2 {
-		t.Fatalf("a redirect chain must yield one observation per hop, got %d: %+v", len(got), got)
-	}
-	if got[0].Status != http.StatusFound || !got[0].Complete || got[0].Failed {
-		t.Fatalf("first hop = %+v, want a complete 302", got[0])
-	}
-	if got[1].Status != http.StatusOK || !got[1].Complete || !strings.Contains(got[1].ResponseBody, "<title>Final</title>") {
-		t.Fatalf("final hop = %+v, want the exact 200 body", got[1])
-	}
-
-	bigID := upsertSite(t, as, task.ID, big.URL+"/big")
-	engine.ProbeSite(task.ID, bigID, big.URL+"/big")
-	engine.Wait()
-	all := log.all()
-	last := all[len(all)-1]
-	if last.Status != http.StatusOK || last.Complete || last.Failed {
-		t.Fatalf("an over-cap body must be Complete=false, got %+v", last)
-	}
-	if len(last.ResponseBody) != maxObservedBody || !strings.HasPrefix(last.ResponseBody, "<title>Big</title>") {
-		t.Fatalf("an over-cap body must offer the prefix that was read, got %d bytes", len(last.ResponseBody))
-	}
-	if last.DeclaredLength != int64(len(bigBody)) {
-		t.Fatalf("declared length = %d, want the full body size %d", last.DeclaredLength, len(bigBody))
-	}
-}
-
-// A transport failure is observed as Failed (no response), with credentials
-// scrubbed from the error text.
-func TestEnrichObservesTransportFailureWithoutCredentials(t *testing.T) {
-	d, as := testDB(t)
-	task := testTask(t, d)
-	dead := strings.Replace(deadProxyURL(t), "http://", "http://user:s3cret@", 1)
-
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer origin.Close()
-	var log observationLog
-	engine := New(as, Options{Workers: 1, Proxy: dead, CAFile: foreignCA(t), Observe: log.add, Authorizer: netpolicy.NewAuthorizer(d)})
-	defer engine.Close()
-	id := upsertSite(t, as, task.ID, origin.URL+"/")
-	engine.ProbeSite(task.ID, id, origin.URL+"/")
-	engine.Wait()
-
-	got := log.all()
-	if len(got) != 1 || !got[0].Failed || got[0].Status != 0 || got[0].Complete {
-		t.Fatalf("a refused proxy connection must be one Failed observation, got %+v", got)
-	}
-	if msg := got[0].ResponseHeaders["x-capture-error"]; msg == "" || strings.Contains(msg, "s3cret") {
-		t.Fatalf("failure text missing or leaked credentials: %q", msg)
-	}
-}
-
 // Work for a task that is deleted, paused or finished is refused before any
 // request leaves: such a task has no scope rows, which would otherwise read as
 // "nothing is excluded".
 func TestEnrichRefusesTasksThatAreNotLive(t *testing.T) {
 	d, as := testDB(t)
-	proxyURL, caFile, gate := startMaskingProxy(t)
+	proxyURL, caFile, gate := startConnectTunnel(t)
 
 	var mu sync.Mutex
 	hits := 0
@@ -747,7 +669,7 @@ func TestEnrichRefusesTasksThatAreNotLive(t *testing.T) {
 func TestEnrichResumedTaskCanRetryRefusedProbe(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, caFile, _ := startMaskingProxy(t)
+	proxyURL, caFile, _ := startConnectTunnel(t)
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "<title>Resumed probe</title>")
 	}))
@@ -780,7 +702,7 @@ func TestEnrichResumedTaskCanRetryRefusedProbe(t *testing.T) {
 func TestEnrichDeletionWhileProbeInFlightCannotRecreateAsset(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, caFile, _ := startMaskingProxy(t)
+	proxyURL, caFile, _ := startConnectTunnel(t)
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -848,7 +770,7 @@ func encodeBody(t *testing.T, coding string, plain []byte) []byte {
 func TestEnrichDecodesContentEncodings(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, caFile, _ := startMaskingProxy(t)
+	proxyURL, caFile, _ := startConnectTunnel(t)
 	plain := []byte("<html><head><title>Encoded Title</title></head><body>" + strings.Repeat("padding ", 200) + "</body></html>")
 
 	for _, coding := range []string{"gzip", "deflate", "deflate-raw", "br"} {
@@ -861,8 +783,7 @@ func TestEnrichDecodesContentEncodings(t *testing.T) {
 				w.Write(wire)
 			}))
 			defer origin.Close()
-			var obs observationLog
-			engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile, Observe: obs.add, Authorizer: netpolicy.NewAuthorizer(d)})
+			engine := New(as, staticRoute(d, proxyURL, caFile))
 			defer engine.Close()
 			url := origin.URL + "/" + coding
 			id := upsertSite(t, as, task.ID, url)
@@ -876,10 +797,6 @@ func TestEnrichDecodesContentEncodings(t *testing.T) {
 			if a.ContentLength == nil || *a.ContentLength != int64(len(plain)) {
 				t.Fatalf("content_length = %v, want the decoded size %d", a.ContentLength, len(plain))
 			}
-			got := obs.all()
-			if len(got) != 1 || !got[0].Complete || got[0].ResponseBody != string(wire) {
-				t.Fatalf("the observation must be the complete raw %s bytes, got %+v", coding, got)
-			}
 		})
 	}
 }
@@ -890,7 +807,7 @@ func TestEnrichDecodesContentEncodings(t *testing.T) {
 func TestEnrichBoundsDecompressedBody(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, caFile, _ := startMaskingProxy(t)
+	proxyURL, caFile, _ := startConnectTunnel(t)
 	plain := append([]byte("<title>Bomb</title>"), bytes.Repeat([]byte{'a'}, 8<<20)...)
 	wire := encodeBody(t, "gzip", plain)
 	if len(wire) >= maxBodyBytes {
@@ -901,7 +818,7 @@ func TestEnrichBoundsDecompressedBody(t *testing.T) {
 		w.Write(wire)
 	}))
 	defer origin.Close()
-	engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)})
+	engine := New(as, staticRoute(d, proxyURL, caFile))
 	defer engine.Close()
 	url := origin.URL + "/bomb"
 	id := upsertSite(t, as, task.ID, url)

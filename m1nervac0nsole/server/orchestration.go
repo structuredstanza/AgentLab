@@ -350,7 +350,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			// Shared post-creation flow, reusing the same launchTask as HTTP task creation (server.go createTask):
 			// seed + make goal decomposition visible in the background (round 0 / LLM step / per-goal) + engine.Run.
 			// seed_first_intent defaults to false (standard flow: plan first, then execute); for simple tasks it can be enabled to dispatch a single work directly as a test.
-			s.launchTask(t, a.Description+" "+a.Goal, a.SeedFirstIntent)
+			s.launchTask(t, a.Description+" "+a.Goal, a.SeedFirstIntent, false)
 			return actool.Text(fmt.Sprintf("task created: %s", t.ID)), nil
 		})
 }
@@ -519,6 +519,7 @@ func (s *Server) seedOrchestrationTools() []actool.CoreTool {
 	s.seedManifestToolBindings()
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
+	s.seedMainAgentKillWorkBinding()
 	s.seedPlannerListAssetsBinding()
 	s.seedCompanyScopeRebind()
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces are unbound from worker by default (one-time)
@@ -918,6 +919,20 @@ func (s *Server) seedPlannerDefaultBindings() {
 	}
 	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"report_finding"}); err != nil {
 		log.Printf("[planner] report_finding default binding failed: %v", err)
+		return
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+}
+
+// seedMainAgentKillWorkBinding gives existing deployments the operator's stop
+// tool without undoing a later deliberate unbind.
+func (s *Server) seedMainAgentKillWorkBinding() {
+	const flag = "mainagent_kill_work_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("mainagent", []string{"kill_work"}); err != nil {
+		log.Printf("[mainagent] kill_work default binding failed: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")

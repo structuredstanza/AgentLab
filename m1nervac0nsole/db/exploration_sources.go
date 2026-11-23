@@ -1,8 +1,11 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"sort"
+	"time"
 )
 
 // DirectSourceStore binds one directly related task to its exploration store.
@@ -52,6 +55,16 @@ func (s *ExplorationStore) TaskID() (int64, error) {
 		return 0, err
 	}
 	return id, nil
+}
+
+// TaskStartedAt bounds evidence collection to this exploration's live task,
+// using creation time only if the task has not run.
+func (s *ExplorationStore) TaskStartedAt(ctx context.Context) (time.Time, error) {
+	var start time.Time
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(first_run_at, created_at) FROM tasks WHERE exploration_id=$1 AND deleted_at IS NULL`, s.expID).Scan(&start); err != nil {
+		return time.Time{}, fmt.Errorf("read task start: %w", err)
+	}
+	return start, nil
 }
 
 func markInheritedNode(n *Node, taskID int64) *Node {

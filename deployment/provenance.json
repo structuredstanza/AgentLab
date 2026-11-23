@@ -11,7 +11,6 @@
   "docker_image_id": "sha256:f7618aeab146c7cd3afcfdbf186f7e5b617e2dccc559ddc8a262e4b9de13df3d",
   "runtime_manifest_digest": "sha256:daf969bcfe668262460ff3978206ee6ed76ab69015c6e4490abf4cec7b6cfe39",
   "m1nervac0nsole_binary_sha256": "50fa3b3674e36f3f8a5ad4d05811b6bd310d6d78f41fdf3aa614677be197b5dc",
-  "model_backend": "llama.cpp / shared bonsai.service",
   "upstream_source_modified": true,
   "allocation_reset_ui_patch": {
     "version": "allocation-reset-20261031T011927Z",
@@ -26,8 +25,7 @@
     "browser_verified": [
       "dashboard: Resets in 4d13hr",
       "Codex profile: Resets in 4d13hr"
-    ],
-    "bonsai": "manually started; health and exact loaded model verified; no generation test"
+    ]
   },
   "astra_source_review": {
     "status": "deployed and VM capture-validated",
@@ -292,134 +290,6 @@
       "src/login.mjs": "cc3bbc95e87af7ff4f964d147bac187f650d50865f27e6b12bdcbb7a470b3474",
       "src/profiles.mjs": "4d2b35ad12a966273fb94c8ffcf17a388dc8ed65f0aef0eb2581920acaa87d9c"
     }
-  },
-  "model_artifact": {
-    "path": "/mnt/Research/Models/Ternary-Bonsai-2-27B-Abliterated-v2-PQ2_0-MTP.gguf",
-    "sha256": "a4e4c7b578131595c1694354bd6c74d00920df1f5082647a6126899753ebebf8",
-    "size_bytes": 7657489696,
-    "mtime_ns": 1793035967691880175,
-    "repository": "https://huggingface.co/BoldingBuilds/Ternary-Bonsai-2-27B-Abliterated-v2-PQ2_0-MTP-GGUF",
-    "license": "Apache-2.0 (upstream model-card declaration)",
-    "upstream_lfs_sha256_verified": true,
-    "inference_binary": "/mnt/Research/Local_Stack/vendor/linux-e62be59152a005cd3b35e94ee04065da9fbf678517bb8f9cad988f655387b763/build-vulkan/bin/llama-server",
-    "inference_binary_sha256": "3ab0f2f99d051cd91ed24d5ad4d9c5d2b9ced7a2031b2939de156911daa67d67",
-    "thinking_budget_tokens": 20480,
-    "inference_location": "host service; tool execution remains inside microsandbox"
-  },
-  "primary_model": {
-    "id": "1",
-    "name": "AgentLab Bonsai Thinking",
-    "format": "openai",
-    "base_url": "http://host.microsandbox.internal:8080/v1",
-    "model": "bonsai-2-27b",
-    "rate_per_second": 0,
-    "rate_per_minute": 0,
-    "context_window_k": 256,
-    "thinking_type": "",
-    "reasoning_effort": "medium",
-    "is_default": true,
-    "priority": 0,
-    "pool_exclude": true,
-    "streaming": true,
-    "max_tokens": 32768,
-    "max_tokens_field": "",
-    "session_header_key": "",
-    "retry": {
-      "connect": {
-        "attempts": 0,
-        "interval_ms": 0
-      },
-      "empty": {
-        "attempts": 0,
-        "interval_ms": 0
-      },
-      "stream": {
-        "attempts": 0,
-        "interval_ms": 0
-      }
-    }
-  },
-  "reasoning_profiles": {
-    "AgentLab Bonsai Thinking": {
-      "model_backend": "llama.cpp",
-      "provenance": "open-weight-local"
-    }
-  },
-  "inference_runtime": {
-    "model_path": "/mnt/Research/Models/Ternary-Bonsai-2-27B-Abliterated-v2-PQ2_0-MTP.gguf",
-    "model_alias": "bonsai-2-27b",
-    "model_ftype": "PQ2_0 - 2.13 bpw (group 128)",
-    "build_info": "b1-adfffbe",
-    "default_generation_settings": {
-      "params": {
-        "seed": 4294967295,
-        "temperature": 1.0,
-        "dynatemp_range": 0.0,
-        "dynatemp_exponent": 1.0,
-        "top_k": 20,
-        "top_p": 0.949999988079071,
-        "min_p": 0.05000000074505806,
-        "top_n_sigma": -1.0,
-        "xtc_probability": 0.0,
-        "xtc_threshold": 0.10000000149011612,
-        "typical_p": 1.0,
-        "repeat_last_n": 64,
-        "repeat_penalty": 1.0,
-        "presence_penalty": 0.0,
-        "frequency_penalty": 0.0,
-        "dry_multiplier": 0.0,
-        "dry_base": 1.75,
-        "dry_allowed_length": 2,
-        "dry_penalty_last_n": 64,
-        "mirostat": 0,
-        "mirostat_tau": 5.0,
-        "mirostat_eta": 0.10000000149011612,
-        "adaptive_target": -1.0,
-        "adaptive_decay": 0.8999999761581421,
-        "max_tokens": -1,
-        "n_predict": -1,
-        "n_keep": 0,
-        "n_discard": 0,
-        "ignore_eos": false,
-        "stream": false,
-        "n_probs": 0,
-        "min_keep": 0,
-        "chat_format": "Content-only",
-        "reasoning_format": "none",
-        "reasoning_in_content": false,
-        "generation_prompt": "",
-        "samplers": [
-          "penalties",
-          "dry",
-          "top_n_sigma",
-          "top_k",
-          "typ_p",
-          "top_p",
-          "min_p",
-          "xtc",
-          "temperature"
-        ],
-        "speculative.types": "none",
-        "timings_per_token": false,
-        "post_sampling_probs": false,
-        "backend_sampling": true,
-        "lora": []
-      },
-      "n_ctx": 262144
-    },
-    "total_slots": 1,
-    "chat_template_caps": {
-      "supports_object_arguments": true,
-      "supports_parallel_tool_calls": true,
-      "supports_preserve_reasoning": true,
-      "supports_reasoning_effort": true,
-      "supports_string_content": true,
-      "supports_system_role": true,
-      "supports_tool_calls": true,
-      "supports_tools": true,
-      "supports_typed_content": false
-    },
-    "chat_template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
   },
   "audit_fixes_20261103": {
     "source_commit": "e404ecbde7d5a18d46690d7a0f78ccdb090f3a2f",

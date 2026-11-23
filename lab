@@ -25,9 +25,6 @@ ROOT = Path(__file__).resolve().parent
 MSB = ROOT / '.venv/bin/msb'
 NAME = 'm1nervac0nsole-agentlab-egress-20261104t0030z'
 URL = 'http://127.0.0.1:8787'
-PRIMARY_URL = 'http://host.microsandbox.internal:8080/v1'
-PRIMARY_NAME = 'AgentLab Bonsai Thinking'
-PRIMARY_KEY = Path('/mnt/Research/Local_Stack/artifacts/api_key.txt')
 PROXY_BIN = ROOT / 'dist/provider-proxy'
 PROXY_STATE = ROOT / 'proxy-state'
 PROXY_TOKEN = ROOT / 'secrets/native-proxy-token'
@@ -508,86 +505,8 @@ def start(vpn=None, quota_gb=None):
         raise RuntimeError('m1nervac0nsole capture/refusal fallback settings are not enabled')
     print(f'm1nervac0nsole ready: {URL}; user minerva; password: {ROOT}/secrets/admin-password')
     active = next((p for p in api('/api/llm/profiles', token=token)['profiles'] if p['is_default']), None)
-    if active and active.get('base_url') == PRIMARY_URL:
-        start_primary_model()
     print('Capture enabled. Primary model: ' + (active['name'] if active else 'not configured'))
 
-
-def start_primary_model():
-    subprocess.run(['systemctl', '--user', 'start', 'bonsai.service'], check=True, timeout=60)
-    deadline = time.monotonic() + 600
-    while True:
-        try:
-            with urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2) as response:
-                healthy = json.load(response).get('status') == 'ok'
-        except (OSError, ValueError):
-            healthy = False
-        if healthy:
-            return primary_runtime()
-        if time.monotonic() >= deadline:
-            raise RuntimeError('Shared Bonsai model is not healthy; inspect bonsai.service')
-        time.sleep(2)
-
-
-def primary_runtime():
-    key = PRIMARY_KEY.read_text().strip()
-    if not key:
-        raise RuntimeError('Shared Bonsai API key is empty')
-    request = urllib.request.Request('http://127.0.0.1:8080/props',
-        headers={'Authorization': 'Bearer ' + key})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        runtime = json.load(response)
-    expected = json.loads((ROOT / 'deployment/provenance.json').read_text())['model_artifact']
-    loaded = Path(runtime.get('model_path', '')).resolve()
-    if runtime.get('model_alias') != 'bonsai-2-27b' or loaded != Path(expected['path']).resolve():
-        raise RuntimeError('Shared backend is serving a different model artifact')
-    identity = loaded.stat()
-    if identity.st_size != expected['size_bytes'] or identity.st_mtime_ns != expected['mtime_ns']:
-        raise RuntimeError('Model weights changed; reverify their hash before recording new provenance')
-    return runtime
-
-
-def primary():
-    """Activate the installed open-weight backend without adding paid fallbacks."""
-    runtime = start_primary_model()
-    key = PRIMARY_KEY.read_text().strip()
-    if not key:
-        raise RuntimeError('Shared Bonsai API key is empty')
-    token = login()
-    profiles = api('/api/llm/profiles', token=token)['profiles']
-    profile = {
-        'name': PRIMARY_NAME, 'format': 'openai', 'base_url': PRIMARY_URL,
-        'model': 'bonsai-2-27b', 'api_key': key, 'streaming': True,
-        'context_window_k': 256, 'max_tokens': 32768,
-        'thinking_type': '', 'reasoning_effort': 'medium', 'pool_exclude': True,
-    }
-    existing = next((p for p in profiles if p['name'] == PRIMARY_NAME), None)
-    if existing:
-        profile['id'] = int(existing['id'])
-    profile_id = api('/api/llm/profiles', profile, token, 'POST')['id']
-    api('/api/llm/profiles/active', {'id': profile_id}, token, 'POST')
-    api('/api/settings', {'llm_record': True, 'traffic_capture': True,
-        'agent_traffic_binding': True, 'llm_pool_enabled': False}, token, 'PUT')
-    active = next(p for p in api('/api/llm/profiles', token=token)['profiles'] if p['is_default'])
-    if str(active['id']) != str(profile_id) or active['base_url'] != PRIMARY_URL:
-        raise RuntimeError('Primary model activation did not persist')
-    provenance_path = ROOT / 'deployment/provenance.json'
-    provenance = json.loads(provenance_path.read_text())
-    provenance['model_backend'] = 'llama.cpp / shared bonsai.service'
-    provenance['primary_model'] = {k: v for k, v in active.items()
-                                   if k not in ('api_key', 'api_key_hint')}
-    provenance.setdefault('reasoning_profiles', {})[PRIMARY_NAME] = {
-        'model_backend': 'llama.cpp', 'provenance': 'open-weight-local',
-    }
-    provenance['inference_runtime'] = {k: runtime.get(k) for k in (
-        'model_path', 'model_alias', 'model_ftype', 'build_info',
-        'default_generation_settings', 'total_slots', 'chat_template_caps')}
-    provenance['inference_runtime']['chat_template_sha256'] = hashlib.sha256(
-        runtime.get('chat_template', '').encode()).hexdigest()
-    provenance_path.write_text(json.dumps(provenance, indent=2) + '\n')
-    print(json.dumps({'primary_profile': profile_id, 'name': PRIMARY_NAME,
-        'model': active['model'], 'base_url': active['base_url'],
-        'paid_fallbacks': False}, indent=2))
 
 
 def stop():
@@ -991,7 +910,7 @@ def prune(export_id, dry_run=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    for name in ('stop', 'status', 'export', 'primary'):
+    for name in ('stop', 'status', 'export'):
         sub.add_parser(name)
     sub.add_parser('build', help='Rebuild the guest binary, skills and scripts that /dist carries')
     image = sub.add_parser('image-build',
@@ -1041,8 +960,6 @@ def main():
         export()
     elif args.action == 'prune':
         prune(args.export_id, args.dry_run)
-    elif args.action == 'primary':
-        primary()
     return 0
 
 

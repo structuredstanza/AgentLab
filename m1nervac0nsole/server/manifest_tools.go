@@ -127,11 +127,7 @@ func (s *Server) manifestSource(id string) (toml string, source string, ok bool)
 	return text, "builtin", shipped
 }
 
-// engagementLimits caps throughput for manifest-backed tools.
-//
-// The proxy caps HTTP requests, but it cannot see a raw packet scan, and a
-// manifest default is only a suggestion: the caller can pass any rate it likes.
-// This is where a declared rate becomes a binding one.
+// engagementLimits bounds simultaneous tool runs, not their rates or threads.
 var engagementLimits = limits.New(policyFromEnv())
 
 // policyFromEnv lets an operator change the ceilings for one engagement without
@@ -143,9 +139,6 @@ func policyFromEnv() limits.Policy {
 	}
 	if v, err := strconv.Atoi(os.Getenv("M1NERVAC0NSOLE_MAX_SCANS_PER_TARGET")); err == nil && v > 0 {
 		p.MaxConcurrentPerTarget = v
-	}
-	if v, err := strconv.Atoi(os.Getenv("M1NERVAC0NSOLE_MAX_REQUESTS_PER_MINUTE")); err == nil && v > 0 {
-		p.MaxRequestsPerMinute = v
 	}
 	return p
 }
@@ -314,10 +307,6 @@ func (s *Server) previewToolManifest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	// The executor clamps a declared thread count to the per-target cap, so the
-	// preview must clamp it too: an argv that differs from the one that runs is
-	// a lie about what the tool gets.
-	engagementLimits.ClampThreads(m, effective)
 	// The preview runs outside any session and is shown in the UI, so it renders
 	// no proxy: a credential must never reach an API response. Execution passes
 	// the run's own proxy URL, which is why the preview can differ in that one
@@ -343,7 +332,7 @@ func (s *Server) previewToolManifest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) toolRunManifest() actool.CoreTool {
 	return actool.Build(actool.Spec{
 		Name:        "run_tool",
-		Description: "Run a reconnaissance or scanning tool declared by a manifest, and return its parsed records, the assets it found and the facts it recorded. Call list_tools first to see the parameters each tool accepts. Prefer this over Bash for any tool that appears in the list: the manifest pins the flags, parses the output into assets, and refuses an out-of-scope target. " + engagementLimits.Guidance(),
+		Description: "Run a reconnaissance or scanning tool declared by a manifest, and return its parsed records, the assets it found and the facts it recorded. Call list_tools first for the operator's speed profile and the parameters each tool accepts. Prefer this over Bash for any tool that appears in the list: the manifest pins the flags, parses the output into assets, and refuses an out-of-scope target.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -404,21 +393,20 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("%v", err)), nil
 			}
-			// A declared thread count is not a concurrency unit: clamp it to the
-			// per-target cap so 50 workers become the operator's three, not a run
-			// that waits for slots which cannot exist.
-			threadsFrom, threadsTo, threadsClamped := engagementLimits.ClampThreads(m, effective)
-			// No rate clamping: the proxy enforces the hard ceiling, and pinning
-			// every tool to one request a second made a real scan take hours. The
-			// description asks for a sensible rate instead.
 			release, err := engagementLimits.Acquire(ctx, in.Target, m, effective)
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("%s not started: %v", in.Tool, err)), nil
 			}
 			defer release()
-			// One proxy URL for the run: the argv placeholder and the child env
-			// must agree, and both carry this run's session credential.
+			// Resolve explicit proxy flags and environment from the same route.
+			ctx, direct, err := s.manifestDirectRoute(ctx, string(m.Limits.Unit))
+			if err != nil {
+				return actool.Errorf(fmt.Sprintf("select tool route: %v", err)), nil
+			}
 			proxy := execbox.ProxyURL(ctx, s.m.ProxyAddr())
+			if direct {
+				proxy = ""
+			}
 			args, err := m.Resolve(in.Target, effective, proxy)
 			if err != nil {
 				return actool.Errorf(fmt.Sprintf("%v", err)), nil
@@ -451,10 +439,7 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 				fmt.Fprintf(&b, " (%d emit rules skipped: the manifest may need widening)", result.Skipped)
 			}
 			b.WriteByte('\n')
-			if threadsClamped {
-				fmt.Fprintf(&b, "threads clamped from %d to %d (the per-target concurrency cap)\n",
-					threadsFrom, threadsTo)
-			}
+			b.WriteString(sandboxBlindNote(m, len(result.Targets), len(result.Facts)))
 			for i, t := range result.Targets {
 				if i >= 50 {
 					fmt.Fprintf(&b, "… and %d more assets\n", len(result.Targets)-50)
@@ -475,6 +460,14 @@ func (s *Server) toolRunManifest() actool.CoreTool {
 			return actool.Text(withArtifactRef(b.String(), ref)), nil
 		},
 	})
+}
+
+// sandboxBlindNote distinguishes an empty result from proof of target absence.
+func sandboxBlindNote(m *manifest.Manifest, assets, facts int) string {
+	if m.Command.Program != "nmap" || assets+facts > 0 {
+		return ""
+	}
+	return "No host answered from this vantage. Nmap requires the scoped VPN direct lane (live tun0, no operator global proxy); without it raw target traffic is blocked. On an available lane use --privileged -Pn as uid 1000 with CAP_NET_RAW, not root; the built-in manifest supplies these flags. Use port_scan or tcp_probe for backend TCP checks when the lane is unavailable.\n"
 }
 
 // runManifestProcess starts one manifest tool inside the run's session and
@@ -504,10 +497,17 @@ func runManifestProcess(ctx context.Context, m *manifest.Manifest, args []string
 		return nil, "", err
 	}
 	env := append([]string{"HOME=/tmp", "TMPDIR=/tmp"}, agent.ProxyEnv(proxy, caCert)...)
+	// Model-generated inputs (wordlists, request files) live in the trusted
+	// tool-call workspace. The supervisor still validates this writable root.
+	var writable []string
+	if call, ok := execbox.ArtifactsFrom(ctx); ok {
+		writable = []string{call.Dir}
+	}
 	proc, err := client.Run(ctx, sess, execbox.Spec{
-		Argv: append([]string{m.Command.Program}, args...),
-		Dir:  "/tmp",
-		Env:  env,
+		Argv:     append([]string{m.Command.Program}, args...),
+		Dir:      "/tmp",
+		Env:      env,
+		Writable: writable,
 	})
 	if err != nil {
 		return nil, "", err
@@ -621,9 +621,15 @@ func (s *Server) toolListManifests() actool.CoreTool {
 			} else {
 				fmt.Fprintf(&b, "%d tools:\n", set.Len())
 			}
-			if g := engagementLimits.Guidance(); g != "" {
-				fmt.Fprintf(&b, "\n%s\n\n", g)
+			profile := ""
+			if ri := agent.RunInfoFrom(ctx); ri.TaskID > 0 && s.m != nil && s.m.PG() != nil {
+				var err error
+				profile, err = s.m.PG().TaskSpeedProfile(ri.TaskID)
+				if err != nil {
+					return actool.Errorf(fmt.Sprintf("load task speed profile: %v", err)), nil
+				}
 			}
+			fmt.Fprintf(&b, "\n%s\n\n", limits.GuidanceFor(profile))
 			b.WriteString(body.String())
 			if shown == 0 {
 				b.WriteString("(no tool matches; call list_tools without a query to see the catalog)\n")

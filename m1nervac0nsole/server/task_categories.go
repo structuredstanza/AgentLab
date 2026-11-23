@@ -178,6 +178,7 @@ func (s *Server) updateTaskCategory(w http.ResponseWriter, r *http.Request) {
 	dto := taskDTO(task, s.resolvedTaskStatus(task))
 	blockedReasons, _ := s.m.PG().TaskBlockedReasons()
 	applyTaskBlockedReason(&dto, blockedReasons)
+	s.applyTaskSpeedProfileOne(&dto)
 	writeJSON(w, http.StatusOK, dto)
 }
 

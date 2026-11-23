@@ -5,6 +5,24 @@ import (
 	"testing"
 )
 
+func TestFoldFindingEvidencePreservesPins(t *testing.T) {
+	const pins = "Pinned evidence:\n- artifact fixture\n- packet capture fixture"
+	const replacement = "Pinned evidence:\n- replacement capture"
+	previous := "older observation\n\n" + pins + "\n\nolder unrelated notes"
+	for _, tc := range []struct {
+		current, want string
+	}{
+		{"latest observation", "latest observation\n\n" + pins},
+		{"", pins},
+		{replacement, replacement},
+		{"mentions Pinned evidence: inline", "mentions Pinned evidence: inline\n\n" + pins},
+	} {
+		if got := foldFindingEvidence(tc.current, previous); got != tc.want {
+			t.Errorf("fold of %q = %q, want %q", tc.current, got, tc.want)
+		}
+	}
+}
+
 // A finding recorded twice is one row, not two: the planner and the workers
 // converge on the same vulnerability from different intents, and a second row
 // inflates the report and splits the evidence between them.
@@ -18,10 +36,11 @@ func TestRecordFindingFoldsARepeat(t *testing.T) {
 	task := memoryTask(t, d)
 	expID := task.ExplorationID
 	es := d.Exploration(expID)
+	const pins = "Pinned evidence:\n- artifact fixture"
 
 	first, err := es.RecordFinding(context.Background(), RecordFindingInput{
 		TaskID: task.ID, ExplorationID: expID, VulnClass: "sqli", Name: "Login form SQL injection",
-		Severity: SeverityHigh, Summary: "the login form is injectable", Evidence: "poc one", Worker: "worker-a",
+		Severity: SeverityHigh, Summary: "the login form is injectable", Evidence: "poc one\n\n" + pins, Worker: "worker-a",
 		Screenshots: []string{"tasks/1/screenshots/first.png"},
 	})
 	if err != nil {
@@ -62,8 +81,15 @@ func TestRecordFindingFoldsARepeat(t *testing.T) {
 		Scan(&severity, &summary, &evidence, &version); err != nil {
 		t.Fatal(err)
 	}
-	if severity != SeverityCritical || summary != "confirmed with a UNION payload" || evidence != "poc two" {
+	if severity != SeverityCritical || summary != "confirmed with a UNION payload" || evidence != "poc two\n\n"+pins {
 		t.Fatalf("row not refreshed: severity=%q summary=%q evidence=%q", severity, summary, evidence)
+	}
+	var nodeEvidence string
+	if err := d.QueryRow(`SELECT payload #>> '{evidence,poc}' FROM exploration_nodes WHERE id=$1`, first.NodeID).Scan(&nodeEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if nodeEvidence != evidence {
+		t.Fatalf("exploration node evidence = %q, want %q", nodeEvidence, evidence)
 	}
 	if version != 0 {
 		t.Fatalf("evidence_version = %d after a text-only refresh, want 0 (the archive gate reads 0 as no bound proof)", version)
@@ -80,19 +106,23 @@ func TestRecordFindingFoldsARepeat(t *testing.T) {
 	if shots != `["tasks/1/screenshots/first.png"]` {
 		t.Fatalf("screenshots after a repeat without evidence = %s, want the first report's", shots)
 	}
+	const replacement = "poc three\n\nPinned evidence:\n- replacement fixture"
 	if _, err := es.RecordFinding(context.Background(), RecordFindingInput{
 		TaskID: task.ID, ExplorationID: expID, VulnClass: "sqli", Name: "Login form SQL injection",
-		Severity: SeverityCritical, Summary: "same proof again", Evidence: "poc two", Worker: "worker-c",
+		Severity: SeverityCritical, Summary: "same proof again", Evidence: replacement, Worker: "worker-c",
 		Screenshots: []string{"tasks/1/screenshots/second.png"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`SELECT screenshots::text FROM findings WHERE id=$1`, first.FindingID).
-		Scan(&shots); err != nil {
+	if err := d.QueryRow(`SELECT screenshots::text, evidence FROM findings WHERE id=$1`, first.FindingID).
+		Scan(&shots, &evidence); err != nil {
 		t.Fatal(err)
 	}
 	if shots != `["tasks/1/screenshots/second.png"]` {
 		t.Fatalf("screenshots after a repeat with evidence = %s, want the new one", shots)
+	}
+	if evidence != replacement {
+		t.Fatalf("evidence after repeat with new pins = %q, want %q", evidence, replacement)
 	}
 
 	// A repeat never moves it either.

@@ -182,9 +182,10 @@ type taskRuntime struct {
 }
 
 type workExecution struct {
-	cancel context.CancelCauseFunc
-	done   chan error
-	action string // user action: pause | cancel
+	cancel   context.CancelCauseFunc
+	done     chan error
+	finished chan struct{} // closed once the worker has settled its final state (after done is sent)
+	action   string        // user action: pause | cancel
 }
 
 // nextPlannerRound returns the next planner round number for a task (1-based).
@@ -432,7 +433,7 @@ func NewEngine(m *Manager) *Engine {
 // registerWork records the cancel for the work currently running intentID.
 func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc) {
 	e.workMu.Lock()
-	e.work[intentID] = &workExecution{cancel: cancel, done: make(chan error, 1)}
+	e.work[intentID] = &workExecution{cancel: cancel, done: make(chan error, 1), finished: make(chan struct{})}
 	e.workMu.Unlock()
 }
 
@@ -464,7 +465,10 @@ func (e *Engine) detachWork(intentID int64) (action string, complete func(error)
 	if run == nil {
 		return action, func(error) {}
 	}
-	return action, func(err error) { run.done <- err }
+	return action, func(err error) {
+		run.done <- err
+		close(run.finished)
+	}
 }
 
 // ControlWork requests a user-visible pause or cancellation and waits until the
@@ -718,22 +722,26 @@ func (e *Engine) SetIntentCancel(fn func(ctx context.Context, t *Task, intentID 
 	e.intentCancel = fn
 }
 
-// KillWork stops one intent (planner's kill_work tool). A live work is cancelled
-// in place; an intent that has not started yet falls through to the operator
-// cancel path so the planner can retract it with an auditable reason. An unknown
-// intent still errors (applyIntentControl reports "intent not found").
+// KillWork stops one intent at the planner's request. An intent that has not
+// started uses the same audited cancel path as the operator's stop tool.
 func (e *Engine) KillWork(ctx context.Context, taskID, intentID int64, reason string) error {
+	return e.killWorkWithin(ctx, taskID, intentID, reason, agent.AbortKilledByPlanner, workControlWaitTimeout)
+}
+
+func (e *Engine) killWorkByOperator(ctx context.Context, taskID, intentID int64, reason string) error {
+	return e.killWorkWithin(ctx, taskID, intentID, reason, agent.AbortKilledByOperator, workControlWaitTimeout)
+}
+
+func (e *Engine) killWorkWithin(ctx context.Context, taskID, intentID int64, reason string, cause *agent.AbortCause, wait time.Duration) error {
 	e.workMu.Lock()
 	run := e.work[intentID]
 	e.workMu.Unlock()
 	if run != nil {
 		e.recordKillReason(taskID, intentID, reason)
-		run.cancel(agent.AbortKilledByPlanner)
-		return nil
+		run.cancel(cause)
+		return e.awaitWorkSettled(ctx, intentID, run, wait)
 	}
-	// KillWork is wired to the planner's kill_work tool (agent/tools.go), so these
-	// errors are input fed back to the agent via actool.Errorf(err.Error()). As with
-	// SteerWork, the original text is preserved.
+	// These errors are fed back to the agent through actool.Errorf, as in SteerWork.
 	if e.intentCancel == nil || e.m == nil {
 		return fmt.Errorf("intent %d has no running work (it may have ended or not been claimed)", intentID)
 	}
@@ -755,12 +763,33 @@ func (e *Engine) KillWork(ctx context.Context, taskID, intentID int64, reason st
 	e.workMu.Unlock()
 	if run != nil {
 		e.recordKillReason(taskID, intentID, reason)
-		run.cancel(agent.AbortKilledByPlanner)
+		run.cancel(cause)
+		return e.awaitWorkSettled(ctx, intentID, run, wait)
 	}
 	return nil
 }
 
-// recordKillReason puts the planner's kill_work reason on the intent's activity
+// awaitWorkSettled blocks until the cancelled work has returned from Execute and
+// written its final intent state (detachWork's completion). Execute's deferred
+// Session.Close kills the session's background process groups before it returns,
+// so a nil result proves the worker and its processes are gone. wait bounds it.
+func (e *Engine) awaitWorkSettled(ctx context.Context, intentID int64, run *workExecution, wait time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-run.finished:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("stop of intent %d was requested but not confirmed: %w", intentID, ctx.Err())
+	case <-timer.C:
+		return fmt.Errorf("stop of intent %d was requested but the worker had not finished within %v; it is still winding down, check its state before assuming it stopped", intentID, wait)
+	}
+}
+
+// recordKillReason puts the kill_work reason on the intent's activity
 // trail. A running intent is marked stopped rather than deleted, so unlike the
 // cancel path there is no delete_reason column to carry it.
 func (e *Engine) recordKillReason(taskID, intentID int64, reason string) {
@@ -1310,7 +1339,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		e.EndLLMCall(t.ID)
 	}
 	// Capture kill state before detachWork cancels workCtx. kill = this work's
-	// ctx was cancelled (planner kill_work) while the TASK ctx kept running; a
+	// ctx was cancelled by kill_work while the TASK ctx kept running; a
 	// pause cancels the task ctx (ectx) instead. Checking workCtx.Err() AFTER
 	// unregister would always be true (unregister cancels it) → every completed
 	// work would be wrongly marked stopped.

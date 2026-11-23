@@ -180,7 +180,7 @@ func customToolSchema(keyDesc string) map[string]any {
 		"key":         strParam(keyDesc),
 		"description": strParam("Description sent to the model"),
 		"kind":        strParam("shell | command | script (Python only) | http. shell declares a bash environment (tells the model the tool can be called directly in bash, no exec/schema needed); the other three require exec"),
-		"exec":        map[string]any{"type": "object", "description": "Execution spec (not needed for shell): command→{command}; script→{code}; http→{method,url,headers,body,proxy,use_recording_proxy}"},
+		"exec":        map[string]any{"type": "object", "description": "Execution spec (not needed for shell): command->{command}; script->{code}; http->{method,url,headers,body,timeout_ms}"},
 		"schema":      map[string]any{"type": "object", "description": "Parameter JSON Schema (may be empty for shell/command/script; required for http and must include properties)"},
 		"agents":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Bound agent keys (optional)"},
 		"deferred":    map[string]any{"type": "boolean", "description": "Whether deferred (no effect for shell; enable only for infrequently used command/script/http tools)"},

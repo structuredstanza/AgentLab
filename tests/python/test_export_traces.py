@@ -479,7 +479,7 @@ class Redaction(ExportTest):
             self.assertNotIn(password, f.read())
 
     def test_vault_passwords_scrubbed_across_reasoning_summary_tools_results_text_and_raw_unchanged(self):
-        mapping = {"reasoning_profiles": {"bonsai": {"model_backend": "llama.cpp", "provenance": "open-weight-local"}}}
+        mapping = {"reasoning_profiles": {"local-model": {"model_backend": "llama.cpp", "provenance": "open-weight-local"}}}
         with open(os.path.join(self.raw, et.PROVENANCE_FILE), "w", encoding="utf-8") as f:
             f.write(json.dumps(mapping))
 
@@ -516,7 +516,7 @@ class Redaction(ExportTest):
                 "finish_reason": "tool_calls",
             }],
         })
-        rec1 = _record("rec-ow", raw_resp1, text=f"here is result {pw_text}", thinking=f"reasoning step {pw_ow}", stop="tool_use", request=req1, profile="bonsai")
+        rec1 = _record("rec-ow", raw_resp1, text=f"here is result {pw_text}", thinking=f"reasoning step {pw_ow}", stop="tool_use", request=req1, profile="local-model")
 
         msg_sdk = {
             "stopReason": "toolUse",
@@ -706,8 +706,8 @@ class ResponsesStreamContract(ExportTest):
 
 
 class ReasoningProvenance(ExportTest):
-    BONSAI = "AgentLab Bonsai Thinking"
-    MAPPING = {"reasoning_profiles": {BONSAI: {"model_backend": "llama.cpp", "provenance": "open-weight-local"}}}
+    LOCAL_MODEL = "AgentLab Local Model"
+    MAPPING = {"reasoning_profiles": {LOCAL_MODEL: {"model_backend": "llama.cpp", "provenance": "open-weight-local"}}}
 
     @staticmethod
     def _chat(message, **extra):
@@ -728,7 +728,7 @@ class ReasoningProvenance(ExportTest):
 
     def test_mapped_profile_reasoning_is_raw_with_provenance(self):
         self._write_provenance(json.dumps(self.MAPPING))
-        rec = _record("b1", self._chat({"content": "ok", "reasoning_content": "Hmm"}), text="ok", thinking="Hmm", profile=self.BONSAI)
+        rec = _record("b1", self._chat({"content": "ok", "reasoning_content": "Hmm"}), text="ok", thinking="Hmm", profile=self.LOCAL_MODEL)
         counts, train, rejects = self._export([rec])
         self.assertEqual(counts["exported"], 1, rejects)
         self.assertEqual(train[0]["metadata"]["reasoning_kind"], "raw")
@@ -741,7 +741,7 @@ class ReasoningProvenance(ExportTest):
         self._write_provenance(json.dumps(self.MAPPING))
         rows = [
             _record("v1", self._chat({"content": "ok", "reasoning": "Plan"}), text="ok", thinking="Plan"),
-            _record("v2", self._chat({"content": "ok", "reasoning": "Plan"}), text="ok", thinking="Plan", profile=self.BONSAI),
+            _record("v2", self._chat({"content": "ok", "reasoning": "Plan"}), text="ok", thinking="Plan", profile=self.LOCAL_MODEL),
         ]
         counts, train, rejects = self._export(rows)
         self.assertEqual(counts["exported"], 2, rejects)

@@ -1324,6 +1324,42 @@ func (s *AssetStore) DeleteByTaskID(taskID int64) (int64, error) {
 	return deleted, nil
 }
 
+// TaskHostAddrs returns the distinct addresses the task recorded for a
+// hostname: rows carrying both domain and ip, A/AAAA record values, and ip
+// rows whose bound_domains list the name. IP literals have no mapping.
+func (s *AssetStore) TaskHostAddrs(taskID int64, host string) ([]net.IP, error) {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" || net.ParseIP(host) != nil {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`
+SELECT ip FROM assets WHERE $2 = ANY(task_ids) AND domain = $1 AND COALESCE(ip,'') <> ''
+UNION
+SELECT unnest(record_value) FROM assets
+WHERE $2 = ANY(task_ids) AND domain = $1 AND record_type IN ('A','AAAA')
+UNION
+SELECT ip FROM assets WHERE $2 = ANY(task_ids) AND type = 'ip' AND $1 = ANY(bound_domains)`, host, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []net.IP
+	seen := map[string]bool{}
+	for rows.Next() {
+		var v sql.NullString
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		ip := net.ParseIP(strings.TrimSpace(v.String))
+		if ip == nil || seen[ip.String()] {
+			continue
+		}
+		seen[ip.String()] = true
+		out = append(out, ip)
+	}
+	return out, rows.Err()
+}
+
 // HostsByTask returns the exact HTTP host candidates attached to a task's
 // assets. Domain/IP columns cover root domains, subdomains and non-HTTP
 // services; URL covers HTTP services and endpoints.

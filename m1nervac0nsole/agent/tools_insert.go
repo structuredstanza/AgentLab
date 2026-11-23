@@ -297,6 +297,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					})
 
 				case "subdomain":
+					item.RecordType = strings.ToUpper(item.RecordType)
 					id, err = t.as.UpsertSubdomain(db.UpsertSubdomainReq{
 						Domain:      item.Domain,
 						RecordType:  item.RecordType,
@@ -389,6 +390,9 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 						svcIP = item.IP
 					}
 					_ = t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP)
+					if kind, value := db.DeriveScopeKind(typ, item.Domain, item.URL, svcIP); kind != "" {
+						t.flagPending(kind, value)
+					}
 				}
 				// Async engine-side auto-completion for what was just persisted: DNS
 				// for a domain, an HTTP probe for a web service. The engine re-checks
@@ -534,6 +538,15 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 					continue
 				}
 				added = append(added, map[string]any{"kind": ts.Kind, "domain": ts.Domain, "net": ts.Net, "value": ts.Value, "company_id": ts.CompanyID, "effect": ts.Effect})
+				if ts.Effect != "exclude" {
+					v := ts.Domain
+					if v == "" {
+						v = ts.Net
+					}
+					if p := t.flagPending(ts.Kind, v); p != "" {
+						added[len(added)-1]["pending_network_rule"] = p + " (network access pending operator approval)"
+					}
+				}
 			}
 			out := map[string]any{"added": added}
 			if len(errs) > 0 {
@@ -596,7 +609,7 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 			"DSL: field=value fuzzy (ILIKE) | field==value exact | field!=value exclude | numeric fields support > >= < <= | bare word = full-text fuzzy; combine with AND/OR (AND binds tighter), parentheses allowed for grouping. Asset type uses the separate type parameter, not the DSL.\n"+
 			"If id/ids is not given, dsl must be non-empty (unconditional full queries are not allowed).\n"+
 			"Available fields: domain (root/subdomain/service domain), root_domain, ip, url, page_title, icp, service_name, app_name, method (e.g. GET/POST), service_type (http|other), record_type (e.g. A/CNAME), technology (array; = fuzzy, == exact), port/status_code/company_id (integers).\n"+
-			"Examples: status_code>=400 AND technology=shiro ; (port==80 OR port==443) AND technology=nginx",
+			"Examples: status_code>=400 AND technology=shiro ; (port==80 OR port==443) AND technology=nginx ; exclude a value: domain!=staging (empty exclusions like ip!=\"\" are rejected). To list IPs, call with JSON {\"type\":\"ip\",\"dsl\":\"task_id=<this task id>\"}: type is a separate parameter, not part of the DSL.",
 		obj(map[string]any{
 			"dsl":    str(`DSL query expression (syntax and fields in the tool description). Must be non-empty when id/ids is not given.`),
 			"type":   str("Asset type filter: root_domain|ip|subdomain|app|service|endpoint (separate field; can be combined with dsl; type alone is not enough to query, dsl is still required)"),
@@ -713,7 +726,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.insertAssets(), t.listAssets(),
 		// tcp_probe: a direct dial, so a reachability check cannot be answered by
 		// a proxy that replies before it dials. Its failures feed target_liveness.
-		t.tcpProbe(),
+		t.tcpProbe(), t.portScan(),
 		t.saveTaskCredential(), t.listTaskCredentials(),
 		// Look back across work: a worker can also reuse observations from other work, to avoid duplicated effort.
 		// search_all_worker_traces: no need to know the intent_id in advance; search globally by keyword for matching steps;
@@ -738,6 +751,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.addHint(), t.addIntent(),
 		// steer_work: a human can inject a corrective instruction into a running intent (work) in real time, without interrupting it or losing its progress.
 		t.steerWorkTool(),
+		// kill_work: the real stop (cancels the worker and waits for it to exit); steer_work above is only a next-boundary correction.
+		t.killWorkTool(),
 		// set_goals: a human can add a new final goal to the current task at runtime; the planner uses it to re-judge whether the task is complete.
 		t.setGoals(),
 		// set_constraints: the human can add to or modify operation constraints (allow/deny) for this task at runtime, bounding the planner/worker exploration scope.

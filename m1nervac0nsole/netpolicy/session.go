@@ -100,6 +100,11 @@ func newSessionID() (string, error) {
 // An address that already carries a user part is returned unchanged, and so is a
 // socks5 one: those are the operator's own proxy credentials (for socks5, SOCKS
 // auth), and the gateway address has neither.
+//
+// The credential is the user part AND the password, because Python's urllib and
+// urllib3 send Proxy-Authorization only when both are set, so a password-less
+// URL left every Python HTTPS client in a session failing CONNECT with 407
+// while curl worked. The gateway reads the user part alone.
 func ProxyURL(s Session, addr string) string {
 	addr = strings.TrimSpace(addr)
 	if addr == "" || strings.TrimSpace(s.Credential) == "" {
@@ -115,6 +120,6 @@ func ProxyURL(s Session, addr string) string {
 	if u.User != nil || strings.HasPrefix(u.Scheme, "socks") {
 		return u.String()
 	}
-	u.User = url.User(s.Credential)
+	u.User = url.UserPassword(s.Credential, s.Credential)
 	return u.String()
 }

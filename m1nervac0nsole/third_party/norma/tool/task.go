@@ -505,8 +505,11 @@ func (m *Manager) terminate(t *Task, status TaskStatus, oversize bool) {
 	}
 	t.Status = status
 	t.oversize = oversize
-	proc := t.cmd.Process
 	sess := t.sess
+	var proc *os.Process
+	if t.cmd != nil { // executor-backed tasks have only sess
+		proc = t.cmd.Process
+	}
 	m.mu.Unlock()
 	if sess != nil {
 		sess.Kill()

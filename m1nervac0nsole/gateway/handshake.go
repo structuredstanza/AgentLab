@@ -37,6 +37,11 @@ func (t *Transport) Handshake(ctx context.Context, connCtx *mproxy.ConnContext, 
 			return nil, tls.ConnectionState{}, originError(dec)
 		}
 	}
+	// No SNI (an IP-literal CONNECT from Go or curl): verify the authorized
+	// authority itself.
+	if serverName == "" {
+		serverName = st.authority
+	}
 	conn, state, err := t.handshake(ctx, st.session, serverName, c)
 	if err != nil {
 		return nil, tls.ConnectionState{}, err

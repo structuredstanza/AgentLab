@@ -5,9 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
-	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/gateway"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
 
@@ -18,17 +19,18 @@ func TestProxyLabelledFailureIsNotTheTargetsResponse(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
 
-	// Stands in for the masking proxy when it cannot dial the target: it
-	// answers the request itself and labels the answer.
+	// Stands in for the gateway when it cannot dial the target: it answers the
+	// request itself and names the stage.
+	var proxyHits atomic.Int32
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(egress.HeaderEgress, "dial-failed")
+		proxyHits.Add(1)
+		w.Header().Set(gateway.HeaderStage, "dial")
 		w.WriteHeader(http.StatusBadGateway)
-		io.WriteString(w, "m1nervac0nsole egress: upstream dial-failed\n")
+		io.WriteString(w, "gateway: upstream dial failed\n")
 	}))
 	defer proxy.Close()
 
-	var log observationLog
-	engine := New(as, Options{Workers: 1, Proxy: proxy.URL, CAFile: foreignCA(t), Observe: log.add, Authorizer: netpolicy.NewAuthorizer(d)})
+	engine := New(as, Options{Workers: 1, Route: staticRouteFunc(proxy.URL, foreignCA(t)), Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 
 	target := "http://203.0.113.7/probe"
@@ -42,9 +44,8 @@ func TestProxyLabelledFailureIsNotTheTargetsResponse(t *testing.T) {
 	engine.ProbeSite(task.ID, id, target)
 	engine.Wait()
 
-	got := log.all()
-	if len(got) != 1 || !got[0].Failed || !got[0].ProxyFailure {
-		t.Fatalf("a proxy-labelled 502 must be one Failed/ProxyFailure observation, got %+v", got)
+	if n := proxyHits.Load(); n != 1 {
+		t.Fatalf("the probe should have reached the proxy once, got %d", n)
 	}
 	asset := loadAsset(t, as, id)
 	if asset.StatusCode != nil {

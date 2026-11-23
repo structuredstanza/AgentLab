@@ -396,7 +396,7 @@ func TestScriptToolRefusesWithoutASession(t *testing.T) {
 
 // TestRunHTTPTool functionally exercises the http executor against a local server:
 // method/url/header/body templates are rendered from params, the request is sent,
-// and the response status+body are returned. No recording proxy → s.m untouched.
+// and the response status+body are returned. The request reaches the origin through the recording proxy.
 func TestRunHTTPTool(t *testing.T) {
 	var gotMethod, gotAuth, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -415,7 +415,8 @@ func TestRunHTTPTool(t *testing.T) {
 		"headers": map[string]string{"Authorization": "Bearer {token}"},
 		"body":    `{"flag":"{flag}"}`,
 	})
-	res, err := (&Server{}).runHTTPTool(context.Background(), execRaw,
+	ctx := execbox.WithSession(context.Background(), credentialSession())
+	res, err := forwardingProxyServer(t).runHTTPTool(ctx, execRaw,
 		map[string]any{"flag": "CTF{x}", "token": "sekret"}, nil)
 	if err != nil {
 		t.Fatalf("runHTTPTool: %v", err)
@@ -470,8 +471,8 @@ func TestHTTPToolProxyRouting(t *testing.T) {
 		spec map[string]any
 		m    *Manager
 	}{
-		{"explicit proxy", map[string]any{"proxy": proxy.URL}, &Manager{}},
-		{"recording proxy", map[string]any{"use_recording_proxy": true}, &Manager{globalProxy: proxy.URL}},
+		{"recording proxy", map[string]any{}, &Manager{globalProxy: proxy.URL}},
+		{"a configured proxy field is ignored", map[string]any{"proxy": "http://127.0.0.1:1"}, &Manager{globalProxy: proxy.URL}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mu.Lock()
@@ -508,9 +509,9 @@ func TestHTTPToolProxyRouting(t *testing.T) {
 	}
 }
 
-// use_recording_proxy with no recording proxy running must fail the tool, not
-// quietly send the request directly.
-func TestHTTPToolRecordingProxyMissingFailsClosed(t *testing.T) {
+// With no recording proxy running the tool must fail, not quietly send the
+// request directly.
+func TestHTTPToolNoProxyFailsClosed(t *testing.T) {
 	var targetHits atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		targetHits.Add(1)
@@ -518,7 +519,7 @@ func TestHTTPToolRecordingProxyMissingFailsClosed(t *testing.T) {
 	}))
 	defer target.Close()
 
-	execRaw, _ := json.Marshal(map[string]any{"method": "GET", "url": target.URL, "use_recording_proxy": true})
+	execRaw, _ := json.Marshal(map[string]any{"method": "GET", "url": target.URL})
 	res, err := (&Server{m: &Manager{}}).runHTTPTool(context.Background(), execRaw, map[string]any{}, nil)
 	if err != nil {
 		t.Fatalf("runHTTPTool: %v", err)
@@ -526,7 +527,7 @@ func TestHTTPToolRecordingProxyMissingFailsClosed(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("missing recording proxy did not fail the tool: %q", res.Flatten())
 	}
-	if !strings.Contains(res.Flatten(), "use_recording_proxy") {
+	if !strings.Contains(res.Flatten(), "refusing to send") {
 		t.Fatalf("error is not actionable: %q", res.Flatten())
 	}
 	if n := targetHits.Load(); n != 0 {
@@ -554,7 +555,8 @@ func TestHTTPToolTruncatesLargeBody(t *testing.T) {
 	defer srv.Close()
 
 	execRaw, _ := json.Marshal(map[string]any{"method": "GET", "url": srv.URL})
-	res, err := (&Server{}).runHTTPTool(context.Background(), execRaw, map[string]any{}, nil)
+	ctx := execbox.WithSession(context.Background(), credentialSession())
+	res, err := forwardingProxyServer(t).runHTTPTool(ctx, execRaw, map[string]any{}, nil)
 	if err != nil {
 		t.Fatalf("runHTTPTool: %v", err)
 	}
@@ -823,7 +825,7 @@ func TestTestCustomToolHTTPGoesThroughTheRecordingProxy(t *testing.T) {
 		t.Fatalf("status %d: %s", code, body)
 	}
 	out, isErr := testToolResult(t, body)
-	if !isErr || !strings.Contains(out, "use_recording_proxy") {
+	if !isErr || !strings.Contains(out, "refusing to send") {
 		t.Fatalf("a test with no reachable proxy = %q (isError=%v), want the refusal", out, isErr)
 	}
 	if n := targetHits.Load(); n != 0 {

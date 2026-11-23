@@ -25,7 +25,6 @@ import pwd
 import re
 import secrets
 import shutil
-import socket
 import signal
 import subprocess
 import sys
@@ -169,22 +168,17 @@ def ring_segments():
 VPN_PROFILE = "/run/secrets/openvpn-profile.ovpn"
 VPN_LOG = f"{RUNTIME}/logs/openvpn.log"
 VPN_TIMEOUT = 90  # seconds to reach an address on the tunnel interface
-# Outbound HTTP proxy. Every tool that honours proxy environment variables is
-# routed through it, so the identity the target sees is the engagement's, not the
-# tool's. Raw TCP (SMB, SSH, port scans) bypasses it by design.
-EGRESS_ADDR = "127.0.0.1:8888"
-EGRESS_DIR = f"{RUNTIME}/egress"
-EGRESS_CA = f"{EGRESS_DIR}/ca.pem"
-EGRESS_LOG = f"{RUNTIME}/logs/egress.log"
-EGRESS_TIMEOUT = 20
-# The operator's hard rule for shared labs: never exceed 100 requests a minute
-# against one target. Enforced per target so a backlog does not make each box
-# wait behind the others.
-EGRESS_RPM = int(os.environ.get("AGENTLAB_EGRESS_RPM", "100"))
-# Simultaneous scans: across the engagement, and against one host. An operator
-# can raise these for a dedicated box without rebuilding.
-MAX_SCANS = int(os.environ.get("AGENTLAB_MAX_SCANS", "3"))
-MAX_SCANS_PER_TARGET = int(os.environ.get("AGENTLAB_MAX_SCANS_PER_TARGET", "3"))
+# Simultaneous scans: across the engagement, and against one host. This bounds
+# resources, not request rate. An operator can change them without rebuilding.
+MAX_SCANS = int(os.environ.get("AGENTLAB_MAX_SCANS", "16"))
+MAX_SCANS_PER_TARGET = int(os.environ.get("AGENTLAB_MAX_SCANS_PER_TARGET", "16"))
+# A session's forwarded packets cross its veth (source in this /16, see
+# execbox/netns.go randomSubnet) and again on tun0 after MASQUERADE with the
+# tunnel address as source. Excluding the /16 keeps the tun0/eth copy once; the
+# session-to-gateway leg (DNAT to loopback) is the recorder's evidence, and
+# gateway, recorder and backend loopback traffic uses 127.0.0.1 sources, so it stays.
+SESSION_NET = "10.98.0.0/16"
+CAPTURE_FILTER = f"not net {SESSION_NET}"
 # Unprivileged execution boundary. The supervisor is a privileged process of its
 # own: it owns every namespace, cgroup and firewall change, and the backend only
 # asks it over a Unix socket. It must be up before the backend starts, because the
@@ -200,9 +194,15 @@ EXECBOX_TIMEOUT = 30
 # can see and which dies with the session. Everything else is read-only or
 # absent, and the app's data root, keys and database socket are never mounted.
 EXECBOX_WORKSPACES = f"{M1NERVAC0NSOLE_DATA}/tasks,{M1NERVAC0NSOLE_DATA}/sessions"
+# The recorder's public CA certificate, created by the backend at its first start.
+# The supervisor mounts a copy of this file alone, read-only, at this same path in
+# every tool session, because the backend hands that path to every client as its
+# trust anchor. The directory also holds the signing key and is never mounted.
+RECORDER_CA = f"{M1NERVAC0NSOLE_DATA}/traffic/_ca/mitmproxy-ca-cert.pem"
 CAPTURE_LIMITS = {
     "tool": "tcpdump",
     "interface": "any",
+    "filter": CAPTURE_FILTER,
     "snaplen": "-s0 (full packets)",
     "flush": "-U (per packet)",
     "rotation": f"-C {SEGMENT_MB} (~{SEGMENT_MB} million bytes per segment) -W {MAX_SEGMENTS}",
@@ -506,31 +506,9 @@ def app_env(dsn, admin_pw, keylog=None):
         "M1NERVAC0NSOLE_CAPTURE_RESERVE_MB": str(CAPTURE_RESERVE_MB),
         "M1NERVAC0NSOLE_CAPTURE_RESERVE_PCT": str(CAPTURE_RESERVE_PCT),
     }
-    # Route target-bound HTTP through the identity proxy. The host native proxy
-    # is excluded from it, or model calls would be rewritten as target traffic.
-    proxy = f"http://{EGRESS_ADDR}"
     env.update({
-        "http_proxy": proxy, "https_proxy": proxy,
-        "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy,
-        "no_proxy": "localhost,127.0.0.1,::1,host.microsandbox.internal",
-        "NO_PROXY": "localhost,127.0.0.1,::1,host.microsandbox.internal",
-        # The masking egress proxy the backend's own outbound requests (asset
-        # enrichment probes) must exit through, and the CA it signs with. These
-        # are explicit rather than inferred from HTTP_PROXY, because a generic
-        # proxy variable is not a guarantee that the identity proxy is the one
-        # used: the recording MITM also honours them, and a direct dial with a
-        # browser User-Agent still leaves with this process's TLS fingerprint.
-        # With no reachable masking proxy the backend fails those probes closed
-        # instead of going direct.
-        "M1NERVAC0NSOLE_EGRESS_PROXY": proxy,
-        "M1NERVAC0NSOLE_EGRESS_CA": EGRESS_CA,
-        "SSL_CERT_FILE": EGRESS_CA,
-        "CURL_CA_BUNDLE": EGRESS_CA,
-        "REQUESTS_CA_BUNDLE": EGRESS_CA,
-        "NODE_EXTRA_CA_CERTS": EGRESS_CA,
         "M1NERVAC0NSOLE_MAX_CONCURRENT_SCANS": str(MAX_SCANS),
         "M1NERVAC0NSOLE_MAX_SCANS_PER_TARGET": str(MAX_SCANS_PER_TARGET),
-        "M1NERVAC0NSOLE_MAX_REQUESTS_PER_MINUTE": str(EGRESS_RPM),
     })
     if keylog:
         # The gateway reads this once at startup and appends each origin
@@ -617,65 +595,6 @@ def list_segments(d):
     return segs
 
 
-def start_egress(sess, binary):
-    """Start the outbound proxy that presents one browser identity to targets.
-
-    It runs as its own process so a proxy crash cannot take the backend with it,
-    and so the supervisor can report it the way it reports the tunnel.
-    """
-    os.makedirs(os.path.dirname(EGRESS_LOG), exist_ok=True)
-    cmd = [binary, "egress-proxy", "-addr", EGRESS_ADDR, "-dir", EGRESS_DIR,
-           "-rpm", str(EGRESS_RPM)]
-    with open(EGRESS_LOG, "ab") as logf:
-        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
-                             start_new_session=True)
-    try:
-        sess.m["egress"] = {"status": "starting", "pid": p.pid, "addr": EGRESS_ADDR,
-                            "dir": EGRESS_DIR, "ca": EGRESS_CA, "log": EGRESS_LOG,
-                            "started_at": now_iso()}
-        sess.save()
-        host, port = EGRESS_ADDR.rsplit(":", 1)
-        deadline = time.monotonic() + EGRESS_TIMEOUT
-        while True:
-            if p.poll() is not None:
-                raise Fatal(f"egress proxy exited during start (rc={p.returncode}); see {EGRESS_LOG}")
-            try:
-                with socket.create_connection((host, int(port)), timeout=1):
-                    break
-            except OSError:
-                pass
-            if time.monotonic() > deadline:
-                raise Fatal(f"egress proxy did not listen on {EGRESS_ADDR} within {EGRESS_TIMEOUT}s")
-            time.sleep(0.2)
-        if not os.path.exists(EGRESS_CA):
-            raise Fatal(f"egress proxy did not write a CA to {EGRESS_CA}")
-        with open(EGRESS_CA, "rb") as ca:
-            ca_sha256 = hashlib.file_digest(ca, "sha256").hexdigest()
-        sess.m["egress"].update(status="running", process=proc_info(p.pid), ca_sha256=ca_sha256)
-        sess.save()
-    except BaseException:
-        try:
-            stop_egress(sess, p)
-        except Exception as error:
-            sess.error(f"egress proxy startup cleanup failed: {error}")
-        raise
-    log(f"egress proxy up on {EGRESS_ADDR}")
-    return p
-
-def stop_egress(sess, p):
-    if p is None:
-        return
-    try:
-        p.terminate()
-        p.wait(timeout=10)
-    except Exception as error:
-        sess.error(f"egress proxy did not stop cleanly: {error}")
-        try:
-            p.kill()
-        except Exception:
-            pass
-
-
 def start_execbox(sess, binary):
     """Start the unprivileged execution boundary and prove it can enforce.
 
@@ -696,13 +615,13 @@ def start_execbox(sess, binary):
     for root in workspaces:
         os.makedirs(root, exist_ok=True)
     log_path = os.path.join(sess.logs, "execbox.log")
-    cmd = [binary, "execbox", "serve", "-socket", EXECBOX_SOCKET, "-workspace", EXECBOX_WORKSPACES]
+    cmd = [binary, "execbox", "serve", "-socket", EXECBOX_SOCKET, "-workspace", EXECBOX_WORKSPACES, "-ca-cert", RECORDER_CA]
     with open(log_path, "ab") as logf:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
                              start_new_session=True)
     try:
         sess.m["execbox"] = {"status": "starting", "pid": p.pid, "socket": EXECBOX_SOCKET,
-                             "workspaces": workspaces, "log": log_path, "argv": cmd,
+                             "workspaces": workspaces, "ca_cert": RECORDER_CA, "log": log_path, "argv": cmd,
                              "started_at": now_iso()}
         sess.save()
         deadline = time.monotonic() + EXECBOX_TIMEOUT
@@ -727,6 +646,55 @@ def start_execbox(sess, binary):
         raise
     log(f"execbox supervisor up on {EXECBOX_SOCKET}")
     return p
+
+
+def account_recorder_ca(sess, app, watch=(), timeout=START_TIMEOUT):
+    """Prove the recorder created its CA and record whether it is new or rotated.
+
+    The supervisor starts before the backend, so the CA does not exist yet when
+    the boundary comes up; each tool session looks again. This runs after the
+    backend starts. A backend that exits before writing one is fatal; an absent
+    CA is recorded and logged instead, because recording can legitimately be off
+    and the supervisor already refuses to expose a certificate it cannot read,
+    so sessions fail closed with a named cause rather than the VM failing to
+    start (and the kill switch below must keep watching the tunnel). A file that
+    carries a private key is refused here too, since the supervisor would refuse
+    to expose it. The fingerprint is kept across starts so a rotation is visible
+    in the manifest.
+    """
+    deadline = time.monotonic() + timeout
+    while not os.path.isfile(RECORDER_CA):
+        # Leave dependency failures and shutdown to the main monitoring loop.
+        if STOP["signal"] is not None or any(p is not None and p.poll() is not None for p in watch):
+            return
+        if app.poll() is not None:
+            raise Fatal(f"m1nervac0nsole exited (rc={app.returncode}) before creating the recorder CA {RECORDER_CA}")
+        if time.monotonic() > deadline:
+            sess.m["recorder_ca"] = {"path": RECORDER_CA, "change": "missing",
+                                     "exposed": "nothing: no certificate to mount"}
+            log(f"recorder CA {RECORDER_CA} did not appear within {timeout}s of the backend start; "
+                "HTTPS through the recorder cannot be verified in tool sessions")
+            sess.save()
+            return
+        time.sleep(0.2)
+    with open(RECORDER_CA, "rb") as stream:
+        data = stream.read()
+    if b"PRIVATE KEY" in data or b"BEGIN CERTIFICATE" not in data:
+        raise Fatal(f"{RECORDER_CA} is not a public-certificate-only PEM; the execution boundary would refuse to expose it")
+    digest = hashlib.sha256(data).hexdigest()
+    state = f"{RUNTIME}/recorder-ca.sha256"
+    try:
+        with open(state) as stream:
+            previous = stream.read().strip()
+    except FileNotFoundError:
+        previous = ""
+    change = "created" if not previous else "unchanged" if previous == digest else "rotated"
+    write_file(state, digest + "\n")
+    sess.m["recorder_ca"] = {"path": RECORDER_CA, "sha256": digest, "previous_sha256": previous or None,
+                             "change": change, "exposed": "public certificate only, read-only, at the same path"}
+    if change == "rotated":
+        log(f"recorder CA rotated: {previous} -> {digest}")
+    sess.save()
 
 
 def stop_execbox(sess, p):
@@ -839,7 +807,7 @@ def start_tcpdump(sess):
     err_path = os.path.join(sess.logs, "tcpdump.stderr.log")
     segments = ring_segments()
     cmd = [tcpdump, "-i", "any", "-s0", "-U", "-Z", "root", "-C", str(SEGMENT_MB),
-           "-W", str(segments), "-w", pcap]
+           "-W", str(segments), "-w", pcap, CAPTURE_FILTER]
     # Record what was actually used, so the manifest never claims a larger ring
     # than the disk allowed — in the declared limits as well as the live values.
     cap = sess.m["capture"]
@@ -954,7 +922,7 @@ def stop_app(sess, p):
 
 # ---------- lifecycle ----------
 
-def shutdown(sess, app, tcpd, bindir, vpn=None, egress=None, execbox=None):
+def shutdown(sess, app, tcpd, bindir, vpn=None, execbox=None):
     try:
         sess.set_state("stopping")
     except Exception as error:
@@ -962,8 +930,7 @@ def shutdown(sess, app, tcpd, bindir, vpn=None, egress=None, execbox=None):
     # The app goes first: it is the only client of the supervisor, so stopping the
     # boundary before the app would leave it unable to start or stop a tool.
     for name, process, stop in (("m1nervac0nsole", app, stop_app), ("execbox", execbox, stop_execbox),
-                                ("capture", tcpd, stop_tcpdump), ("vpn", vpn, stop_vpn),
-                                ("egress", egress, stop_egress)):
+                                ("capture", tcpd, stop_tcpdump), ("vpn", vpn, stop_vpn)):
         if process is not None:
             try:
                 stop(sess, process)
@@ -997,7 +964,6 @@ def main():
     tcpd = None
     app = None
     vpn = None
-    egress = None
     execbox = None
     rc = 0
     try:
@@ -1019,20 +985,16 @@ def main():
             log(f"skills: {synced} files synced from {DIST}/skills into {SKILLS_DIR}")
         env = app_env(dsn, admin_password(), os.path.join(sess.tls, "keys.log"))
         vpn = start_vpn(sess)
-        egress = start_egress(sess, binary)
         execbox = start_execbox(sess, binary)
         tcpd = start_tcpdump(sess)
         if STOP["signal"] is None:
             app = start_app(sess, binary, env)
+            account_recorder_ca(sess, app, watch=(vpn, tcpd, execbox))
             sess.set_state("running")
         last_sample = 0.0
         while app is not None and app.poll() is None and STOP["signal"] is None:
             if tcpd.poll() is not None:
                 raise Fatal(f"tcpdump exited while m1nervac0nsole was running (rc={tcpd.returncode}); m1nervac0nsole stopped to avoid uncaptured runs")
-            # Kill switch: a dropped tunnel must stop the engagement, not silently
-            # resume egress over the host's own address.
-            if egress.poll() is not None:
-                raise Fatal(f"egress proxy exited while m1nervac0nsole was running (rc={egress.returncode}); m1nervac0nsole stopped so no request leaves with the wrong identity")
             # Kill switch: without the supervisor no new tool process can be
             # isolated, and a live session's namespaces outlive it. Stop the app
             # rather than let it keep running with a boundary it cannot enforce.
@@ -1054,7 +1016,7 @@ def main():
             sess.m["capture"]["status"] = "failed"
     finally:
         owned_pg = bindir if sess.m["postgres"]["status"] in ("starting", "running") else None
-        shutdown(sess, app, tcpd, owned_pg, vpn, egress, execbox)
+        shutdown(sess, app, tcpd, owned_pg, vpn, execbox)
         try:
             with open(SUPERVISOR_PID) as stream:
                 owned_pid = stream.read().strip() == str(os.getpid())

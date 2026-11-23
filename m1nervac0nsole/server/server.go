@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -25,11 +26,13 @@ import (
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/llmpool"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/llmrec"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/nativeproxy"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/report"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/traffic"
 	"github.com/structuredstanza/norma/llm"
 	actool "github.com/structuredstanza/norma/tool"
 	"github.com/structuredstanza/norma/transcript"
+	"golang.org/x/net/publicsuffix"
 )
 
 // BuildVersion is the backend application version, injected from cmd/m1nervac0nsole at
@@ -244,6 +247,16 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), nativeProxy: newNativeProxy()}
+	agent.ScopePending = func(taskID int64, pattern string, ruleID int64) {
+		t, ok := m.Task(strconv.FormatInt(taskID, 10))
+		if !ok {
+			return
+		}
+		meta, _ := json.Marshal(map[string]any{"pattern": pattern, "rule_id": ruleID})
+		s.engine.emitActivity(t, db.Activity{Worker: "system", Kind: "scope_pending",
+			Summary:  "Network access to " + pattern + " needs approval (Overview > Test scope > Rules)",
+			Metadata: meta})
+	}
 	// First-run protection: cache the password hash and, while none is set, issue
 	// the console setup token (or apply M1NERVAC0NSOLE_ADMIN_PASSWORD) before any request.
 	s.bootstrapAuth()
@@ -316,6 +329,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			return a.TaskTimeoutWrapupMaxTurns, true
 		}
 		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // Visible skills/MCP + traffic/orchestration host tools assembled into the agent toolset
+		// Boolean only: direct tools (port_scan) refuse while an operator exit is
+		// configured, so scans cannot bypass the agreed egress. Nil fails closed.
+		agent.OperatorExitConfigured = func() bool { return m.GlobalProxy() != "" }
 		domainReg := buildDomainReg(m.Assets())
 		wireTools(m.pg, domainReg) // Built-in tool table: filter by agent, override descriptions/schema, and inject default values
 		seedPrompts(m.pg)          // Seed the built-in agent default prompt bodies into agent_prompts (only when empty)
@@ -1156,11 +1172,13 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	metrics, _ := s.m.PG().TaskListMetricsAll()
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
 	blockedReasons, _ := s.m.PG().TaskBlockedReasons()
+	speedProfiles, _ := s.m.PG().TaskSpeedProfiles()
 	dtos := make([]TaskDTO, 0, len(list))
 	for _, t := range list {
 		dto := taskDTO(t, s.resolvedTaskStatus(t))
 		applyTaskArchiveBlocker(&dto, archiveBlockers)
 		applyTaskBlockedReason(&dto, blockedReasons)
+		applyTaskSpeedProfile(&dto, speedProfiles)
 		s.applyTaskMetrics(&dto, t, metrics[t.ExpID])
 		dtos = append(dtos, dto)
 	}
@@ -1662,6 +1680,7 @@ type createTaskReq struct {
 	SeedFirstIntent      *bool    `json:"seed_first_intent,omitempty"` // On creation, directly dispatch one seed intent (content = description + goal) so the worker can start running immediately without waiting for the first planner round; omitted/null = default off, following the standard plan-then-execute flow. Only enabled when explicitly passed as true (in CTF, when a challenge is often solved in one work, the planner round before starting can be skipped).
 	CoverageEnabled      *bool    `json:"coverage_enabled,omitempty"`  // Asset coverage feature; omitted/null = default on (true). false = disable coverage calculation/display/automatic scope accumulation + hide add_task_scope/list_untested_assets. Company association is not affected.
 	PlanQuietMode        *bool    `json:"plan_quiet_mode,omitempty"`   // planner quiet-mode switch (#86); omitted = default on; false = edge rounds always plan
+	SpeedProfile         string   `json:"speed_profile,omitempty"`     // stealth|careful|standard|unbound; omitted/empty = standard
 	LLMRotate            *bool    `json:"llm_rotate"`                  // per-intent chain-head rotation (#85); omitted/null = off (ordered failover)
 	// InterceptRules: task-level asset intercept/allow rules (entered at creation time, stored in task_intercept_rules, not in the global table).
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
@@ -1691,6 +1710,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.validateTaskProfileIDs(req.LLMProfileIDs); err != nil {
 		writeErr(w, 400, err.Error())
+		return
+	}
+	if req.SpeedProfile != "" && !db.ValidSpeedProfile(req.SpeedProfile) {
+		writeErr(w, 400, db.ErrTaskSpeedProfileInvalid.Error())
 		return
 	}
 	if err := goalGateCheck(req.Goal); err != nil {
@@ -1743,6 +1766,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
 		CoverageEnabled: req.CoverageEnabled,
 		PlanQuietMode:   req.PlanQuietMode,
+		SpeedProfile:    req.SpeedProfile,
 		LLMRotate:       req.LLMRotate,
 		InterceptRules:  interceptRules,
 		Credentials:     credentials,
@@ -1767,8 +1791,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[task] created task #%s '%s' goal: %s", t.ID, req.Description, req.Goal)
 	// Shared post-build flow (seed + seed intent + background goal decomposition + engine.Run), reused by the same segment as spawn_task.
 	// launchTask runs asynchronously and does not block the UI; goal decomposition proceeds visibly in the background.
-	s.launchTask(t, req.Description+" "+req.Goal, req.SeedFirstIntent != nil && *req.SeedFirstIntent)
-	writeJSON(w, 201, taskDTO(t, s.resolvedTaskStatus(t)))
+	s.launchTask(t, req.Description+" "+req.Goal, req.SeedFirstIntent != nil && *req.SeedFirstIntent, true)
+	dto := taskDTO(t, s.resolvedTaskStatus(t))
+	s.applyTaskSpeedProfileOne(&dto)
+	writeJSON(w, 201, dto)
 }
 
 func (s *Server) validateTaskProfileIDs(ids []int64) error {
@@ -1901,7 +1927,68 @@ func (s *Server) llmHost() string {
 	return ""
 }
 
-func (s *Server) seed(t *Task, text string) {
+// goalBoundary is the network boundary a task goal's target implies: its /24
+// (IPv4) or /64 (IPv6), or the whole registrable domain for a hostname. A host
+// whose root is itself a public suffix gets only the exact host.
+func goalBoundary(host string) string {
+	if a, err := netip.ParseAddr(host); err == nil {
+		if a = a.Unmap(); a.Is4() {
+			return netip.PrefixFrom(a, 24).Masked().String()
+		}
+		return netip.PrefixFrom(a, 64).Masked().String()
+	}
+	root, _ := db.RootDomain(host)
+	if suffix, _ := publicsuffix.PublicSuffix(root); root == "" || root == suffix {
+		return host
+	}
+	return "*." + root
+}
+
+// seedGoalBoundary records the proposed boundary. Only an operator-created
+// task can start with an authorized rule.
+func (s *Server) seedGoalBoundary(t *Task, host string, operatorApproved bool) {
+	if s.m == nil {
+		return
+	}
+	pg := s.m.PG()
+	if pg == nil {
+		return
+	}
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pattern := goalBoundary(host)
+	rules, err := pg.ListPolicyRules(ctx, taskID)
+	if err != nil {
+		log.Printf("[seed] task %s: list policy rules: %v", t.ID, err)
+		return
+	}
+	for _, r := range rules {
+		if r.Effect == "include" && (r.Authorized || !operatorApproved) && strings.EqualFold(r.Pattern, pattern) {
+			return
+		}
+	}
+	rule := netpolicy.Rule{
+		Effect: "include", Pattern: pattern, Protocol: "any", Authorized: operatorApproved,
+		Note: "boundary from the task goal: " + host,
+	}
+	if operatorApproved {
+		_, err = pg.AddPolicyRule(ctx, taskID, rule, "goal")
+	} else if as := s.m.Assets(); as != nil {
+		_, err = as.AddPendingPolicyRule(ctx, taskID, rule)
+	} else {
+		err = fmt.Errorf("asset store unavailable")
+	}
+	if err != nil {
+		log.Printf("[seed] task %s: store boundary %s: %v", t.ID, pattern, err)
+		return
+	}
+	log.Printf("[seed] task %s: seeded boundary %s (authorized=%t)", t.ID, pattern, operatorApproved)
+}
+
+func (s *Server) seed(t *Task, text string, operatorApproved bool) {
 	scheme, host, port, ok := parseTarget(text)
 	if !ok {
 		log.Printf("[seed] task %s: could not parse a target host/IP from %q; no site created (configure scope manually)", t.ID, text)
@@ -1912,6 +1999,7 @@ func (s *Server) seed(t *Task, text string) {
 		log.Printf("[seed] task %s: target %q is the LLM gateway; refusing to use it as a pentest target", t.ID, host)
 		return
 	}
+	s.seedGoalBoundary(t, host, operatorApproved)
 
 	u := scheme + "://" + host
 	if !(scheme == "https" && port == 443) && !(scheme == "http" && port == 80) {
@@ -1978,6 +2066,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	applyTaskArchiveBlocker(&dto, archiveBlockers)
 	blockedReasons, _ := s.m.PG().TaskBlockedReasons()
 	applyTaskBlockedReason(&dto, blockedReasons)
+	s.applyTaskSpeedProfileOne(&dto)
 	writeJSON(w, 200, dto)
 }
 
@@ -4024,7 +4113,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 				s.engine.emitActivity(t, rec)
 			}
 			maTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
-			resume := func() { s.reviveTask(t) } // set_goals adds new goals → move the task back to running
+			resume := func() (string, error) { return s.reviveTask(t) }
 			// Append workspace-relative attachment paths for the agent's Read/Bash tools.
 			agentMsg := composeAgentMessage(agentMessage, req.Attachments)
 			s.engine.BeginLLMCall(t.ID)

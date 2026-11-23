@@ -29,18 +29,20 @@ import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { getDateLocale } from "@/i18n/datetime";
 import { api } from "@/lib/api";
-import type {
-  AssetInterceptKind,
-  AssetInterceptRule,
-  Finding,
-  ModelTokenStat,
-  Stats,
-  Task,
-  TaskConstraint,
-  TaskGoal,
-  TaskNode,
-  TaskScopeRow,
-  TaskScopeRule,
+import {
+  type AssetInterceptKind,
+  type AssetInterceptRule,
+  type Finding,
+  type ModelTokenStat,
+  SPEED_PROFILES,
+  type SpeedProfile,
+  type Stats,
+  type Task,
+  type TaskConstraint,
+  type TaskGoal,
+  type TaskNode,
+  type TaskScopeRow,
+  type TaskScopeRule,
 } from "@/lib/types";
 
 // Display token counts concisely (12345 → 12.3k, 2000000 → 2M).
@@ -139,6 +141,18 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [editingConId, setEditingConId] = React.useState<string | null>(null);
   const [editConText, setEditConText] = React.useState("");
   const [editConKind, setEditConKind] = React.useState<TaskConstraint["kind"]>("deny");
+  const tsp = useTranslations("speedProfile");
+  const [speedErr, setSpeedErr] = React.useState("");
+
+  const changeSpeedProfile = async (next: SpeedProfile) => {
+    setSpeedErr("");
+    try {
+      await api.setTaskSpeedProfile(taskId, next);
+      setTask((prev) => (prev ? { ...prev, speed_profile: next } : prev));
+    } catch (e) {
+      setSpeedErr(tsp("saveFailed", { error: e instanceof Error ? e.message : "" }));
+    }
+  };
 
   const loadTokens = React.useCallback(async () => {
     try {
@@ -522,6 +536,27 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             <div className="font-medium text-muted-foreground text-xs">{t("desc.goalLabel")}</div>
             <p className="whitespace-pre-wrap break-words text-sm">{task?.goal?.trim() || "—"}</p>
           </div>
+        </div>
+      </section>
+      <section className="min-w-0 border-border border-t pt-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="task-speed-profile" className="font-medium text-sm">
+            {tsp("label")}
+          </label>
+          <NativeSelect
+            id="task-speed-profile"
+            size="sm"
+            value={task?.speed_profile ?? "standard"}
+            onChange={(e) => void changeSpeedProfile(e.target.value as SpeedProfile)}
+          >
+            {SPEED_PROFILES.map((p) => (
+              <NativeSelectOption key={p} value={p}>
+                {tsp(`${p}.name`)}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          <span className="text-muted-foreground text-xs">{tsp(`${task?.speed_profile ?? "standard"}.hint`)}</span>
+          {speedErr && <span className="text-destructive text-xs">{speedErr}</span>}
         </div>
       </section>
       {/* Goal management: view, add, edit, and delete the exploration goals of the current task.

@@ -109,6 +109,11 @@ type Spec struct {
 	// ExtraFiles is how many client-supplied descriptors to place at fd 3.. in
 	// the program. The Chromium CDP pipe uses 2.
 	ExtraFiles int
+	// Lane is the optional direct-lane snapshot. Nil keeps today's boundary:
+	// the gateway and the resolver only. A lane also leaves CAP_NET_RAW on the
+	// program, which raw-socket tools need and a proxied session must not have.
+	// Only a session started with a lane can be given a replacement later.
+	Lane *DirectLane `json:"lane,omitempty"`
 }
 
 // Result is the outcome of a one-shot run.
@@ -239,3 +244,24 @@ func requireSession(ctx context.Context) (netpolicy.Session, error) {
 // capability error. A spawn site that must not run unisolated calls it before
 // asking the supervisor for a process.
 func RequireSession(ctx context.Context) (netpolicy.Session, error) { return requireSession(ctx) }
+
+// LaneSetter is a client that can replace the direct lane of a live session.
+// It is a separate seam, like FDRunner, so a Client implementation that never
+// carries a lane stays valid.
+type LaneSetter interface {
+	SetDirectLane(ctx context.Context, s netpolicy.Session, lane *DirectLane) error
+}
+
+// SetDirectLane atomically replaces the direct lane of every live process of
+// session s that started with one; nil removes the lane's access. Revocation
+// is immediate in both directions: a flow already established stops carrying
+// traffic. A failed replacement kills all matching lane processes rather than
+// retaining stale authority; an absent/down interface returns an error matching
+// ErrEgressUnavailable. A client that cannot carry a lane is a capability error.
+func SetDirectLane(ctx context.Context, c Client, s netpolicy.Session, lane *DirectLane) error {
+	l, ok := c.(LaneSetter)
+	if !ok {
+		return &CapabilityError{Missing: []string{"direct-lane"}, Detail: "the installed client cannot set a direct lane"}
+	}
+	return l.SetDirectLane(ctx, s, lane)
+}

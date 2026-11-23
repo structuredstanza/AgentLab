@@ -369,6 +369,9 @@ func (b *whereBuilder) buildLeaf(e Expr) (string, error) {
 		case "==":
 			return col + " = " + b.next(e.Value), nil
 		case "!=":
+			if e.Value == "" {
+				return "", fmt.Errorf(`empty substring exclusion %s!="" is not supported: it matches no row; use a non-empty filter to require a value. To list inventory, use a non-empty DSL such as task_id=<id> and pass the asset type in the separate type parameter, not inside the DSL`, f)
+			}
 			return col + " NOT ILIKE " + b.next("%"+e.Value+"%"), nil
 		default:
 			return "", fmt.Errorf("string field %s does not support operator %s", f, e.Op)

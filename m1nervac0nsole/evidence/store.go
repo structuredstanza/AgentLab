@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -450,6 +451,27 @@ AND NOT EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id
 		if err != nil {
 			return err
 		}
+		// A pinned pcap is named in the finding's evidence text, not by a path
+		// column, so it lives as long as its task still has findings. Deleting
+		// the task nulls findings.task_id, which releases the slices to the reap below.
+		rows, err = tx.Query(`SELECT DISTINCT task_id FROM findings WHERE task_id IS NOT NULL`)
+		if err != nil {
+			return err
+		}
+		pinnedTasks := map[string]bool{}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			pinnedTasks[strconv.FormatInt(id, 10)] = true
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
 		return filepath.WalkDir(filepath.Join(s.Dir, "findings"), func(path string, entry fs.DirEntry, err error) error {
 			if os.IsNotExist(err) {
 				return nil
@@ -464,7 +486,7 @@ AND NOT EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id
 			if err != nil {
 				return err
 			}
-			if referenced[rel] {
+			if referenced[rel] || (strings.HasSuffix(rel, ".pcap") && pinnedTasks[filepath.Base(filepath.Dir(rel))]) {
 				return nil
 			}
 			info, err := entry.Info()

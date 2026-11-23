@@ -101,6 +101,7 @@ import type {
   Severity,
   SkillCall,
   SkillItem,
+  SpeedProfile,
   Stats,
   Task,
   TaskArchive,
@@ -359,6 +360,7 @@ export const api = {
     categoryId?: number;
     description: string;
     goal: string;
+    speedProfile?: SpeedProfile;
     llmProfileIds?: number[];
     sourceTaskIds?: string[];
     companyIds?: number[];
@@ -377,6 +379,7 @@ export const api = {
       description: input.description,
       goal: input.goal,
       llm_profile_ids: input.llmProfileIds ?? [],
+      speed_profile: input.speedProfile,
       source_task_ids: input.sourceTaskIds ?? [],
       company_ids: input.companyIds ?? [],
       timeout_seconds: input.timeoutSeconds ?? 0,
@@ -415,6 +418,8 @@ export const api = {
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
+  setTaskSpeedProfile: (id: string, speedProfile: SpeedProfile) =>
+    patch<Task>(`/tasks/${id}`, { speed_profile: speedProfile }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
   renameTaskCategory: (id: number, name: string) => patch<TaskCategory>(`/task-categories/${id}`, { name }),
   deleteTaskCategory: (id: number) => del<{ deleted: number }>(`/task-categories/${id}`),

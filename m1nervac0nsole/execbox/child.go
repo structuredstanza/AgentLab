@@ -30,6 +30,11 @@ type childConfig struct {
 	NewRoot    string   `json:"new_root"`
 	ReadOnly   []string `json:"read_only"`
 	Writable   []string `json:"writable"`
+	// PublicCA is a supervisor-made copy of the recorder's public CA certificate,
+	// bound read-only at PublicCAAt. Only that file is mounted, never its
+	// directory, which also holds the signing key. Empty means no CA yet.
+	PublicCA   string `json:"public_ca,omitempty"`
+	PublicCAAt string `json:"public_ca_at,omitempty"`
 	// Prefix is the writable staging prefix of an install session, empty for
 	// every other purpose. BinDir is the persistent published-tool directory,
 	// which every session sees read-only on PATH.
@@ -45,6 +50,9 @@ type childConfig struct {
 	// boundary, where loopback is the session's own.
 	GatewayPort int    `json:"gateway_port"`
 	GatewayAddr string `json:"gateway_addr"`
+	// NetRaw keeps CAP_NET_RAW (ambient and bounding) on the program: a session
+	// with a direct lane runs raw-socket tools. Everything else keeps none.
+	NetRaw bool `json:"net_raw,omitempty"`
 }
 
 // joinCgroup puts this process (and therefore everything it starts) into the
@@ -224,6 +232,11 @@ func setupSessionRoot(cfg *childConfig) error {
 	for _, p := range cfg.ReadOnly {
 		if err := bindPath(p, root+p, true); err != nil {
 			return fmt.Errorf("read-only %s: %w", p, err)
+		}
+	}
+	if cfg.PublicCA != "" {
+		if err := bindPath(cfg.PublicCA, root+cfg.PublicCAAt, true); err != nil {
+			return fmt.Errorf("read-only %s: %w", cfg.PublicCAAt, err)
 		}
 	}
 	for _, p := range cfg.Writable {
@@ -415,15 +428,19 @@ func runProgram(cfg *childConfig) int {
 	if resolved, ok := lookPathIn(env, argv[0]); ok {
 		argv = append([]string{resolved}, argv[1:]...)
 	}
+	inh, bound := "--inh-caps=-all", "--bounding-set=-all"
 	args := []string{
 		"--reuid=" + strconv.Itoa(cfg.UID),
 		"--regid=" + strconv.Itoa(cfg.GID),
 		"--clear-groups",
-		"--inh-caps=-all",
-		"--bounding-set=-all",
-		"--no-new-privs",
-		"--",
 	}
+	if cfg.NetRaw {
+		// Ambient survives the exec under no-new-privs; it needs the cap in the
+		// inheritable and bounding sets too.
+		inh, bound = "--inh-caps=-all,+net_raw", "--bounding-set=-all,+net_raw"
+		args = append(args, "--ambient-caps=+net_raw")
+	}
+	args = append(args, inh, bound, "--no-new-privs", "--")
 	args = append(args, argv...)
 	cmd := exec.Command(cfg.Setpriv, args...)
 	cmd.Dir = cfg.Dir

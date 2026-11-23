@@ -20,6 +20,8 @@ var ErrPolicyRuleNotFound = errors.New("policy rule not found")
 // operator console. Agent and curator writes carry their own actor.
 const OperatorActor = "operator"
 
+const agentPolicyActor = "agent"
+
 // CertException is one operator-approved origin certificate exception: bound to
 // one task and one authority, and expiring. It never disables verification
 // globally, and it never authorizes a destination.
@@ -149,6 +151,17 @@ ORDER BY r.pattern`)
 	return out, rows.Err()
 }
 
+// TaskPolicyRules gives discovery tools the task's rules, including pending ones.
+func (s *AssetStore) TaskPolicyRules(ctx context.Context, taskID int64) ([]netpolicy.Rule, error) {
+	return s.db.ListPolicyRules(ctx, taskID)
+}
+
+// AddPendingPolicyRule records an agent proposal without approving a grant.
+func (s *AssetStore) AddPendingPolicyRule(ctx context.Context, taskID int64, r netpolicy.Rule) (int64, error) {
+	r.Authorized = false
+	return s.db.AddPolicyRule(ctx, taskID, r, agentPolicyActor)
+}
+
 // ListPolicyRules returns every rule for a task, authorized or not, so the
 // operator view can show which rows are grants and which are only written.
 func (d *DB) ListPolicyRules(ctx context.Context, taskID int64) ([]netpolicy.Rule, error) {
@@ -191,6 +204,9 @@ func (d *DB) AddPolicyRule(ctx context.Context, taskID int64, r netpolicy.Rule, 
 	var approvedBy, approvedAt any
 	if r.Authorized {
 		approvedBy, approvedAt = actor, time.Now().UTC()
+	} else if actor == agentPolicyActor {
+		// Retain the proposal's provenance without setting an approval time.
+		approvedBy = actor
 	}
 
 	tx, err := d.BeginTx(ctx, nil)

@@ -1,18 +1,27 @@
 package execbox
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/miekg/dns"
+	"golang.org/x/sys/unix"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
@@ -48,7 +57,7 @@ type kernelEnv struct {
 	stop   context.CancelFunc
 }
 
-func newKernelEnv(t *testing.T, gateway string) *kernelEnv {
+func newKernelEnv(t *testing.T, gateway string, opts ...func(*Config)) *kernelEnv {
 	t.Helper()
 	base := t.TempDir()
 	ws := filepath.Join(base, "ws")
@@ -69,6 +78,9 @@ func newKernelEnv(t *testing.T, gateway string) *kernelEnv {
 	cfg.Resolver = "127.0.0.1:5353"
 	if self, err := os.Executable(); err == nil {
 		cfg.Self = self
+	}
+	for _, o := range opts {
+		o(&cfg)
 	}
 	cfg.Logf = t.Logf
 	sup, err := NewSupervisor(cfg)
@@ -181,7 +193,8 @@ echo gateway=$( (timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/%s' >/dev/null 2>
 GW=$(ip route | sed -n 's/^default via \([0-9.]*\).*/\1/p')
 echo otherport=$( (timeout 3 bash -c "exec 3<>/dev/tcp/$GW/%s" >/dev/null 2>&1 && echo ok) || echo fail)
 echo external=$( (timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' >/dev/null 2>&1 && echo ok) || echo fail)
-`, sibling, outside, gwPort, otherPort)
+echo foreigngw=$( (timeout 3 bash -c 'exec 3<>/dev/tcp/192.0.2.1/%s' >/dev/null 2>&1 && echo ok) || echo fail)
+`, sibling, outside, gwPort, otherPort, gwPort)
 	scriptPath := filepath.Join(mine, "probe.sh")
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -210,6 +223,8 @@ echo external=$( (timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' >/dev/null 2>
 		"gateway":   "ok",
 		"otherport": "fail",
 		"external":  "fail",
+		// Another address on the gateway's port must not reach the recorder.
+		"foreigngw": "fail",
 	}
 	for key, value := range want {
 		got := field(out, key)
@@ -619,6 +634,94 @@ func TestKernelExtraFiles(t *testing.T) {
 	}
 }
 
+// TestKernelSweepReclaimsNamespaceWithoutStateDir is the orphan case the live
+// guest accumulated: teardown removes a session's state directory even when
+// unlinking its namespace failed (its processes were still alive), so a sweep
+// driven by the directory alone can never reclaim that namespace, and it then
+// fails every later test that asserts no eb-* namespace exists.
+func TestKernelSweepReclaimsNamespaceWithoutStateDir(t *testing.T) {
+	requireKernel(t)
+	handle, err := newHandle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := netnsName(handle)
+	if out, err := exec.Command("ip", "netns", "add", name).CombinedOutput(); err != nil {
+		t.Fatalf("stage orphan namespace: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("ip", "netns", "del", name).Run() })
+
+	base := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.StateDir = filepath.Join(base, "state") // deliberately empty: no record of the handle
+	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	(&Supervisor{cfg: cfg.withDefaults()}).sweep() // withDefaults is what NewSupervisor applies
+
+	if _, err := os.Stat(netnsDir + "/" + name); !os.IsNotExist(err) {
+		t.Fatalf("namespace %s survived the sweep with no state directory (stat err %v)", name, err)
+	}
+}
+
+// TestKernelSweepPreservesAnotherSupervisorsLiveSession guards the blast radius
+// of sweeping by name: a second supervisor starting (a test's, or a restart
+// racing the old process) must not delete the namespace, veth or firewall rules
+// of a session that is still running under another supervisor.
+func TestKernelSweepPreservesAnotherSupervisorsLiveSession(t *testing.T) {
+	requireKernel(t)
+	gw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gw.Close()
+	live := newKernelEnv(t, gw.Addr().String())
+
+	stream, err := live.client.Run(context.Background(), testSess("live-during-sweep"), Spec{
+		Argv: []string{"/bin/sleep", "60"}, Dir: live.ws, Env: []string{"PATH=/usr/bin:/bin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	// The client API does not expose the handle, so find the namespace by the
+	// property the sweep itself keys on: a process is inside it.
+	var name string
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		entries, err := os.ReadDir(netnsDir)
+		if err == nil {
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), netnsPrefix) && netnsInUse(e.Name()) {
+					name = e.Name()
+				}
+			}
+		}
+		if name != "" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if name == "" {
+		t.Fatal("no live session namespace appeared")
+	}
+
+	// A second supervisor with its own StateDir owns none of the above.
+	other := newKernelEnv(t, gw.Addr().String())
+	other.sup.sweep()
+
+	if _, err := os.Stat(netnsDir + "/" + name); err != nil {
+		t.Fatalf("another supervisor's start deleted the live session's namespace %s: %v", name, err)
+	}
+	out, err := exec.Command("ip", "netns", "exec", name, "ip", "-br", "addr").CombinedOutput()
+	if err != nil {
+		t.Fatalf("live session's namespace %s is unusable after the sweep: %v: %s", name, err, out)
+	}
+	if !strings.Contains(string(out), "eb") {
+		t.Fatalf("live session lost its interface after the sweep: %s", out)
+	}
+}
+
 // TestKernelSupervisorCrash proves a SIGKILLed supervisor leaves no running
 // session, and that the next supervisor sweeps the namespaces, veth pairs,
 // firewall rules and cgroups the crash left behind.
@@ -919,4 +1022,773 @@ func TestKernelLargeStdinDoesNotDeadlock(t *testing.T) {
 	if !bytes.Equal(files["stdin"], body) || !bytes.Equal(files["stdout"], body) {
 		t.Errorf("captured %d stdin and %d stdout bytes", len(files["stdin"]), len(files["stdout"]))
 	}
+}
+
+// --- direct lane ---
+
+// assertNoLaneLeftovers is assertNoSessionLeftovers scoped to what a lane adds
+// (its FORWARD chain and masquerade), so it stays meaningful in a guest whose
+// live application owns sessions of its own.
+func assertNoLaneLeftovers(t *testing.T, cfg Config, handle string) {
+	t.Helper()
+	if n := countDirs(cfg.StateDir); n > 0 {
+		t.Errorf("state dir still holds %d session(s)", n)
+	}
+	forward, comment := laneChain(handle), "EB-"+handle
+	for _, table := range [][]string{{"-S"}, {"-t", "nat", "-S"}} {
+		out, err := exec.Command("iptables", append([]string{"-w"}, table...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("list firewall rules: %v: %s", err, out)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			i := slices.Index(fields, "--comment")
+			if slices.Contains(fields, forward) ||
+				(i >= 0 && i+1 < len(fields) && strings.Trim(fields[i+1], `"`) == comment) {
+				t.Errorf("lane rule still exists: %s", line)
+			}
+		}
+	}
+}
+
+const (
+	laneEgress   = "lanegr"
+	laneTargetIP = "10.99.0.2"
+	laneNetns    = "ltgt"
+)
+
+func mustIP(t *testing.T, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("ip", args...).CombinedOutput(); err != nil {
+		t.Fatalf("ip %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+}
+
+// inNetns runs fn on a thread that has joined the named network namespace, so
+// the sockets fn creates live there. The thread is never unlocked: it ends with
+// the goroutine instead of returning to the pool in the wrong namespace.
+func inNetns(t *testing.T, name string, fn func()) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		f, err := os.Open("/run/netns/" + name)
+		if err != nil {
+			done <- err
+			return
+		}
+		err = unix.Setns(int(f.Fd()), unix.CLONE_NEWNET)
+		f.Close()
+		if err != nil {
+			done <- err
+			return
+		}
+		fn()
+		done <- nil
+	}()
+	if err := <-done; err != nil {
+		t.Fatalf("netns %s: %v", name, err)
+	}
+}
+
+// laneNet is the lane's far side: a veth pair whose root end plays the egress
+// interface and whose peer sits in another namespace with the target services.
+type laneNet struct {
+	portA, portB, portUDP int
+	// fixRx counts the heartbeat bytes the target received from the client.
+	fixRx atomic.Int64
+	// udpSrc maps each datagram's payload to the source address it arrived from.
+	mu     sync.Mutex
+	udpSrc map[string]string
+}
+
+func newLaneNet(t *testing.T) *laneNet {
+	t.Helper()
+	_ = exec.Command("ip", "link", "del", laneEgress).Run()
+	_ = exec.Command("ip", "netns", "del", laneNetns).Run()
+	prevFwd, _ := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+	t.Cleanup(func() {
+		_ = exec.Command("ip", "link", "del", laneEgress).Run()
+		_ = exec.Command("ip", "netns", "del", laneNetns).Run()
+		if v := strings.TrimSpace(string(prevFwd)); v != "" {
+			_ = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte(v), 0o644)
+		}
+	})
+	mustIP(t, "netns", "add", laneNetns)
+	mustIP(t, "link", "add", laneEgress, "type", "veth", "peer", "name", "lanepr")
+	mustIP(t, "link", "set", "lanepr", "netns", laneNetns)
+	mustIP(t, "addr", "add", "10.99.0.1/24", "dev", laneEgress)
+	mustIP(t, "link", "set", laneEgress, "up")
+	mustIP(t, "-n", laneNetns, "addr", "add", laneTargetIP+"/24", "dev", "lanepr")
+	mustIP(t, "-n", laneNetns, "link", "set", "lanepr", "up")
+	mustIP(t, "-n", laneNetns, "link", "set", "lo", "up")
+
+	n := &laneNet{}
+	inNetns(t, laneNetns, func() {
+		plain := func() int {
+			ln, err := net.Listen("tcp", "0.0.0.0:0")
+			if err != nil {
+				t.Errorf("listen: %v", err)
+				return 0
+			}
+			t.Cleanup(func() { ln.Close() })
+			go func() {
+				for {
+					c, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					c.Close()
+				}
+			}()
+			return ln.Addr().(*net.TCPAddr).Port
+		}
+		n.portA, n.portB = plain(), plain()
+		pc, err := net.ListenPacket("udp", "0.0.0.0:0")
+		if err != nil {
+			t.Errorf("listen udp: %v", err)
+			return
+		}
+		t.Cleanup(func() { pc.Close() })
+		n.portUDP = pc.LocalAddr().(*net.UDPAddr).Port
+		n.udpSrc = map[string]string{}
+		// The "x" datagrams are the revocation test's heartbeat: the target
+		// counts them and answers each client address one-way on its own
+		// schedule. UDP has no ACKs, so nothing but the firewall can stop either
+		// direction (a TCP stream would stall by itself once its ACKs died).
+		var last net.Addr
+		go func() {
+			buf := make([]byte, 512)
+			for {
+				k, from, err := pc.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				n.mu.Lock()
+				n.udpSrc[string(buf[:k])] = from.(*net.UDPAddr).IP.String()
+				if string(buf[:k]) == "x" {
+					n.fixRx.Add(int64(k))
+					last = from
+				}
+				n.mu.Unlock()
+			}
+		}()
+		go func() {
+			chunk := bytes.Repeat([]byte("d"), 64)
+			for {
+				time.Sleep(100 * time.Millisecond)
+				n.mu.Lock()
+				to := last
+				n.mu.Unlock()
+				if to == nil {
+					continue
+				}
+				if _, err := pc.WriteTo(chunk, to); err != nil {
+					return
+				}
+			}
+		}()
+	})
+	if t.Failed() {
+		t.FailNow()
+	}
+	return n
+}
+
+func laneRule(id int64, effect, pattern, proto string, ports ...int) netpolicy.Rule {
+	return netpolicy.Rule{ID: id, Effect: effect, Pattern: pattern, Protocol: proto, Ports: ports, Authorized: true}
+}
+
+func laneOf(rules ...netpolicy.Rule) *DirectLane {
+	return &DirectLane{Egress: laneEgress, Policy: netpolicy.State{Rules: rules}}
+}
+
+// writeScript puts a program in the task workspace and returns its path.
+func writeScript(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+var laneEnvPath = []string{"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
+
+func requirePython(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("BLOCKED: python3 is not installed")
+	}
+}
+
+// TestKernelDirectLaneScope proves what a lane admits and what it never does:
+// an authorized port connects, an unauthorized one does not, and a scope that
+// covers the guest's own network still cannot reach a service on the host.
+func TestKernelDirectLaneScope(t *testing.T) {
+	requireKernel(t)
+	requirePython(t)
+	ln := newLaneNet(t)
+
+	hostAny, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hostAny.Close()
+	hostLo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hostLo.Close()
+	for _, l := range []net.Listener{hostAny, hostLo} {
+		go func() {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				c.Close()
+			}
+		}()
+	}
+	gw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gw.Close()
+	go func() {
+		for {
+			c, err := gw.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	env := newKernelEnv(t, gw.Addr().String())
+	dir := filepath.Join(env.ws, "scope")
+	script := writeScript(t, dir, "probe.sh", fmt.Sprintf(`set +e
+try() { (timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" >/dev/null 2>&1 && echo ok) || echo fail; }
+GW=$(ip route | sed -n 's/^default via \([0-9.]*\).*/\1/p')
+echo caps=$(sed -n 's/^CapEff:\s*//p' /proc/self/status)
+echo authorized=$(try %[1]s %[2]d)
+echo unauthorized=$(try %[1]s %[3]d)
+echo hostany=$(try $GW %[4]d)
+echo hostlo=$(try 127.0.0.1 %[5]d)
+echo gateway=$(try 127.0.0.1 %[6]d)
+`, laneTargetIP, ln.portA, ln.portB, hostAny.Addr().(*net.TCPAddr).Port, hostLo.Addr().(*net.TCPAddr).Port, gw.Addr().(*net.TCPAddr).Port))
+
+	lane := laneOf(
+		laneRule(1, "include", laneTargetIP, "tcp", ln.portA),
+		// A scope over the guest's own network: the host's side of the veth lives
+		// inside it, and must still be unreachable apart from gateway and DNS.
+		laneRule(2, "include", "10.98.0.0/16", "any"),
+	)
+	out, handle := runLaneOnce(t, env, "lane-scope", dir, lane, "bash", script)
+	t.Logf("session output:\n%s", out)
+	for key, want := range map[string]string{
+		"authorized": "ok", "unauthorized": "fail", "hostany": "fail", "hostlo": "fail", "gateway": "ok",
+	} {
+		if got := field(out, key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	assertNoLaneLeftovers(t, env.cfg, handle)
+}
+
+// TestKernelDirectLaneForgedSource proves a source address the session does not
+// own cannot leave: the lane is bound to the session's address, so an alias the
+// process bound (or a raw socket could write) dies at the root FORWARD chain.
+func TestKernelDirectLaneForgedSource(t *testing.T) {
+	requireKernel(t)
+	requirePython(t)
+	ln := newLaneNet(t)
+	env := newKernelEnv(t, "127.0.0.1:1")
+	dir := filepath.Join(env.ws, "forge")
+	script := writeScript(t, dir, "forge.py", fmt.Sprintf(`import socket, time
+def bind_alias(s, src):
+    deadline = time.time() + 15
+    while True:
+        try:
+            s.bind((src, 0))
+            return True
+        except OSError:
+            if time.time() > deadline:
+                return False
+            time.sleep(0.1)
+def attempt(src):
+    s = socket.socket()
+    s.settimeout(3)
+    try:
+        if src and not bind_alias(s, src):
+            return "nobind"
+        s.connect(("%[1]s", %[2]d))
+        return "ok"
+    except Exception:
+        return "fail"
+    finally:
+        s.close()
+def datagram(src, payload):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        if src and not bind_alias(s, src):
+            return
+        s.sendto(payload, ("%[1]s", %[3]d))
+    except Exception:
+        pass
+    finally:
+        s.close()
+print("real=" + attempt(None), flush=True)
+print("forged=" + attempt("10.99.77.7"), flush=True)
+datagram(None, b"real")
+datagram("10.99.77.7", b"forged")
+`, laneTargetIP, ln.portA, ln.portUDP))
+	lane := laneOf(laneRule(1, "include", laneTargetIP, "any"))
+	rwc, err := env.client.Run(context.Background(), testSess("lane-forge"), Spec{
+		Argv: []string{"python3", script}, Dir: dir, Env: laneEnvPath, Lane: lane, MergeStderr: true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer rwc.Close()
+	handle := liveHandle(t, env)
+	_, inner := vethNames(handle)
+	mustIP(t, "-n", netnsName(handle), "addr", "add", "10.99.77.7/32", "dev", inner)
+	got, _ := io.ReadAll(rwc)
+	out := string(got)
+	t.Logf("session output:\n%s", out)
+	if f := field(out, "real"); f != "ok" {
+		t.Errorf("real source = %q, want ok", f)
+	}
+	if f := field(out, "forged"); f != "fail" {
+		t.Errorf("forged source = %q, want fail", f)
+	}
+	// The TCP result alone cannot tell "dropped" from "no return path"; the
+	// target saw every datagram that was let through, and from whom.
+	time.Sleep(300 * time.Millisecond)
+	ln.mu.Lock()
+	defer ln.mu.Unlock()
+	if src := ln.udpSrc["real"]; src != "10.99.0.1" {
+		t.Errorf("real datagram arrived from %q, want the masqueraded 10.99.0.1", src)
+	}
+	if src, ok := ln.udpSrc["forged"]; ok {
+		t.Errorf("forged datagram reached the target from %s", src)
+	}
+	assertNoLaneLeftovers(t, env.cfg, handle)
+}
+
+// liveHandle returns the handle of the one live session of env.
+func liveHandle(t *testing.T, env *kernelEnv) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if entries, err := os.ReadDir(env.cfg.StateDir); err == nil && len(entries) == 1 {
+			if _, err := os.Stat("/run/netns/" + netnsName(entries[0].Name())); err == nil {
+				return entries[0].Name()
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("no live session appeared")
+	return ""
+}
+
+// runLaneOnce keeps the session alive until its handle has been recorded for
+// cleanup assertions after exit.
+func runLaneOnce(t *testing.T, env *kernelEnv, id, dir string, lane *DirectLane, argv ...string) (output, handle string) {
+	t.Helper()
+	rwc, err := env.client.Run(context.Background(), testSess(id), Spec{
+		Argv: append([]string{"bash", "-c", `read -r; exec "$@"`, id}, argv...),
+		Dir:  dir, Env: laneEnvPath, Lane: lane, MergeStderr: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rwc.Close()
+	handle = liveHandle(t, env)
+	proc, _ := ProcessOf(rwc)
+	if err := proc.CloseStdin(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(rwc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, err := proc.Wait(); err != nil || code != 0 {
+		t.Fatalf("session exit = %d, err = %v: %s", code, err, out)
+	}
+	return string(out), handle
+}
+
+// TestKernelDirectLaneInputSourceGuard checks the source filter takes
+// precedence over all admissions, including the conntrack shortcut.
+func TestKernelDirectLaneInputSourceGuard(t *testing.T) {
+	requireKernel(t)
+	newLaneNet(t)
+	env := newKernelEnv(t, "127.0.0.1:1")
+	rwc, err := env.client.Run(context.Background(), testSess("lane-input"), Spec{
+		Argv: []string{"sleep", "30"}, Dir: env.ws, Env: laneEnvPath, Lane: laneOf(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rwc.Close()
+	handle := liveHandle(t, env)
+	env.sup.mu.Lock()
+	s := env.sup.sessions[handle]
+	env.sup.mu.Unlock()
+	if s == nil {
+		t.Fatal("session exited before its INPUT chain could be checked")
+	}
+	rules, err := exec.Command("iptables", "-w", "-S", s.chain).CombinedOutput()
+	if err != nil {
+		t.Fatalf("list INPUT chain: %v: %s", err, rules)
+	}
+	want := fmt.Sprintf("-A %s ! -s %s/32 -j DROP", s.chain, s.sessIP)
+	for _, rule := range strings.Split(string(rules), "\n") {
+		if strings.HasPrefix(rule, "-A "+s.chain+" ") {
+			if rule != want {
+				t.Fatalf("first INPUT rule = %q, want %q", rule, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("no rules in INPUT chain: %s", rules)
+}
+
+func TestKernelDirectLaneCleanupIgnoresAnotherSupervisor(t *testing.T) {
+	requireKernel(t)
+	newLaneNet(t)
+	env := newKernelEnv(t, "127.0.0.1:1")
+	other := newKernelEnv(t, "127.0.0.1:1")
+	rwc, err := other.client.Run(context.Background(), testSess("other-lane"), Spec{
+		Argv: []string{"sleep", "30"}, Dir: other.ws, Env: laneEnvPath, Lane: laneOf(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rwc.Close()
+	_, handle := runLaneOnce(t, env, "owned-lane", env.ws, laneOf(), "/bin/true")
+	assertNoLaneLeftovers(t, env.cfg, handle)
+}
+
+// TestKernelDirectLaneRevocationCutsBothDirections proves a replaced snapshot
+// without the rule stops an established flow in both directions: the target
+// keeps sending one-way, the client keeps sending, and neither side's bytes
+// arrive once the rule is gone.
+func TestKernelDirectLaneRevocationCutsBothDirections(t *testing.T) {
+	requireKernel(t)
+	requirePython(t)
+	ln := newLaneNet(t)
+	env := newKernelEnv(t, "127.0.0.1:1")
+	dir := filepath.Join(env.ws, "revoke")
+	script := writeScript(t, dir, "stream.py", fmt.Sprintf(`import socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(0.05)
+dst = ("%s", %d)
+nextsend = 0.0
+print("up", flush=True)
+while True:
+    n = 0
+    end = time.time() + 0.5
+    while time.time() < end:
+        if time.time() >= nextsend:
+            try:
+                s.sendto(b"x", dst)
+            except OSError:
+                pass
+            nextsend = time.time() + 0.2
+        try:
+            n += len(s.recv(4096))
+        except OSError:
+            pass
+    print("rx", n, flush=True)
+`, laneTargetIP, ln.portUDP))
+	sess := testSess("lane-revoke")
+	lane := laneOf(laneRule(1, "include", laneTargetIP, "udp", ln.portUDP))
+	rwc, err := env.client.Run(context.Background(), sess, Spec{
+		Argv: []string{"python3", script}, Dir: dir, Env: laneEnvPath, Lane: lane, MergeStderr: true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer rwc.Close()
+	lines := make(chan string, 256)
+	go func() {
+		sc := bufio.NewScanner(rwc)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+		close(lines)
+	}()
+	// rx drains the client's per-tick receive counts for d.
+	rx := func(d time.Duration) (total int, ticks int) {
+		timer := time.After(d)
+		for {
+			select {
+			case l, ok := <-lines:
+				if !ok {
+					return
+				}
+				var k int
+				if _, err := fmt.Sscanf(l, "rx %d", &k); err == nil {
+					total += k
+					ticks++
+				}
+			case <-timer:
+				return
+			}
+		}
+	}
+	if total, _ := rx(2 * time.Second); total == 0 || ln.fixRx.Load() == 0 {
+		t.Fatalf("flow never carried data both ways: client rx=%d, target rx=%d", total, ln.fixRx.Load())
+	}
+
+	if err := SetDirectLane(context.Background(), env.client, sess, laneOf()); err != nil {
+		t.Fatalf("SetDirectLane: %v", err)
+	}
+	rx(1500 * time.Millisecond) // frames already in flight
+	settled := ln.fixRx.Load()
+	total, ticks := rx(2500 * time.Millisecond)
+	if ticks == 0 {
+		t.Fatal("the client stopped reporting; the test proves nothing")
+	}
+	if total != 0 {
+		t.Errorf("client still received %d bytes after the rule was revoked", total)
+	}
+	if after := ln.fixRx.Load(); after != settled {
+		t.Errorf("target still received %d bytes after the rule was revoked", after-settled)
+	}
+}
+
+// TestKernelDirectLaneRefusesDownEgress proves a lane never falls back to the
+// default route: with the interface down it is refused at start and at
+// replacement, and the typed error survives the socket.
+func TestKernelDirectLaneRefusesDownEgress(t *testing.T) {
+	requireKernel(t)
+	newLaneNet(t)
+	env := newKernelEnv(t, "127.0.0.1:1")
+	dir := filepath.Join(env.ws, "egress")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sess := testSess("lane-egress")
+	lane := laneOf(laneRule(1, "include", laneTargetIP, "any"))
+	rwc, err := env.client.Run(context.Background(), sess, Spec{
+		Argv: []string{"sleep", "30"}, Dir: dir, Env: laneEnvPath, Lane: lane,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer rwc.Close()
+	handle := liveHandle(t, env)
+
+	mustIP(t, "link", "set", laneEgress, "down")
+	err = SetDirectLane(context.Background(), env.client, sess, lane)
+	var eg *EgressError
+	if !errors.Is(err, ErrEgressUnavailable) || !errors.As(err, &eg) || eg.Iface != laneEgress {
+		t.Fatalf("down interface: SetDirectLane = %v, want an EgressError for %s", err, laneEgress)
+	}
+	// Refusing a replacement must also destroy the previous authority.
+	p, _ := ProcessOf(rwc)
+	ended := make(chan struct{})
+	go func() { _, _ = p.Wait(); close(ended) }()
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("failed replacement left its process alive")
+	}
+	assertNoLaneLeftovers(t, env.cfg, handle)
+	if _, err := env.client.RunOnce(context.Background(), sess, Spec{
+		Argv: []string{"/bin/true"}, Dir: dir, Env: laneEnvPath, Lane: lane,
+	}); !errors.Is(err, ErrEgressUnavailable) {
+		t.Fatalf("start on a down interface = %v, want ErrEgressUnavailable", err)
+	}
+	missing := &DirectLane{Egress: "nosuch0"}
+	if err := SetDirectLane(context.Background(), env.client, sess, missing); !errors.Is(err, ErrEgressUnavailable) {
+		t.Fatalf("missing interface: SetDirectLane = %v, want ErrEgressUnavailable", err)
+	}
+	mustIP(t, "link", "set", laneEgress, "up")
+	if err := SetDirectLane(context.Background(), env.client, sess, lane); err != nil {
+		t.Fatalf("interface back up: SetDirectLane = %v", err)
+	}
+}
+
+// TestKernelDirectLaneCapNetRaw proves CAP_NET_RAW exists only with a lane.
+func TestKernelDirectLaneCapNetRaw(t *testing.T) {
+	requireKernel(t)
+	newLaneNet(t)
+	env := newKernelEnv(t, "127.0.0.1:1")
+	dir := filepath.Join(env.ws, "caps")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	caps := func(lane *DirectLane) string {
+		res, err := env.client.RunOnce(context.Background(), testSess("lane-caps"), Spec{
+			Argv: []string{"sed", "-n", "s/^CapEff:\\s*//p", "/proc/self/status"}, Dir: dir, Env: laneEnvPath, Lane: lane,
+		})
+		if err != nil || res.ExitCode != 0 {
+			t.Fatalf("RunOnce: %v (exit %d): %s", err, res.ExitCode, res.Output)
+		}
+		return strings.TrimSpace(string(res.Output))
+	}
+	if got := caps(nil); got != "0000000000000000" {
+		t.Errorf("without a lane CapEff = %s, want none", got)
+	}
+	// Bit 13 is CAP_NET_RAW.
+	if got := caps(laneOf()); got != "0000000000002000" {
+		t.Errorf("with a lane CapEff = %s, want only CAP_NET_RAW", got)
+	}
+}
+
+// TestKernelDirectLaneHostnameViaDNS proves a hostname rule works through the
+// session's own resolver: the answered address is admitted for the rule's port
+// and nothing else, and it was not reachable before the name was resolved.
+func TestKernelDirectLaneHostnameViaDNS(t *testing.T) {
+	requireKernel(t)
+	requirePython(t)
+	ln := newLaneNet(t)
+	srv := &dns.Server{Addr: "127.0.0.1:5353", Net: "udp", Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		if len(r.Question) == 1 && r.Question[0].Qtype == dns.TypeA && r.Question[0].Name == "app.lane.test." {
+			m.Answer = append(m.Answer, &dns.A{
+				Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 1},
+				A:   net.ParseIP(laneTargetIP),
+			})
+		} else {
+			m.Rcode = dns.RcodeNameError
+		}
+		_ = w.WriteMsg(m)
+	})}
+	started := make(chan struct{})
+	srv.NotifyStartedFunc = func() { close(started) }
+	go func() { _ = srv.ListenAndServe() }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fixture resolver did not start")
+	}
+	defer srv.Shutdown()
+
+	env := newKernelEnv(t, "127.0.0.1:1")
+	dir := filepath.Join(env.ws, "dns")
+	script := writeScript(t, dir, "dns.py", fmt.Sprintf(`import socket
+def attempt(host, port):
+    try:
+        socket.create_connection((host, port), timeout=3).close()
+        return "ok"
+    except Exception:
+        return "fail"
+print("before=" + attempt("%[1]s", %[2]d))
+ip = socket.gethostbyname("app.lane.test")
+print("resolved=" + ip)
+print("after=" + attempt("app.lane.test", %[2]d))
+import time
+time.sleep(1.5)
+print("expired=" + attempt(ip, %[2]d))
+print("otherport=" + attempt("app.lane.test", %[3]d))
+`, laneTargetIP, ln.portA, ln.portB))
+	lane := laneOf(laneRule(1, "include", "app.lane.test", "tcp", ln.portA))
+	out, handle := runLaneOnce(t, env, "lane-dns", dir, lane, "python3", script)
+	t.Logf("session output:\n%s", out)
+	for key, want := range map[string]string{"before": "fail", "resolved": laneTargetIP, "after": "ok", "expired": "fail", "otherport": "fail"} {
+		if got := field(out, key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	assertNoLaneLeftovers(t, env.cfg, handle)
+}
+
+// TestKernelControllerDisconnectWithBlockedStdin proves socket ownership does
+// not depend on the stdin writer returning: RDHUP kills the whole cgroup even
+// when a nonreading program and its background descendant hold the pipe open.
+func TestKernelControllerDisconnectWithBlockedStdin(t *testing.T) {
+	requireKernel(t)
+	newLaneNet(t)
+	env := newKernelEnv(t, "127.0.0.1:1")
+	dir := filepath.Join(env.ws, "disconnect")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewClient(env.cfg.Socket).(*socketClient).dial(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.c.Close()
+	spec := Spec{Argv: []string{"bash", "-c", "sleep 60 & wait"}, Dir: dir, Env: laneEnvPath, Lane: laneOf()}
+	if err := w.write(request{Op: opStart, Session: sessionToWire(testSess("disconnect")), Spec: &spec}); err != nil {
+		t.Fatal(err)
+	}
+	var ready frame
+	if err := w.read(&ready); err != nil || ready.Type != frameReady {
+		t.Fatalf("ready: %v %+v", err, ready)
+	}
+	cgroup := filepath.Join(env.cfg.CgroupRoot, ready.Handle)
+	if err := w.write(frame{Type: frameStdin, Data: bytes.Repeat([]byte("x"), 256<<10)}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if b, err := os.ReadFile(filepath.Join(cgroup, "cgroup.procs")); err != nil || len(strings.Fields(string(b))) < 2 {
+		t.Fatalf("process tree never existed: %q %v", b, err)
+	}
+	// A second unread frame makes a MSG_PEEK EOF-only workaround insufficient.
+	if err := w.write(frame{Type: frameStdin, Data: []byte("queued")}); err != nil {
+		t.Fatal(err)
+	}
+	w.c.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(cgroup); os.IsNotExist(err) && countDirs(env.cfg.StateDir) == 0 {
+			assertNoLaneLeftovers(t, env.cfg, ready.Handle)
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("controller disconnect left the process cgroup alive")
+}
+
+func TestKernelDirectLaneDNSApplyFailureKillsSession(t *testing.T) {
+	requireKernel(t)
+	newLaneNet(t)
+	env := newKernelEnv(t, "127.0.0.1:1")
+	dir := filepath.Join(env.ws, "dns-failure")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lane := laneOf(laneRule(1, "include", "app.lane.test", "tcp", 80))
+	rwc, err := env.client.Run(context.Background(), testSess("dns-failure"), Spec{
+		Argv: []string{"sleep", "30"}, Dir: dir, Env: laneEnvPath, Lane: lane,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rwc.Close()
+	handle := liveHandle(t, env)
+	env.sup.mu.Lock()
+	s := env.sup.sessions[handle]
+	env.sup.mu.Unlock()
+	mustIP(t, "link", "set", laneEgress, "down")
+	m := new(dns.Msg)
+	m.SetQuestion("app.lane.test.", dns.TypeA)
+	m.Response = true
+	m.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: "app.lane.test.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 10}, A: net.ParseIP(laneTargetIP)}}
+	reply, err := m.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.observeDNS(reply)
+	p, _ := ProcessOf(rwc)
+	ended := make(chan struct{})
+	go func() { _, _ = p.Wait(); close(ended) }()
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("failed DNS apply left its session alive")
+	}
+	assertNoLaneLeftovers(t, env.cfg, handle)
 }

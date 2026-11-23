@@ -17,7 +17,6 @@ host                          sandbox (microsandbox VM)
   guest-dist/ <-/dist:ro-->     execbox supervisor  /run/m1nervac0nsole/execbox.sock
   secrets/ <-/run/secrets-->    m1nervac0nsole      0.0.0.0:8787  (UI + API)
                                 recording proxy     127.0.0.1:8788
-                                masking egress      127.0.0.1:8888
                                 tcpdump, strace, openvpn (optional)
 ```
 
@@ -40,7 +39,7 @@ Every API response goes through `writeJSON` or `writeErr`. Every tool call passe
 
 | Path | Responsibility |
 |---|---|
-| `cmd/m1nervac0nsole/` | Binary entry, plus the `egress-proxy` and `execbox serve\|probe` subcommands |
+| `cmd/m1nervac0nsole/` | Binary entry and `execbox serve\|probe` subcommands |
 | `server/` | HTTP API, `Manager`, `Engine`, LLM wiring, auth, scheduler, DTOs |
 | `agent/` | LLM roles, prompts, tool surface, provider construction, capture |
 | `db/` | PostgreSQL stores and the embedded idempotent `schema.sql` |
@@ -49,26 +48,31 @@ Every API response goes through `writeJSON` or `writeErr`. Every tool call passe
 | `gateway/` | The origin transport every recorded request dials through |
 | `execbox/` | Privileged supervisor that runs each tool session unprivileged in its own namespaces |
 | `intercept/`, `guard/`, `scope/` | The tool-call safety pipeline; protected surfaces |
-| `egress/`, `enrich/`, `limits/`, `useragent/` | Masking proxy, asset auto-completion, outbound rate policy, shared identity |
+| `enrich/`, `limits/`, `useragent/` | Asset auto-completion, concurrent-run limits and shared identity |
 | `llmpool/`, `llmrec/`, `nativeproxy/`, `mcphttp/` | LLM transport decorators and MCP clients |
 | `manifest/` | Declarative TOML tool manifests, embedded and overlaid by the `tool_manifests` table |
 | `report/`, `evidence/` | Deterministic report rendering; content-addressed evidence |
 | `web/` | Next.js App Router frontend, statically exported |
 | `third_party/norma/` | Vendored agent SDK, a nested module with local changes |
 
-**The web layer.** `web/` is a Next.js App Router application, statically exported (`NEXT_EXPORT=1 next build`) and embedded into the Go binary behind the `embedui` tag; without that tag the binary serves 404 for the UI. Route groups are `(auth)` for login and setup, `(main)` for the console, and `(external)` for pages reachable outside the shell. Every backend call goes through `web/src/lib/api.ts` and `web/src/lib/types.ts`; a component never fetches ad hoc, and local state lives in hooks and `localStorage`. The English-only edition has one catalog, `web/messages/en.json`, and `scripts/check-cjk.py` fails CI on Hangul, Han and CJK punctuation in authored source. The visual system is fixed in `web/src/app/globals.css` with locally packaged Manrope and DM Mono; there are no theme, preset or font preferences, and only the sidebar open state is configurable. Tests live in `web/tests/`, mirror `src/`, import via `@/...`, and mock `next-intl`, `sonner` and `@/lib/api`. Gates: `npm run build:static`, `npm run test -- --run`, `npm run check`.
+**The web layer.** `web/` is a Next.js App Router application, statically exported (`NEXT_EXPORT=1 next build`) and embedded into the Go binary behind the `embedui` tag; without that tag the binary serves 404 for the UI. Route groups are `(auth)` for login and setup, `(main)` for the console, and `(external)` for pages reachable outside the shell. Every backend call goes through `web/src/lib/api.ts` and `web/src/lib/types.ts`; a component never fetches ad hoc, and local state lives in hooks and `localStorage`. The English-only edition has one catalog, `web/messages/en.json`, and `scripts/check-cjk.py` fails CI on Hangul, Han and CJK punctuation in authored source. Appearance is fixed — no theme, preset or font preferences — and only the sidebar open state is configurable. Tests live in `web/tests/`, mirror `src/`, import via `@/...`, and mock `next-intl`, `sonner` and `@/lib/api`. Gates: `npm run build:static`, `npm run test -- --run`, `npm run check`.
 
 ## 5. The network boundary
 
-There is one outbound HTTP boundary, and it is not optional.
+Recorded HTTP uses one recorder → gateway boundary; testing subprocesses may additionally receive a scoped direct lane.
 
-- A run's proxy URL carries a `netpolicy` session credential. A request without one is refused, never dialled direct.
-- The recording proxy (`traffic/`) sees the request and writes the file tree plus the SQLite index.
-- Its origin side is the `gateway` transport: it authorizes against the session, resolves and pins the address, runs a uTLS Chrome handshake with strict verification, applies the operator exit, and tags its own failures with `X-M1nervac0nsole-Gateway`.
-- Tool processes run unprivileged in their own network namespace via `execbox`. The namespace admits only the gateway and the resolver. A session's writable roots are the task and session workspaces; `/tmp` is a private tmpfs that dies with the session and is never the host's.
-- A masking `egress-proxy` survives for asset-enrichment probes only. With neither `M1NERVAC0NSOLE_EGRESS_PROXY` nor `M1NERVAC0NSOLE_EGRESS_CA`, enrichment fails closed rather than dialling direct.
+- A run's recorder proxy URL carries a `netpolicy` session credential. Missing, unknown or revoked credentials are refused, never dialled direct behind the recorder.
+- The recording proxy (`traffic/`) writes exchanges to the file tree and SQLite index. The gateway authorizes, resolves and pins addresses, uses Chrome uTLS with strict verification, applies the operator's global proxy when configured (otherwise direct), and tags its failures with `X-M1nervac0nsole-Gateway`.
+- Gateway masking selectively replaces missing or recognized tool-default UAs, preserving deliberate custom identities and credentials. Stealth uses `navigation` masking for eligible bodyless GET/HEAD requests; Careful/Standard/Unbound use `ua` on recorded traffic. Enrichment uses recorded gateway sessions with navigation masking. The separate masking-egress proxy and its subcommand/environment settings are retired.
+- Profiles provide guidance, not enforced request-rate or thread ceilings. Default tool-run concurrency is 16 global and 16 per target.
+- The backend wraps the installed execbox client for **all testing subprocesses**, including SDK/Bash, scripts and manifests. A scoped direct lane requires live `tun0` and no operator global proxy; research/install remain relay-only. Interactive HTTP retains recorder proxy env. Standard/Unbound bulk-HTTP manifests declaring `RateRPS` omit both proxy env and argv only after a lane snapshot is available, and execution refuses if it disappears. Raw tools may use scoped direct sockets regardless of HTTP proxy env.
+- Root-namespace FORWARD rules enforce authorized includes, exclusions and protocol/port constraints in both directions, including established flows. Infrastructure denies cover loopback, `10.98.0.0/16`, link-local, guest-local addresses, `host.microsandbox.internal` and resolved configured native-provider/profile endpoints, not entire VPN destination ranges.
+- Filtered DNS A learning expires with TTL and is re-evaluated on policy updates. The session link has no IPv6; AAAA answers do not provide a direct route.
+- Refresh polls every second with a combined one-second policy read/apply deadline. Revocation normally takes at most about two seconds plus kernel teardown/scheduling. Failure cancels processes without an old-policy fallback; the supervisor kills sessions on failed rule application.
+- Direct traffic is unmasked and not HTTP-recorded. Keep execution artifacts and pinned pcap evidence, and replay safe HTTP through the recorder when inspectable evidence is needed.
+- Tools run as uid 1000 with `NoNewPrivs` in isolated namespaces. Only direct-lane sessions receive `CAP_NET_RAW`, enabling scoped SYN/UDP as well as connect scanning; relay-only scanners cannot directly reach target ports. A session's writable roots are its workspace and private `/tmp`, never the host's `/tmp`.
 
-Authorization is per task. A scope rule is a grant only after the operator approves it, and every policy change moves the task's policy revision so cached verdicts and pooled connections stop being trusted.
+Authorization is per task. A scope rule is a grant only when authorized, and every policy change advances the policy revision. See [Network layer](design/network-layer.md) for the detailed contract.
 
 ## 6. Data model
 
@@ -96,6 +100,10 @@ Two tables deliberately have no foreign keys: `llm_usage`, `skill_usage` and `to
 
 Roles: planner (decomposes and re-plans), worker (executes one intent), main agent (operator conversation, can drive the browser), chat (conversation without a task), retester (manual retest session), tool curator (proposes and installs tools behind approval).
 
+Evidence guidance is appended to planner, worker and main-agent prompts even when an operator overrides the editable role body. Negative results remain bounded by the tested route, input and controls; conflicting operator observations require reconciliation with original responses. Writeup reproduction requires retrieved source text, and template probes isolate expressions so one parse error cannot mask every control. Asset counts and failed path guesses do not establish that every mechanism is exhausted.
+
+Task-bound WebFetch and Bash use testing credentials and task scope. Public-source research uses the research browser's separate public-only session; a denied testing request does not establish an internet outage. Do not widen testing scope or disable TLS verification to retrieve a reference.
+
 Cancellation uses `context.WithCancelCause` plus a named `agent.AbortCause`, read back with `agent.AbortReason`. State lives in the `Manager` and `Engine` behind mutexes and is read through lifecycle snapshots.
 
 ## 8. Tools
@@ -106,7 +114,7 @@ Three kinds, one contract:
 - **Database tools** — seeded in `agent/toolcatalog.go`, handler in code.
 - **Custom script tools** — written by the operator or the agent, executed by the backend.
 
-Tools run inside an `execbox` session. Their working directory is a task workspace or the session's private `/tmp`. Their environment carries the proxy URL with the session credential.
+Subprocess tools run inside an `execbox` session. Their working directory is a task workspace or private `/tmp`. Interactive HTTP receives recorder proxy env with a session credential; selected Standard/Unbound bulk-HTTP manifests omit proxy env and argv only when a scoped lane is available. Custom script bodies and parameters travel on stdin to a fixed bootstrap, not argv, and the executed script is retained under the run workspace.
 
 Installation is approval-gated: `toolbox_install` runs in an install-purpose session, stages into a writable prefix, and the supervisor publishes the result into the persistent toolbox `bin/` with a temp name and a rename, owner root, mode 0755. The published artifact's path, size, install time and SHA-256 are reported on the manifest row. The install's process capture carries the tool call that caused it (`Origin: tool` plus its `tool_use_id`) when the curator triggered it, and `Origin: operator` with no id when the operator started it from the Toolbox, so an install is always attributable to whatever actually ran it.
 
@@ -145,8 +153,7 @@ These three are protected surfaces: a change to them is a change to the authoriz
 | `M1NERVAC0NSOLE_PG_DSN` | PostgreSQL DSN; there is no built-in fallback and startup fails loudly |
 | `M1NERVAC0NSOLE_SKILL_DIR` | Skill directory |
 | `M1NERVAC0NSOLE_MEMORY` | `off` or `inject` for the per-round memory provider |
-| `M1NERVAC0NSOLE_EGRESS_PROXY`, `M1NERVAC0NSOLE_EGRESS_CA` | Masking proxy for enrichment probes |
-| `M1NERVAC0NSOLE_MAX_CONCURRENT_SCANS`, `..._MAX_SCANS_PER_TARGET`, `..._MAX_REQUESTS_PER_MINUTE` | Outbound rate policy |
+| `M1NERVAC0NSOLE_MAX_CONCURRENT_SCANS`, `M1NERVAC0NSOLE_MAX_SCANS_PER_TARGET` | Concurrent tool-run limits (defaults: 16 global, 16 per target); no request-rate ceiling |
 
 Runtime toggles are rows in the `settings` table, read per run.
 
@@ -155,7 +162,6 @@ Runtime toggles are rows in the `settings` table, read per run.
 ```sh
 ./lab start [--vpn PROFILE]   # build guest-dist if stale, create or reuse the sandbox, start the stack
 ./lab status                  # health, processes, capture state
-./lab primary                 # rewrite deployment/provenance.json
 ./lab export                  # timestamped archive with a hash manifest
 ./lab exec -- bash -lc '...'  # run a command in the guest
 ./lab stop                    # stop the stack and the sandbox
@@ -177,7 +183,6 @@ Never start two VMs against the shared `state/`; `./lab start` refuses while ano
 | Host suites | `tests/run.sh [all\|go\|proxy\|python\|web]` |
 | Capture | `python3 deployment/verify_capture.py` |
 | Completeness | `python3 deployment/verify_completeness.py` |
-| Reasoning | `python3 deployment/verify_reasoning.py` |
 
 DB-backed Go suites silently `--- SKIP` without `M1NERVAC0NSOLE_PG_DSN`, so a green local run can still fail CI. Root-only kernel tests report `BLOCKED` on the host and must run in the guest.
 

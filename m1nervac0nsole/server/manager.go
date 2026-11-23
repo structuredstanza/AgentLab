@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -268,6 +269,12 @@ type Manager struct {
 	sessMu   sync.RWMutex
 	sessions map[string]netpolicy.Session
 
+	// profCache memoizes task speed profiles for maskFor (see profileTTL);
+	// readProfile is a test seam, nil reads PostgreSQL.
+	profMu      sync.Mutex
+	profCache   map[int64]profileEntry
+	readProfile func(context.Context, int64) (string, error)
+
 	companyMu sync.Mutex // serializes task/company-scope commits with live handle registration
 	// taskStateMu preserves commit order between PostgreSQL lifecycle writes and
 	// their in-memory mirrors. lifecycleMu makes snapshots race-free, but without
@@ -290,12 +297,6 @@ type Manager struct {
 	// capture is on it becomes the MITM's upstream; when capture is off it is
 	// injected into agent bash env / WebFetch directly. See ProxyAddr.
 	globalProxy string
-	// enrichMask/enrichMaskCA are the explicitly configured masking egress proxy
-	// (M1NERVAC0NSOLE_EGRESS_PROXY / M1NERVAC0NSOLE_EGRESS_CA, resolved once at startup). Empty
-	// means asset-enrichment HTTP probes are disabled — there is no assumed
-	// default and no direct fallback.
-	enrichMask   string
-	enrichMaskCA string
 }
 
 // Settings keys the UI toggles at runtime.
@@ -501,26 +502,12 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if v, ok, _ := pg.GetSetting(settingGlobalProxy); ok {
 		m.globalProxy = strings.TrimSpace(v)
 	}
-	// Masking egress proxy for backend-originated target traffic. Only an
-	// explicit configuration counts: a fixed loopback port may belong to an
-	// unrelated listener, and nothing here dials a proxy it was not told about.
-	maskProxy, maskCA := enrich.MaskFromEnv()
-	if maskProxy != "" {
-		if _, err := traffic.ValidateProxyURL(maskProxy); err != nil {
-			log.Printf("[enrich] M1NERVAC0NSOLE_EGRESS_PROXY (%s) is not a usable proxy URL; HTTP enrichment is disabled", enrich.RedactProxyURL(maskProxy))
-			maskProxy, maskCA = "", ""
-		}
-	}
-	m.enrichMask, m.enrichMaskCA = maskProxy, maskCA
-	// Recorder exit path: the operator's global proxy when set, else the masking
-	// egress proxy. The fallback is in-memory only — settings.global_proxy is
-	// never rewritten — so capture stays on for the operator's workers.
+	// Recorder exit path: the operator's global proxy when set, else direct.
 	m.applyRecorderExit()
-	// Asset auto-completion engine (§5). Probes go straight to the masking egress
-	// proxy in every capture mode (no mask configured → probes are skipped; there
-	// is no direct path). When capture is on, each exchange is also stored through
-	// the existing first-party RecordExternal path via observeEnrichment.
-	m.enrich = enrich.New(m.assets, enrich.Options{Workers: 4, Proxy: m.enrichMask, CAFile: m.enrichMaskCA, Observe: m.observeEnrichment, Authorizer: netpolicy.NewAuthorizer(pg)})
+	// Asset auto-completion engine (§5). HTTP probes go through the recorder
+	// under a per-probe backend-issued session (enrichRoute); with capture off
+	// there is no recorder and no probe, never a direct one.
+	m.enrich = enrich.New(m.assets, enrich.Options{Workers: 4, Route: m.enrichRoute, Authorizer: netpolicy.NewAuthorizer(pg)})
 	return m, nil
 }
 
@@ -804,35 +791,26 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 	m.mu.Lock()
 	m.globalProxy = raw
 	m.mu.Unlock()
-	// The recorder exits through the operator's proxy, or through the masking
-	// egress proxy when the operator set none. Clearing the setting restores the
-	// mask fallback rather than silently reverting to a direct dial.
+	// The recorder exits through the operator's proxy; clearing the setting
+	// means a direct exit.
 	m.applyRecorderExit()
 	return nil
 }
 
 // applyRecorderExit points the recorder's origin transport at the operator's
-// global proxy, falling back to the masking egress proxy when no global proxy is
-// configured. The fallback is in-memory only: settings.global_proxy is never
-// rewritten, so the operator's choice stays exactly as saved.
+// global proxy, or at no proxy (direct) when none is set. Clearing the setting
+// therefore means direct; nothing else is substituted.
 //
 // The exit is the gateway's, not the recorder's own dial target: policy, DNS
 // pinning and the origin handshake stay in the gateway, and only the last hop
-// changes. Only worker/recorded traffic uses this path; enrichment probes go
-// straight to the mask and do not depend on it.
+// changes.
 func (m *Manager) applyRecorderExit() {
 	if m.gw == nil {
 		return
 	}
 	m.mu.RLock()
-	global := strings.TrimSpace(m.globalProxy)
-	mask := strings.TrimSpace(m.enrichMask)
+	exit := strings.TrimSpace(m.globalProxy)
 	m.mu.RUnlock()
-	exit := global
-	fallback := false
-	if exit == "" && mask != "" {
-		exit, fallback = mask, true
-	}
 	if exit != "" {
 		// The gateway refuses an unusable exit at dial time rather than dialing
 		// direct, so say why here instead of leaving the operator with bare 502s.
@@ -841,9 +819,6 @@ func (m *Manager) applyRecorderExit() {
 		}
 	}
 	m.gw.SetExit(netpolicy.Exit{ProxyURL: exit})
-	if fallback {
-		log.Printf("[proxy] recorder exits through the masking egress proxy %s (no operator global proxy is set; the setting itself is unchanged)", enrich.RedactProxyURL(mask))
-	}
 }
 
 // openRecorder starts the recording proxy with the gateway origin transport. A
@@ -864,7 +839,23 @@ func (m *Manager) newGatewayTransport() *gateway.Transport {
 		Authorizer:    netpolicy.NewAuthorizer(m.pg),
 		SessionFor:    m.gatewaySession,
 		CertException: m.certException,
+		HostsFor:      m.taskHostAddrs,
+		MaskFor:       m.maskFor,
 	})
+}
+
+// taskHostAddrs maps a hostname the task recorded to its recorded addresses,
+// for testing sessions only. A failed lookup maps nothing, so the name is
+// judged and resolved as usual.
+func (m *Manager) taskHostAddrs(s netpolicy.Session, host string) []net.IP {
+	if m.pg == nil || s.Purpose != netpolicy.PurposeTesting || s.TaskID <= 0 {
+		return nil
+	}
+	ips, err := m.pg.Assets().TaskHostAddrs(s.TaskID, host)
+	if err != nil {
+		return nil
+	}
+	return ips
 }
 
 // Gateway returns the origin transport the recorder dials through (nil when no
@@ -1001,55 +992,110 @@ func (m *Manager) certException(s netpolicy.Session, authority string) bool {
 	return false
 }
 
-// observeEnrichment stores what an enrichment probe exchanged with the masking
-// proxy in the traffic store, when capture is on; it reads the toggle at call
-// time, so flipping it applies immediately. Every redirect hop arrives here
-// uniformly. The probe never routes through the recorder: a second MITM in front
-// of the mask would present leaves without IP SANs for SNI-less IP targets.
-//
-// A complete exchange is stored with its exact body. One whose body was cut at
-// the capture cap or not read to the end is stored as the prefix that was read,
-// with the response's full length and a partial marker, so the probe leaves
-// evidence instead of vanishing; evidence binding compares the declared length
-// against the body it reads, so it refuses a prefix rather than binding one as
-// the whole response. A genuine no-response failure is stored as Failed. Log
-// lines carry no URL (it may hold credentials).
-func (m *Manager) observeEnrichment(o enrich.Observation) {
+// enrichSessionPrefix marks the gateway sessions an enrichment probe runs
+// under, so maskFor can give them the browser-shaped navigation headers.
+const enrichSessionPrefix = "enrich:"
+
+// enrichRoute is the enrichment engine's recorder route: a testing session for
+// the task being enriched, the recorder's address and CA, and its revoke. The
+// recorder stores each exchange itself, attributed to that task. No recorder,
+// no session or no credential means no probe; there is no direct path.
+func (m *Manager) enrichRoute(ctx context.Context, taskID int64) (string, string, func(), error) {
 	if m.traffic == nil || !m.TrafficEnabled() {
-		return
+		return "", "", nil, errors.New("traffic capture is off, so there is no recording proxy to probe through")
 	}
-	if o.ProxyFailure {
-		// The proxy could not reach the target, so there was no exchange to
-		// record: its status is the proxy's, and storing it would put a
-		// fabricated response in the traffic store.
-		log.Printf("[enrich] a probe response was not stored in the traffic store: the egress proxy reported the failure, not the target")
-		return
+	s, err := m.IssueSession(ctx, netpolicy.CallerAgent, taskID, 0, netpolicy.PurposeTesting)
+	if err != nil {
+		return "", "", nil, err
 	}
-	partial := !o.Failed && !o.Complete
-	respLen := 0 // unknown: the store falls back to the body it was given
-	if partial && o.DeclaredLength > 0 {
-		respLen = int(o.DeclaredLength)
+	// The ID is what maskFor reads; the credential is unchanged.
+	m.sessMu.Lock()
+	s.ID = enrichSessionPrefix + s.ID
+	m.sessions[s.Credential] = s
+	m.sessMu.Unlock()
+	proxy := netpolicy.ProxyURL(s, m.traffic.ProxyAddr())
+	if proxy == "" {
+		m.RevokeSession(s.Credential)
+		return "", "", nil, errors.New("the enrichment session carries no credential")
 	}
-	if err := m.traffic.RecordExternal(traffic.ExternalExchange{
-		Method:          o.Method,
-		URL:             o.URL,
-		Status:          o.Status,
-		Failed:          o.Failed,
-		RequestHeaders:  o.RequestHeaders,
-		ResponseHeaders: o.ResponseHeaders,
-		ResponseBody:    o.ResponseBody,
-		Partial:         partial,
-		RespLen:         respLen,
-	}); err != nil {
-		log.Printf("[enrich] could not record a probe in the traffic store")
+	return proxy, m.ProxyCACert(), func() { m.RevokeSession(s.Credential) }, nil
+}
+
+// maskFor picks the gateway's header masking level for a session: enrichment
+// probes get navigation headers; any other session follows its task's speed
+// profile, and a session with no task (research, install) gets the default.
+func (m *Manager) maskFor(s netpolicy.Session) gateway.MaskLevel {
+	if strings.HasPrefix(s.ID, enrichSessionPrefix) {
+		return gateway.MaskNavigation
 	}
+	profile := pgdb.SpeedProfileStandard
+	if s.TaskID > 0 {
+		profile = m.taskProfile(s.TaskID)
+	}
+	return maskForProfile(profile)
+}
+
+// profileTTL bounds how stale a cached speed profile may be: an operator's
+// profile change applies within 5s, and the gateway does not query PostgreSQL per request.
+const profileTTL = 5 * time.Second
+
+type profileEntry struct {
+	profile string
+	expires time.Time
+}
+
+// taskProfile returns the task's speed profile from a short-lived cache; a read
+// error or missing manager database reads as standard (and is cached briefly too).
+func (m *Manager) taskProfile(taskID int64) string {
+	now := time.Now()
+	m.profMu.Lock()
+	if e, ok := m.profCache[taskID]; ok && now.Before(e.expires) {
+		m.profMu.Unlock()
+		return e.profile
+	}
+	m.profMu.Unlock()
+
+	read := m.readProfile
+	if read == nil && m.pg != nil {
+		read = m.pg.TaskSpeedProfileContext
+	}
+	profile := pgdb.SpeedProfileStandard
+	if read != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		p, err := read(ctx, taskID)
+		cancel()
+		if err == nil {
+			profile = p
+		}
+	}
+	m.profMu.Lock()
+	defer m.profMu.Unlock()
+	// A read that started later must not lose its result to a slower one.
+	expires := now.Add(profileTTL)
+	if e, ok := m.profCache[taskID]; ok && expires.Before(e.expires) {
+		return e.profile
+	}
+	if m.profCache == nil || len(m.profCache) >= 1024 {
+		m.profCache = make(map[int64]profileEntry)
+	}
+	m.profCache[taskID] = profileEntry{profile, expires}
+	return profile
+}
+
+// maskForProfile maps a speed profile to its masking level. Unknown values
+// read as standard.
+func maskForProfile(profile string) gateway.MaskLevel {
+	if profile == pgdb.SpeedProfileStealth {
+		return gateway.MaskNavigation
+	}
+	return gateway.MaskUA
 }
 
 func (m *Manager) Close() error {
-	// Stop enrichment first and OUTSIDE m.mu: a finishing probe reports through
-	// observeEnrichment, which takes m.mu.RLock, and Close waits for probes to
-	// finish, so holding the lock here would deadlock. It also guarantees no
-	// enrichment job is still writing when the database closes below.
+	// Stop enrichment first and OUTSIDE m.mu: a starting probe takes m.mu.RLock
+	// in enrichRoute, and Close waits for probes to finish, so holding the lock
+	// here would deadlock. It also guarantees no enrichment job is still writing
+	// when the database closes below.
 	if m.enrich != nil {
 		m.enrich.Close()
 	}

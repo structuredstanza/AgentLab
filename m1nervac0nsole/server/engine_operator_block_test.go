@@ -121,8 +121,9 @@ func TestReportBlockedParksTaskAndResumeClearsIt(t *testing.T) {
 	if stored.Status != db.StatusNeedsOperator {
 		t.Fatalf("task status = %q, want %q", stored.Status, db.StatusNeedsOperator)
 	}
-	if stored.BlockedReason != reason {
-		t.Fatalf("blocked_reason = %q, want %q", stored.BlockedReason, reason)
+	wantStored := reason + " | Operator action: " + action
+	if stored.BlockedReason != wantStored {
+		t.Fatalf("blocked_reason = %q, want %q", stored.BlockedReason, wantStored)
 	}
 	if !s.engine.IsPaused(task.ID) {
 		t.Fatal("report_blocked did not stop the task loops")
@@ -168,8 +169,8 @@ func TestReportBlockedParksTaskAndResumeClearsIt(t *testing.T) {
 	if out["status"] != db.StatusNeedsOperator {
 		t.Fatalf("task JSON status = %v, want %q", out["status"], db.StatusNeedsOperator)
 	}
-	if out["blocked_reason"] != reason {
-		t.Fatalf("task JSON blocked_reason = %v, want %q", out["blocked_reason"], reason)
+	if out["blocked_reason"] != wantStored {
+		t.Fatalf("task JSON blocked_reason = %v, want %q", out["blocked_reason"], wantStored)
 	}
 
 	if _, err := s.applyTaskControl(task, "resume"); err != nil {

@@ -116,9 +116,11 @@ func TestProxyURL(t *testing.T) {
 		addr string
 		want string
 	}{
-		{"gateway", issued, "http://127.0.0.1:8788", "http://cred@127.0.0.1:8788"},
-		{"no scheme", issued, "127.0.0.1:8788", "http://cred@127.0.0.1:8788"},
-		{"trailing space", issued, " http://127.0.0.1:8788 ", "http://cred@127.0.0.1:8788"},
+		// user AND password: Python's urllib/urllib3 send Proxy-Authorization
+		// only when both are set. The gateway reads the user part.
+		{"gateway", issued, "http://127.0.0.1:8788", "http://cred:cred@127.0.0.1:8788"},
+		{"no scheme", issued, "127.0.0.1:8788", "http://cred:cred@127.0.0.1:8788"},
+		{"trailing space", issued, " http://127.0.0.1:8788 ", "http://cred:cred@127.0.0.1:8788"},
 		{"no credential", Session{ID: "s"}, "http://127.0.0.1:8788", ""},
 		{"blank credential", Session{ID: "s", Credential: "  "}, "http://127.0.0.1:8788", ""},
 		{"no address", issued, "", ""},

@@ -26,8 +26,6 @@ type ExecState = {
   headers: string;
   body: string;
   timeout_ms: string;
-  proxy: string;
-  use_recording_proxy: boolean;
 };
 
 export function CustomToolDialog({
@@ -55,8 +53,6 @@ export function CustomToolDialog({
     headers: "",
     body: "",
     timeout_ms: "",
-    proxy: "",
-    use_recording_proxy: false,
   });
   const [schemaText, setSchemaText] = React.useState("");
   const [bound, setBound] = React.useState<string[]>([]);
@@ -84,8 +80,6 @@ export function CustomToolDialog({
         headers: "",
         body: "",
         timeout_ms: "",
-        proxy: "",
-        use_recording_proxy: false,
       });
       setSchemaText("");
       setBound([]);
@@ -106,8 +100,6 @@ export function CustomToolDialog({
       headers: e.headers ? JSON.stringify(e.headers, null, 2) : "",
       body: String(e.body ?? ""),
       timeout_ms: e.timeout_ms ? String(e.timeout_ms) : "",
-      proxy: String(e.proxy ?? ""),
-      use_recording_proxy: !!e.use_recording_proxy,
     });
     setSchemaText(t.schema && Object.keys(t.schema).length ? JSON.stringify(t.schema, null, 2) : "");
     setBound(t.agents ?? []);
@@ -136,8 +128,6 @@ export function CustomToolDialog({
       headers,
       body: ex.body,
       timeout_ms: t,
-      proxy: ex.proxy,
-      use_recording_proxy: ex.use_recording_proxy,
     };
   }
 
@@ -340,23 +330,6 @@ export function CustomToolDialog({
                   value={ex.body}
                   onChange={(e) => setEx({ ...ex, body: e.target.value })}
                 />
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="grid gap-1.5">
-                  <Label className="text-xs">{t("proxyLabel")}</Label>
-                  <Input
-                    className="w-56 font-mono text-xs"
-                    value={ex.proxy}
-                    onChange={(e) => setEx({ ...ex, proxy: e.target.value })}
-                  />
-                </div>
-                <label className="mt-4 flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={ex.use_recording_proxy}
-                    onCheckedChange={(v) => setEx({ ...ex, use_recording_proxy: !!v })}
-                  />
-                  {t("useRecordingProxy")}
-                </label>
               </div>
             </div>
           )}

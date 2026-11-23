@@ -50,6 +50,9 @@ func sessionFromWire(w *sessionWire) netpolicy.Session {
 
 // frameErr turns an error frame into an error, keeping the capability shape.
 func frameErr(f frame) error {
+	if f.Kind == "egress" {
+		return &EgressError{Iface: f.Detail, Reason: f.Message}
+	}
 	if len(f.Missing) > 0 {
 		return &CapabilityError{Missing: f.Missing, Detail: f.Detail}
 	}
@@ -82,6 +85,33 @@ func (c *socketClient) Capabilities(ctx context.Context) (Report, error) {
 		return Report{}, fmt.Errorf("execbox: capabilities: unexpected frame %q", f.Type)
 	}
 	return *f.Report, nil
+}
+
+// SetDirectLane asks the supervisor to replace the direct lane of every live
+// process of session s that started with one. See the package-level
+// SetDirectLane for the contract.
+func (c *socketClient) SetDirectLane(ctx context.Context, s netpolicy.Session, lane *DirectLane) error {
+	w, err := c.dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer w.c.Close()
+	stop := context.AfterFunc(ctx, func() { w.c.Close() })
+	defer stop()
+	if err := w.write(request{Op: opSetLane, Session: sessionToWire(s), Lane: lane}); err != nil {
+		return fmt.Errorf("execbox: set lane: %w", err)
+	}
+	var f frame
+	if err := w.read(&f); err != nil {
+		return fmt.Errorf("execbox: set lane: %w", err)
+	}
+	switch f.Type {
+	case frameLaneSet:
+		return nil
+	case frameError:
+		return frameErr(f)
+	}
+	return fmt.Errorf("execbox: set lane: unexpected frame %q", f.Type)
 }
 
 // RunOnce starts a process, waits for it and returns its combined output.

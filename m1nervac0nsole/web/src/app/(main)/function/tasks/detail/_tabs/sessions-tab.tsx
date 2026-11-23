@@ -1006,6 +1006,10 @@ export function SessionsTab({
                 // The periodic resolver poll will retry if this event-triggered refresh fails.
               });
           }
+          if (a.kind === "scope_pending" && !llmToastSeqRef.current.has(a.seq)) {
+            llmToastSeqRef.current.add(a.seq);
+            toast.warning(a.summary, { id: `task-${taskId}-scope-${a.seq}` });
+          }
           const k = sessionKeyOf(a);
           setStore((prev) => {
             const cur = prev[k] ?? emptyState();

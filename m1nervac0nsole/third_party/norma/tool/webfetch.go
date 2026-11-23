@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,6 +70,55 @@ func NewWebFetch(cfg WebFetchConfig) CoreTool {
 
 const maxFetchBytes = 2 << 20 // 2 MiB
 
+// gatewayStageHeader is set by the recording gateway on a response it produced
+// itself (a refusal or an origin failure) rather than the origin; its value is
+// the stage that stopped the request: policy, dns, dial, tls or transport.
+const gatewayStageHeader = "X-M1nervac0nsole-Gateway"
+
+type connectRefusalKey struct{}
+
+// connectRefusal is what a proxy answered to a refused CONNECT.
+type connectRefusal struct {
+	status        int
+	stage, reason string
+}
+
+// describeFetchError names why a fetch failed, in terms a model can act on. It
+// uses only what the proxy and the TLS stack report; secrets (the proxy's
+// credential) are removed from the text, never added.
+func describeFetchError(err error, d *connectRefusal, secrets []string) string {
+	var msg string
+	why := ""
+	if d.reason != "" {
+		why = ": " + d.reason
+	}
+	var unknown x509.UnknownAuthorityError
+	var invalid x509.CertificateInvalidError
+	var host x509.HostnameError
+	switch {
+	case d.status == http.StatusProxyAuthRequired:
+		msg = "the proxy refused the HTTPS tunnel (CONNECT 407): the run's proxy credential is missing or was rejected; this is a platform fault, not a block by the target"
+	case d.status != 0 && d.stage == "policy":
+		msg = fmt.Sprintf("the gateway refused the HTTPS tunnel at the policy stage (CONNECT %d)%s. The destination is outside what this run may reach; do not retry it", d.status, why)
+	case d.status != 0 && d.stage != "":
+		msg = fmt.Sprintf("the gateway could not reach the origin (CONNECT %d, stage %s)%s. The origin may be down or present a certificate the gateway does not accept", d.status, d.stage, why)
+	case d.status != 0:
+		msg = fmt.Sprintf("the proxy refused the HTTPS tunnel (CONNECT %d)%s", d.status, why)
+	case errors.As(err, &unknown), errors.As(err, &invalid), errors.As(err, &host):
+		msg = "TLS certificate verification failed (" + err.Error() + "): the certificate is not signed by a trusted CA; if the recording proxy re-signs HTTPS, this client lacks the proxy CA"
+	case errors.Is(err, context.DeadlineExceeded):
+		msg = "the request timed out after 30s"
+	default:
+		msg = "transport failure: " + err.Error()
+	}
+	for _, s := range secrets {
+		if s != "" {
+			msg = strings.ReplaceAll(msg, s, "***")
+		}
+	}
+	return msg
+}
+
 // newFetchClient returns an HTTP client honoring the proxy / TLS config. The
 // proxy is always explicit: an empty Proxy dials directly and deliberately
 // ignores the ambient HTTP_PROXY/HTTPS_PROXY, because an identity-masking proxy
@@ -81,6 +131,16 @@ func newFetchClient(cfg WebFetchConfig) *http.Client {
 		if pu, err := url.Parse(cfg.Proxy); err == nil {
 			tr.Proxy = http.ProxyURL(pu)
 		}
+	}
+	// A refused CONNECT reaches the caller only as the status text. The hook
+	// keeps the status and the gateway's stage and reason for this request.
+	tr.OnProxyConnectResponse = func(ctx context.Context, _ *url.URL, _ *http.Request, res *http.Response) error {
+		if d, ok := ctx.Value(connectRefusalKey{}).(*connectRefusal); ok && res.StatusCode != http.StatusOK {
+			d.status, d.stage = res.StatusCode, res.Header.Get(gatewayStageHeader)
+			b, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+			d.reason = oneLine(strings.TrimSpace(string(b)), 200)
+		}
+		return nil
 	}
 	switch {
 	case cfg.InsecureTLS:
@@ -138,6 +198,12 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 	// tool's answer, classified as such, and is never retried directly, because a
 	// direct retry would silently bypass the recording/MITM proxy the operator chose.
 	proxied := cfg.Proxy != ""
+	// Proxy credentials must never reach the model through an error string.
+	var secrets []string
+	if pu, err := url.Parse(cfg.Proxy); err == nil && pu.User != nil {
+		pw, _ := pu.User.Password()
+		secrets = []string{pu.User.String(), pu.User.Username(), pw}
+	}
 	return func(ctx context.Context, input json.RawMessage, _ *ToolContext) (Result, error) {
 		var in struct {
 			URL     string `json:"url"`
@@ -152,7 +218,8 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 		if ext := staticAssetExt(in.URL); ext != "" {
 			return Errorf("Error: WebFetch does not fetch static assets (" + ext + " file). It reads HTML pages, documentation, and API responses — not linked resources like scripts, styles, images, or fonts. Fetch the page that references this asset instead."), nil
 		}
-		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		refusal := &connectRefusal{}
+		cctx, cancel := context.WithTimeout(context.WithValue(ctx, connectRefusalKey{}, refusal), 30*time.Second)
 		defer cancel()
 		req, err := http.NewRequestWithContext(cctx, http.MethodGet, in.URL, nil)
 		if err != nil {
@@ -162,9 +229,9 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 		resp, err := client.Do(req)
 		if err != nil {
 			if proxied {
-				return Errorf("Error fetching URL through the configured proxy (transport failure, no direct fallback): " + err.Error()), nil
+				return Errorf("Error fetching URL through the configured proxy (no direct fallback): " + describeFetchError(err, refusal, secrets)), nil
 			}
-			return Errorf("Error fetching URL: " + err.Error()), nil
+			return Errorf("Error fetching URL: " + describeFetchError(err, refusal, secrets)), nil
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes))
@@ -176,6 +243,9 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 		}
 		if xp := resp.Header.Get("X-Powered-By"); xp != "" {
 			header += "X-Powered-By: " + xp + "\n"
+		}
+		if stage := resp.Header.Get(gatewayStageHeader); stage != "" {
+			header += "Gateway-Stage: " + stage + "\nGateway-Reason: " + oneLine(strings.TrimSpace(string(body)), 200) + "\n"
 		}
 
 		var out string

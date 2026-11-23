@@ -4,6 +4,9 @@
 export type TaskStatus = "created" | "queued" | "running" | "paused" | "needs_operator" | "done" | "failed" | "timeout";
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 
+export const SPEED_PROFILES = ["stealth", "careful", "standard", "unbound"] as const;
+export type SpeedProfile = (typeof SPEED_PROFILES)[number];
+
 export interface Task {
   id: string;
   name?: string; // Optional task name; empty/missing = unnamed, falls back to the description when displayed.
@@ -42,6 +45,7 @@ export interface Task {
   coverage_enabled?: boolean; // Asset coverage feature switch (set at creation, enabled by default); false = coverage is not computed or displayed.
   plan_quiet_mode?: boolean; // Planner quiet mode (#86); default true
   llm_rotate?: boolean; // Worker chain-head rotation (#85); default false
+  speed_profile?: SpeedProfile; // Outbound pacing profile; absent = standard
   paused_at?: string | null;
 }
 
@@ -650,7 +654,8 @@ export type ActivityKind =
   | "usage" // live cumulative token usage (per model turn); not rendered
   | "llm_switch" // automatic/manual task-level LLM switch
   | "llm_failover" // task-level provider switch / chain exhaustion audit event
-  | "intercept_request"; // user-approval request from the intercept layer
+  | "intercept_request" // user-approval request from the intercept layer
+  | "scope_pending"; // discovered target outside the authorized boundary awaits approval
 
 // ChatAttachment is a single uploaded file: path is relative to the session/task working directory (i.e., the agent's CWD).
 export interface ChatAttachment {

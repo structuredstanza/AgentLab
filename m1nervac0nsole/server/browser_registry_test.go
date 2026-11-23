@@ -237,7 +237,8 @@ func TestBrowserLaunchOptionsStripsProxyCredential(t *testing.T) {
 	if opts.ProxyServer != "http://127.0.0.1:8888" {
 		t.Fatalf("ProxyServer = %q, want the bare address", opts.ProxyServer)
 	}
-	if opts.ProxyUser != "session-credential" || opts.ProxyPass != "" {
+	// The proxy URL carries the credential as user and password alike.
+	if opts.ProxyUser != "session-credential" || opts.ProxyPass != "session-credential" {
 		t.Fatalf("proxy credential = %q/%q, want the session credential", opts.ProxyUser, opts.ProxyPass)
 	}
 }

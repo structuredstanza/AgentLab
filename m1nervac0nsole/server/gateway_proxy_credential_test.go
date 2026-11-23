@@ -45,7 +45,7 @@ func proxyServer(t *testing.T) *Server {
 func TestNoToolFacingProxyURLIsBare(t *testing.T) {
 	sess := credentialSession()
 	ctx := execbox.WithSession(context.Background(), sess)
-	want := "http://" + sess.Credential + "@127.0.0.1:8788"
+	want := "http://" + sess.Credential + ":" + sess.Credential + "@127.0.0.1:8788"
 	s := proxyServer(t)
 	proxy := s.m.ToolProxyURL(sess)
 	if proxy != want {
@@ -105,7 +105,7 @@ func TestNoToolFacingProxyURLIsBare(t *testing.T) {
 	if opts.ProxyServer != gatewayAddr {
 		t.Errorf("Chromium --proxy-server = %q, want the bare %q", opts.ProxyServer, gatewayAddr)
 	}
-	if opts.ProxyUser != browserSess.Credential || opts.ProxyPass != "" {
+	if opts.ProxyUser != browserSess.Credential || opts.ProxyPass != browserSess.Credential {
 		t.Errorf("Chromium proxy credential = %q/%q, want the launch session's credential", opts.ProxyUser, opts.ProxyPass)
 	}
 	authReq, _ := http.NewRequest(http.MethodGet, gatewayAddr, nil)
@@ -115,9 +115,12 @@ func TestNoToolFacingProxyURLIsBare(t *testing.T) {
 	}
 
 	// 4. The custom http tool's transport.
-	tr, err := s.httpProxyTransport(ctx, httpExec{UseRecordingProxy: true})
+	tr, _, err := s.httpProxyTransport(ctx)
 	if err != nil {
 		t.Fatalf("httpProxyTransport: %v", err)
+	}
+	if !tr.DisableKeepAlives {
+		t.Error("per-call HTTP transport must not retain idle connections")
 	}
 	req := &http.Request{URL: &url.URL{Scheme: "https", Host: "api.example.com"}}
 	pu, err := tr.Proxy(req)
@@ -142,7 +145,7 @@ func TestNoSessionMeansNoToolFacingProxy(t *testing.T) {
 	if got := browserLaunchOptions(s, ctx, "7").ProxyServer; got != "" {
 		t.Errorf("Chromium --proxy-server = %q with no session", got)
 	}
-	if _, err := s.httpProxyTransport(ctx, httpExec{UseRecordingProxy: true}); err == nil {
+	if _, _, err := s.httpProxyTransport(ctx); err == nil {
 		t.Error("the http tool accepted use_recording_proxy with no session; it must refuse rather than go direct")
 	}
 	m := &manifest.Manifest{ID: "no-session", Name: "no session", Command: manifest.Command{Program: "tool", Args: []string{"-u", "{{ target.value }}", "{{ proxy | --proxy }}"}}}

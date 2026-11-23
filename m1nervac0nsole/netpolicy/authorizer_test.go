@@ -148,3 +148,21 @@ func TestAuthorizeResolved(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthorizeRecordedRequiresTestingAndAddresses(t *testing.T) {
+	d := Destination{Scheme: "https", Host: "api.example.com", Port: 443, Protocol: "http"}
+	a := NewAuthorizer(&scriptedSource{states: []State{{Rules: []Rule{include(d.Host)}}}})
+
+	t.Run("empty mapping", func(t *testing.T) {
+		dec := a.AuthorizeRecorded(t.Context(), Session{Purpose: PurposeTesting}, d, nil)
+		if dec.Allow || dec.Stage != StageDNS || !strings.Contains(dec.Reason, "no recorded address") {
+			t.Fatalf("decision = %+v, want an empty mapping refusal", dec)
+		}
+	})
+	t.Run("research", func(t *testing.T) {
+		dec := a.AuthorizeRecorded(t.Context(), Session{Purpose: PurposeResearch}, d, addrs("93.184.216.34"))
+		if dec.Allow || dec.Stage != StagePolicy || !strings.Contains(dec.Reason, "only testing sessions") {
+			t.Fatalf("decision = %+v, want a non-testing mapping refusal", dec)
+		}
+	})
+}

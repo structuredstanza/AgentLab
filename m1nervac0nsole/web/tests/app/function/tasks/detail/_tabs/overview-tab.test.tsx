@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   taskScopeRules: vi.fn(),
   taskInterceptRules: vi.fn(),
   setTaskRuleAuthorized: vi.fn(),
+  setTaskSpeedProfile: vi.fn(),
 }));
 
 // StatusBadge asks the translator whether a key exists before using it.
@@ -72,6 +73,7 @@ beforeEach(() => {
   mocks.taskScope.mockResolvedValue({ scope: [] });
   mocks.taskInterceptRules.mockResolvedValue([]);
   mocks.setTaskRuleAuthorized.mockResolvedValue({ ok: true, authorized: true });
+  mocks.setTaskSpeedProfile.mockResolvedValue({ ...task, speed_profile: "stealth" });
   // First read is the unapproved rule the operator just wrote; the read after
   // the approval returns the stored state.
   mocks.taskScopeRules.mockResolvedValueOnce([rule(false)]).mockResolvedValue([rule(true)]);
@@ -115,5 +117,18 @@ describe("scope rule authorization", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("speed profile", () => {
+  it("defaults to standard and PATCHes the chosen profile through the api", async () => {
+    render(<OverviewTab taskId="t1" />);
+    const select = (await screen.findByLabelText("label")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("standard"));
+
+    fireEvent.change(select, { target: { value: "stealth" } });
+
+    await waitFor(() => expect(mocks.setTaskSpeedProfile).toHaveBeenCalledWith("t1", "stealth"));
+    await waitFor(() => expect(select.value).toBe("stealth"));
   });
 });

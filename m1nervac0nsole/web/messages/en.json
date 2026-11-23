@@ -272,6 +272,26 @@
     "changePassword": "Change password",
     "logout": "Log out"
   },
+  "speedProfile": {
+    "label": "Pacing profile",
+    "saveFailed": "Could not change the pacing profile: {error}",
+    "stealth": {
+      "name": "Stealth",
+      "hint": "Very slow, low-noise pacing for targets that watch for bursts."
+    },
+    "careful": {
+      "name": "Careful",
+      "hint": "Gentler pacing with fewer parallel requests per host."
+    },
+    "standard": {
+      "name": "Standard",
+      "hint": "Balanced pacing for most engagements."
+    },
+    "unbound": {
+      "name": "Unbound",
+      "hint": "Fastest pacing, for lab targets and fixtures you own."
+    }
+  },
   "taskDetail": {
     "blocked": {
       "reason": "Waiting on you: {reason}"
@@ -2224,8 +2244,6 @@
     "httpUrlLabel": "URL (may include '{param}')",
     "httpHeadersLabel": "Headers (JSON, may include '{param}')",
     "httpBodyLabel": "Body (may include '{param}')",
-    "proxyLabel": "Proxy URL (blank = direct connection)",
-    "useRecordingProxy": "Use recording proxy",
     "timeoutLabel": "Timeout (ms, blank = default)",
     "schemaLabel": "Parameter JSON Schema",
     "schemaHttpSuffix": "(required for http tools; must include properties)",

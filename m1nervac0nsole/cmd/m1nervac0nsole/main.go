@@ -39,9 +39,6 @@ func main() {
 }
 
 func run() int {
-	if len(os.Args) > 1 && os.Args[1] == "egress-proxy" {
-		return runEgressProxy(os.Args[2:])
-	}
 	if len(os.Args) > 1 && os.Args[1] == "execbox" {
 		return runExecbox(os.Args[2:])
 	}

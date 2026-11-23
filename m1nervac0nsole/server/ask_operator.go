@@ -151,7 +151,8 @@ func (s *Server) toolReportBlocked() actool.CoreTool {
 			if _, err := s.applyTaskControlWithCause(t, "pause", agent.AbortBlockedOnOperator); err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			if err := s.m.PG().SetNeedsOperator(n, reason); err != nil {
+			// The status line shows only blocked_reason, so it must carry the action that resumes the task.
+			if err := s.m.PG().SetNeedsOperator(n, reason+" | Operator action: "+action); err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
 			// The reason lives in PostgreSQL; the live handle carries status only,

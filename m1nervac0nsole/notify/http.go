@@ -83,14 +83,15 @@ func blockInternalDial(_, address string, _ syscall.RawConn) error {
 }
 
 // notifyTransport builds on the default Transport and adds only one dial guard.
-// Clone preserves all of the defaults' tuning (connection pool, HTTP/2, timeouts, proxy, etc.),
-// so that behavior is not changed just to add one check.
+// Clone preserves the defaults' tuning (connection pool, HTTP/2, timeouts), but
+// the environment proxy is dropped: delivery is direct by design.
 var notifyTransport = func() *http.Transport {
 	t, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return &http.Transport{}
 	}
 	clone := t.Clone()
+	clone.Proxy = nil
 	clone.DialContext = (&net.Dialer{Timeout: 10 * time.Second, Control: blockInternalDial}).DialContext
 	return clone
 }()

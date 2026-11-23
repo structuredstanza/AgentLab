@@ -69,6 +69,7 @@ type TaskDTO struct {
 	CompanyIDs         []int64            `json:"company_ids"`
 	CoverageEnabled    bool               `json:"coverage_enabled"` // Asset coverage feature toggle (determined at creation time)
 	PlanQuietMode      bool               `json:"plan_quiet_mode"`
+	SpeedProfile       string             `json:"speed_profile"` // stealth|careful|standard|unbound; read from PostgreSQL by the task API
 }
 
 // FindingSeverityDTO is the per-severity vulnerability count shown in the task list (critical/high/medium/low).
@@ -101,6 +102,28 @@ func applyTaskArchiveBlocker(dto *TaskDTO, blockers map[int64]int64) {
 	}
 	if dependentID := blockers[taskID]; dependentID > 0 {
 		dto.ArchiveBlockedBy = strconv.FormatInt(dependentID, 10)
+	}
+}
+
+// applyTaskSpeedProfile overrides the default speed profile with the persisted
+// one; the in-memory task handle does not carry it.
+func applyTaskSpeedProfile(dto *TaskDTO, profiles map[int64]string) {
+	if dto == nil || len(profiles) == 0 {
+		return
+	}
+	if id, err := strconv.ParseInt(dto.ID, 10, 64); err == nil && profiles[id] != "" {
+		dto.SpeedProfile = profiles[id]
+	}
+}
+
+// applyTaskSpeedProfileOne reads one task's persisted speed profile.
+func (s *Server) applyTaskSpeedProfileOne(dto *TaskDTO) {
+	id, err := strconv.ParseInt(dto.ID, 10, 64)
+	if err != nil {
+		return
+	}
+	if profile, err := s.m.PG().TaskSpeedProfile(id); err == nil {
+		dto.SpeedProfile = profile
 	}
 }
 
@@ -158,6 +181,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		CompanyIDs:         lifecycle.CompanyIDs,
 		CoverageEnabled:    t.CoverageEnabled,
 		PlanQuietMode:      t.PlanQuietMode,
+		SpeedProfile:       db.SpeedProfileStandard,
 	}
 }
 

@@ -520,6 +520,12 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 401, authErrTokenInvalid)
 			return
 		}
+		// A session that logged in before the stream cookie existed, or lost it,
+		// would get a permanent 401 on every EventSource; re-issue it from the
+		// verified bearer so SSE heals without a fresh login.
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			setStreamCookie(w, tok)
+		}
 		h.ServeHTTP(w, r)
 	})
 }

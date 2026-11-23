@@ -66,3 +66,29 @@ func SetIfAbsent(set func(string, string), existing string) {
 		set("User-Agent", Get())
 	}
 }
+
+// toolDefaults are lowercase markers of the User-Agent strings scanners,
+// clients and libraries send when nobody chose one. Substrings, not prefixes:
+// Nikto and PowerShell hide the name inside a Mozilla-shaped string.
+var toolDefaults = []string{
+	"curl/", "go-http-client/", "python-requests/", "python-urllib/", "python-httpx/",
+	"aiohttp/", "wget/", "fuzz faster u fool", "gobuster/", "nuclei", "sqlmap",
+	"wfuzz", "nikto", "feroxbuster/", "dirb/", "whatweb/", "java/", "okhttp/",
+	"node-fetch", "axios/", "powershell", "libwww-perl/",
+}
+
+// IsToolDefault reports whether ua is a tool's own default identity. An empty
+// UA counts: a request that names nothing would otherwise reach the origin with
+// whatever the transport adds.
+func IsToolDefault(ua string) bool {
+	ua = strings.ToLower(strings.TrimSpace(ua))
+	if ua == "" {
+		return true
+	}
+	for _, m := range toolDefaults {
+		if strings.Contains(ua, m) {
+			return true
+		}
+	}
+	return false
+}

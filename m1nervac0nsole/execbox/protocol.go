@@ -21,6 +21,7 @@ const (
 	opCapabilities = "capabilities"
 	opStart        = "start"
 	opPublish      = "publish"
+	opSetLane      = "set_lane"
 
 	frameReady     = "ready"
 	frameStdout    = "stdout"
@@ -30,6 +31,7 @@ const (
 	frameReport    = "report"
 	framePublished = "published"
 	frameNotStaged = "not_staged"
+	frameLaneSet   = "lane_set"
 
 	frameStdin    = "stdin"
 	frameStdinEOF = "stdin_eof"
@@ -43,6 +45,7 @@ type request struct {
 	Session *sessionWire    `json:"session,omitempty"`
 	Spec    *Spec           `json:"spec,omitempty"`
 	Publish *publishRequest `json:"publish,omitempty"`
+	Lane    *DirectLane     `json:"lane,omitempty"`
 }
 
 // publishRequest names the artifact an install session staged for publication.
@@ -74,6 +77,9 @@ type frame struct {
 	Rows      int        `json:"rows,omitempty"`
 	Cols      int        `json:"cols,omitempty"`
 	Signal    string     `json:"signal,omitempty"`
+	// Kind tags an error frame the client must turn back into a typed error
+	// ("egress"); Detail then names the interface.
+	Kind string `json:"kind,omitempty"`
 	// StdinAccepted is the byte count the program's stdin pipe accepted, sent on
 	// the exit frame. It is a pointer so "accepted zero bytes" and "no exit frame
 	// arrived" stay distinguishable.

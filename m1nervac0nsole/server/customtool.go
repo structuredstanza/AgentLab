@@ -233,11 +233,7 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 		// The editor has no direct path to an origin: the test request goes
 		// through the recording proxy of the session above, and is refused when
 		// none is reachable.
-		var spec httpExec
-		_ = json.Unmarshal(req.Exec, &spec)
-		spec.UseRecordingProxy = true
-		execRaw, _ := json.Marshal(spec)
-		res, _ = s.runHTTPTool(ctx, execRaw, params, tc)
+		res, _ = s.runHTTPTool(ctx, req.Exec, params, tc)
 	}
 	writeJSON(w, 200, map[string]any{"output": res.Flatten(), "is_error": res.IsError})
 }
@@ -288,13 +284,11 @@ type scriptExec struct {
 	TimeoutMs int    `json:"timeout_ms"`
 }
 type httpExec struct {
-	Method            string            `json:"method"`
-	URL               string            `json:"url"`
-	Headers           map[string]string `json:"headers"`
-	Body              string            `json:"body"`
-	TimeoutMs         int               `json:"timeout_ms"`
-	Proxy             string            `json:"proxy"`
-	UseRecordingProxy bool              `json:"use_recording_proxy"`
+	Method    string            `json:"method"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers"`
+	Body      string            `json:"body"`
+	TimeoutMs int               `json:"timeout_ms"`
 }
 
 func timeoutOr(ms, def int) time.Duration {
@@ -603,13 +597,12 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
 	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000)}
-	tr, err := s.httpProxyTransport(ctx, spec)
+	tr, revoke, err := s.httpProxyTransport(ctx)
 	if err != nil {
 		return actool.Errorf(err.Error()), nil
 	}
-	if tr != nil {
-		client.Transport = tr
-	}
+	defer revoke()
+	client.Transport = tr
 	resp, err := client.Do(req)
 	if err != nil {
 		return actool.Errorf("request failed: " + err.Error()), nil
@@ -621,42 +614,46 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	return actool.Text(actool.Capture(tc, string(b))), nil
 }
 
-// httpProxyTransport builds a Transport for the http tool's proxy config, or nil
-// (direct). use_recording_proxy routes through the recording proxy + trusts its
-// CA; with no recording proxy reachable, or a run with no session to attribute
-// the request to, it fails instead of silently going direct.
-//
-// The recording proxy is the gateway, which accepts no anonymous request, so the
-// URL carries the credential of the session this run was issued.
-func (s *Server) httpProxyTransport(ctx context.Context, spec httpExec) (*http.Transport, error) {
-	proxyStr := strings.TrimSpace(spec.Proxy)
-	var caFile string
-	if spec.UseRecordingProxy {
-		proxyStr = execbox.ProxyURL(ctx, s.m.ProxyAddr())
-		if proxyStr == "" {
-			return nil, fmt.Errorf("use_recording_proxy is set but this run has no gateway session or no recording proxy is running; refusing to send the request directly")
-		}
-		caFile = s.m.ProxyCACert()
-	}
+// httpProxyTransport builds the Transport every http tool call uses: the
+// recording proxy under the run's own gateway session, trusting the recorder's
+// CA. A run with no task session gets a research session instead. It never
+// returns a transport that can dial a target directly: with no session and no
+// recording proxy, or a CA that cannot be loaded, the call fails. The tool's
+// former "proxy" field is gone because it bypassed the gateway. revoke ends a
+// research session's credential and is never nil.
+func (s *Server) httpProxyTransport(ctx context.Context) (tr *http.Transport, revoke func(), err error) {
+	proxyStr, caFile := execbox.ProxyURL(ctx, s.m.ProxyAddr()), s.m.ProxyCACert()
+	revoke = func() {}
 	if proxyStr == "" {
-		return nil, nil
+		var rev func()
+		if proxyStr, caFile, rev, err = s.researchProxy(ctx); err != nil {
+			return nil, nil, err
+		}
+		if rev != nil {
+			revoke = rev
+		}
+	}
+	fail := func(e error) (*http.Transport, func(), error) { revoke(); return nil, nil, e }
+	if proxyStr == "" {
+		return fail(fmt.Errorf("this run has no gateway session or no recording proxy is running; refusing to send the request directly"))
 	}
 	pu, err := url.Parse(proxyStr)
 	if err != nil || pu.Host == "" {
-		// The URL may be the operator's own proxy with a password in its user
-		// part; the message keeps the address and drops the credential.
-		return nil, fmt.Errorf("invalid proxy URL %q", enrich.RedactProxyURL(proxyStr))
+		return fail(fmt.Errorf("invalid proxy URL %q", enrich.RedactProxyURL(proxyStr)))
 	}
-	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
+	tr = &http.Transport{Proxy: http.ProxyURL(pu), DisableKeepAlives: true}
 	if caFile != "" {
-		if pem, err := os.ReadFile(caFile); err == nil {
-			pool := x509.NewCertPool()
-			if pool.AppendCertsFromPEM(pem) {
-				tr.TLSClientConfig = &tls.Config{RootCAs: pool}
-			}
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return fail(fmt.Errorf("recorder CA unreadable, refusing to fall back to default roots: %w", err))
 		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return fail(fmt.Errorf("recorder CA %s holds no certificate, refusing to fall back to default roots", caFile))
+		}
+		tr.TLSClientConfig = &tls.Config{RootCAs: pool}
 	}
-	return tr, nil
+	return tr, revoke, nil
 }
 
 // ---------- helpers ----------

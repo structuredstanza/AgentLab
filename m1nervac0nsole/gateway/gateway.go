@@ -57,8 +57,17 @@ type Config struct {
 	CertException func(netpolicy.Session, string) bool
 	// Resolver resolves origin names. Nil uses net.DefaultResolver.
 	Resolver *net.Resolver
+	// HostsFor returns addresses the session's task recorded for a hostname
+	// DNS may not know (vhosts). A mapping replaces DNS, but each address must
+	// be independently authorized; exclusions on the name or an address still
+	// bind. Returned addresses are pinned, so they must not be mutated.
+	// Nil means no mapping.
+	HostsFor func(s netpolicy.Session, host string) []net.IP
 	// KeyLogWriter receives origin TLS secrets. Nil reads SSLKEYLOGFILE.
 	KeyLogWriter io.Writer
+	// MaskFor picks the header masking level for a session. Nil is MaskUA:
+	// recorded traffic never announces a tool User-Agent.
+	MaskFor func(netpolicy.Session) MaskLevel
 }
 
 // Transport is the origin transport hook.
@@ -81,6 +90,7 @@ type connState struct {
 	authority string
 	port      int
 	addrs     []net.IP
+	recorded  bool
 	up        *upstream
 }
 
@@ -123,11 +133,7 @@ func (t *Transport) CloseIdleConnections() {
 	t.pool = make(map[poolKey]*poolEntry)
 	t.mu.Unlock()
 	for _, e := range pool {
-		e.mu.Lock()
-		if e.up != nil {
-			e.up.closeIdle()
-		}
-		e.mu.Unlock()
+		e.closeIdle()
 	}
 }
 
@@ -144,11 +150,7 @@ func (t *Transport) dropSession(id string) {
 	}
 	t.mu.Unlock()
 	for _, e := range dropped {
-		e.mu.Lock()
-		if e.up != nil {
-			e.up.closeIdle()
-		}
-		e.mu.Unlock()
+		e.closeIdle()
 	}
 }
 

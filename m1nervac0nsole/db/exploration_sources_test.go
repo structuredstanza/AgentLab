@@ -1,9 +1,38 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
+
+func TestTaskStartedAtUsesBoundLiveTask(t *testing.T) {
+	d := memoryTestDB(t)
+	task := memoryTask(t, d)
+	store := d.Exploration(task.ExplorationID)
+	created := time.Unix(1_000_000, 0).UTC()
+	started := created.Add(time.Minute)
+	if _, err := d.Exec(`UPDATE tasks SET created_at=$1 WHERE id=$2`, created, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.TaskStartedAt(t.Context()); err != nil || !got.Equal(created) {
+		t.Fatalf("never-run task start = %v (%v), want %v", got, err, created)
+	}
+	if _, err := d.Exec(`UPDATE tasks SET first_run_at=$1 WHERE id=$2`, started, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.TaskStartedAt(t.Context()); err != nil || !got.Equal(started) {
+		t.Fatalf("task start = %v (%v), want %v", got, err, started)
+	}
+	if _, err := d.Exec(`UPDATE tasks SET deleted_at=now() WHERE id=$1`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.TaskStartedAt(t.Context()); !errors.Is(err, sql.ErrNoRows) || !got.IsZero() {
+		t.Fatalf("deleted task returned a start: %v (%v)", got, err)
+	}
+}
 
 func TestInheritedActivityReadsRequireTerminalIntent(t *testing.T) {
 	d, err := Open(testDSN(t))

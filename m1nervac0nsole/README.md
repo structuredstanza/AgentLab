@@ -1,6 +1,6 @@
 # m1nervac0nsole
 
-An **operator-controlled console for authorized security research**. LLM-driven agents break an engagement goal into intents, run real tooling against an approved scope, and record every asset, fact, finding and captured exchange for a human to review.
+An **operator-controlled console for authorized security research**, based on [ARTEX](https://github.com/structuredstanza/ARTEX) and extended with a recursive self-improvement (RSI) loop. LLM-driven agents break an engagement goal into intents, run real tooling against an approved scope, and record every asset, fact, finding and captured exchange for a human to review.
 
 This is the application guide for the tree in this directory: requirements, build, first run, configuration, safety controls, known limits and development. For the project overview, the microsandbox lab deployment and the capture/export pipeline, see the [repository README](../README.md).
 
@@ -26,9 +26,10 @@ The console, its HTTP API and the embedded UI are implemented and exercised in t
 - **Evidence and collaboration** — recording proxy, tool-run history, LLM request records, optional browser-extension capture, and human-in-the-loop chat with the main agent.
 - **Memory** — a knowledge base and per-task reflection pool with a cross-task browser, prompt preview, and a propose-only curator whose writes require operator approval.
 - **Configuration surfaces** — skills, MCP servers, custom tools, agent bindings, intercept rules, asset intercept, approval records, notifications, logs and system settings.
-- **One fixed interface** — the minervacyb.org dark palette with locally packaged Manrope and DM Mono. Theme, preset and appearance switching were removed, not hidden.
 
 This is a development tree, not a hardened production release. No release artifact, hosted instance or support commitment is implied; build and verify it yourself with the commands below.
+
+Beyond its [ARTEX](https://github.com/structuredstanza/ARTEX) base, this tree adds the RSI memory loop ([RSI.md](RSI.md): knowledge base, reflection pool, propose-only curator, owner-gated promotion), the recording-proxy-plus-gateway authorization boundary, `execbox` subprocess isolation with the scoped direct lane, evidence pinning, split research/testing browser roles and the English-only source discipline. The repository README's ["Relationship to upstream ARTEX"](../README.md#relationship-to-upstream-artex) has the full comparison with diagrams.
 
 ## Screenshots
 
@@ -124,20 +125,17 @@ There is a single admin account, `minerva`. Its password is created on the first
 
 Agent output is **requested** in English by the prompts; the server does not rewrite or enforce the model's response language. A capable model follows that instruction more reliably, and short structured fields may still quote the target's own terminology. Reasoning models need a generous `max_tokens`, or internal reasoning can consume the budget and leave the answer empty. OpenAI-family models cap response tokens at 16,384 while OpenAI-compatible requests default higher, so an unchanged profile can fail with `400 (max_tokens is too large)`; set that profile's `max_tokens` to 16,384 or lower.
 
-### The gateway, the recording proxy and the masking proxy
+### The recorder, gateway and scoped direct lane
 
-The recording proxy (`-proxy`, default `127.0.0.1:8788`) is the single HTTP interception and origin-transport boundary. It authorizes each request against the task's policy, resolves and pins the origin address, applies the operator exit, speaks the origin TLS handshake with a Chrome uTLS profile, and records what it carried. Every recorded request carries a session credential the backend issues for a purpose, task and policy revision; an absent, unknown or revoked credential is refused, so there is no anonymous session and no direct fallback.
+Recorded HTTP goes through the recording proxy (`-proxy`, default `127.0.0.1:8788`) and gateway. The gateway authorizes each request, resolves and pins the origin, applies the operator's global proxy when configured (otherwise direct), and uses Chrome uTLS for origin TLS. A backend-issued session credential identifies purpose, task and policy revision; absent, unknown or revoked credentials are refused.
 
-The masking proxy is a separate process that rewrites browser identity headers while preserving caller credentials:
+The gateway selectively replaces missing or recognized tool-default User-Agent values, preserving deliberate custom identities and caller credentials. Stealth uses `navigation` masking (browser-like headers for eligible bodyless GET/HEAD requests); Careful, Standard and Unbound use `ua` masking on recorded traffic. Enrichment uses recorded gateway sessions with navigation masking. There is no separate masking-egress process, package, subcommand or environment configuration.
 
-```sh
-./m1nervac0nsole egress-proxy -addr 127.0.0.1:8888 -dir "$PWD/data/egress" -rpm 100
-# second terminal, after the masker reports it is listening:
-M1NERVAC0NSOLE_EGRESS_PROXY=http://127.0.0.1:8888 \
-M1NERVAC0NSOLE_EGRESS_CA="$PWD/data/egress/ca.pem" ./m1nervac0nsole
-```
+Profiles express operator guidance, not enforced request-rate or thread ceilings. Tool-run concurrency defaults to 16 globally and per target.
 
-The gateway's exit is the operator's global proxy when one is set and the masking proxy otherwise; an explicit global proxy keeps precedence. Asset-enrichment probes still go through the masker directly and fail closed: without a usable masking URL and CA they do not fall back to direct HTTP. The masking proxy is **pending retirement** — it stays only until the gateway serves those probes, and its `egress-proxy` subcommand and `M1NERVAC0NSOLE_EGRESS_*` settings go with it. `./dev.sh` starts the masker, the recorder and the backend together and stops only the process groups it created.
+The backend wraps the installed execbox client for **all testing subprocesses**, including SDK/Bash, custom scripts and manifests. A testing session can receive a scoped direct lane only with live `tun0` and no operator global proxy; research/install remain relay-only. Interactive HTTP keeps recorder proxy environment settings. Only Standard/Unbound bulk-HTTP manifests declaring `RateRPS` remove both proxy environment and proxy argv after a lane snapshot is available; execution refuses if the lane disappears. Raw tools can use scoped direct sockets regardless of HTTP proxy environment.
+
+Direct traffic is IPv4-only, unmasked and absent from HTTP recordings. Keep execution artifacts and pinned pcap evidence; replay safe HTTP through the recorder when inspectable evidence is needed. The session link has no IPv6. See the [network reference](docs/design/network-layer.md) for packet enforcement, DNS learning and revocation.
 
 ### Browser roles
 
@@ -155,7 +153,7 @@ A single Go backend serves the API, the SSE stream and the embedded Next.js UI, 
 - **Dual graph.** The asset graph is global truth about what exists; the exploration graph is per-task progress (`goal → intent → fact → finding`). Anchors pin exploration nodes to assets, so either direction is queryable.
 - **Engine.** Graph changes wake the planner; it emits intents only when there is a new direction; a worker claims one intent, executes it, and writes results back. A per-task todolist keeps a dependent attack chain ordered across fresh planner sessions.
 - **Process-level exchange.** Workers can search other workers' execution traces in the same task, so an observation that never became a formal fact is still reusable.
-- **Supporting packages.** `traffic` (recording proxy), `egress` (masking proxy), `enrich` (async probes), `guard` and `intercept` (scope and approval), plus MCP, skills, memory and reporting.
+- **Supporting packages.** `traffic` (recorder), `gateway` (origin transport and selective identity masking), `execbox` (subprocess isolation and scoped direct lane), `enrich` (async probes), `guard` and `intercept` (scope and approval), plus MCP, skills, memory and reporting.
 
 ## Safety controls in the code
 
@@ -165,7 +163,7 @@ A single Go backend serves the API, the SSE stream and the embedded Next.js UI, 
 - **Writes are scrubbed.** Agent-written memory is generalized and credential-scrubbed at write time, stays private to its task, and promotion to company or global scope is an owner action.
 - **First-run protection** — setup token, loopback bind and password-bound session keys (above).
 
-The masking proxy is **not** a scope firewall: it changes egress identity, not authorization, and cannot constrain a program that ignores proxy environment variables.
+Root-namespace FORWARD rules enforce direct-lane authorized scope, exclusions and infrastructure denies in both directions, including established flows. Denies cover loopback, `10.98.0.0/16`, link-local, guest-local addresses, `host.microsandbox.internal` and configured native-provider/profile endpoints, not entire VPN destination ranges. DNS A learning is filtered, expires with TTL and is re-evaluated on policy updates. Refresh polls every second with a combined one-second policy read/apply deadline: revocation normally takes at most about two seconds plus kernel teardown/scheduling. Failure cancels processes without an old-policy fallback; a supervisor apply failure kills the session.
 
 ## Known limits
 
@@ -173,20 +171,21 @@ The masking proxy is **not** a scope firewall: it changes egress identity, not a
 - Deleting or archiving a task removes only that task's captured exchanges. Rows recorded before attribution and the legacy per-host tree stay until an explicit host or all delete.
 - WebSocket exchanges store a JSONL transcript of both directions, ordered by proxy arrival; control frames (ping/pong) are not observable at that layer.
 - Single admin account, same-origin UI, no multi-tenant roles. Treat it as a single-operator research console, not a shared service.
-- The masking proxy approximates a browser fingerprint; it does not make every protocol fingerprint identical to one.
-- Self-signed targets stay reachable, but failed upstream verification produces a warning; certificate-pinned clients and non-HTTP protocols are not inspectable.
-- Enrichment records complete bodies up to 256 KiB; larger or interrupted observations are skipped rather than stored as complete evidence.
+- Gateway masking approximates browser identity, not anonymity or an identical fingerprint across protocols; direct traffic receives no masking or HTTP recording.
+- Origin certificates are verified strictly unless a session has an explicit authority-specific exception; certificate-pinned clients and non-HTTP protocols are not inspectable.
+- Enrichment retains the first 256 KiB of larger or interrupted observations with a partial marker; complete HTTP exchanges are recorded by the gateway session.
 - The browser-capture extension is unpacked and manual: it needs the `debugger` permission and a separate controlled browser profile, and is not installed by the deployment.
 - Memory retrieval is PostgreSQL full-text search, not embeddings; semantic recall is not implemented.
-- The UI has one fixed dark appearance, and updates are local rebuilds of this tree: no theme switcher, self-update client or automatic upstream merge.
+- Updates are local rebuilds of this tree: no self-update client or automatic upstream merge.
+- Staged toolbox installs fail closed: the wrapped execution client cannot publish an installed artifact, so an install reports an error instead of staging a binary.
 
 ## Development
 
 ```bash
-./dev.sh    # backend :8787 · recording proxy :8788 · masker :8888 · next dev :5173
+./dev.sh    # backend :8787 · recording proxy :8788 · next dev :5173
 ```
 
-`./dev.sh` builds the backend first, waits for the masker's own readiness line, and tears down only its own process groups. For separate terminals: `go run ./cmd/m1nervac0nsole` (no `embedui` tag, so no embedded UI) and `cd web && npm run dev` (proxies `/api` to the backend).
+`./dev.sh` builds the backend first and tears down only its own process groups. For separate terminals: `go run ./cmd/m1nervac0nsole` (no `embedui` tag, so no embedded UI) and `cd web && npm run dev` (proxies `/api` to the backend).
 
 ```bash
 go test ./...                                    # DB-backed tests skip without PostgreSQL
@@ -204,7 +203,7 @@ CI workflows live at the repository root in `.github/workflows/` (`ci.yml`, `web
 | `cmd/m1nervac0nsole`, `server` | Entry point, flags, HTTP API, auth, SSE, embedded UI handler |
 | `agent` | Goals, planner, worker, main agent, prompts, providers |
 | `db` | PostgreSQL store, schema, migrations, seeds |
-| `traffic`, `egress`, `enrich`, `guard`, `intercept` | Proxies, async enrichment, scope checks, approval gate |
+| `traffic`, `gateway`, `execbox`, `enrich`, `guard`, `intercept` | Recording, origin transport, subprocess isolation, async enrichment, scope checks, approval gate |
 | `web` | Next.js app; `web/out` is the export embedded into the binary |
 | `third_party/norma`, `docs` | Owned SDK source, design docs |
 

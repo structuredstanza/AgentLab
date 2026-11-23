@@ -83,6 +83,11 @@ func installBoundary(paths []spawnPath, src netpolicy.Source, c execbox.Client) 
 			return fmt.Errorf("spawn path %q has no session: %w", p.name, err)
 		}
 	}
+	if pg, ok := src.(*db.DB); ok {
+		c = &directLaneClient{Client: c, snapshot: func(ctx context.Context, sess netpolicy.Session) (*execbox.DirectLane, error) {
+			return directLaneSnapshot(pg, ctx, sess)
+		}}
+	}
 	execbox.Install(c)
 	return nil
 }
@@ -125,8 +130,7 @@ func taskSessionContext(ctx context.Context, m *Manager, taskID string) context.
 		log.Printf("[execbox] task %s runs without a session, so its tool processes will refuse: %v", taskID, err)
 		return ctx
 	}
-	context.AfterFunc(ctx, func() { m.RevokeSession(sess.Credential) })
-	return execbox.WithSession(ctx, sess)
+	return executionSessionContext(ctx, m, sess)
 }
 
 // conversationSessionContext attaches the session a chat turn's tool processes
@@ -134,6 +138,9 @@ func taskSessionContext(ctx context.Context, m *Manager, taskID string) context.
 // installs, a task-bound thread tests under that task, and a thread with no task
 // is research. None of it is reachable from the message or a tool argument.
 func (s *Server) conversationSessionContext(ctx context.Context, c *db.Conversation) context.Context {
+	if s == nil || s.m == nil {
+		return ctx
+	}
 	caller, purpose := netpolicy.CallerChat, netpolicy.PurposeResearch
 	switch {
 	case c.AgentKey == toolCuratorAgent:
@@ -141,12 +148,13 @@ func (s *Server) conversationSessionContext(ctx context.Context, c *db.Conversat
 	case c.TaskID > 0:
 		purpose = netpolicy.PurposeTesting
 	}
-	sess, err := s.session(ctx, caller, c.TaskID, c.ID, purpose)
+	// Revoke on the execution context alone, which can end before the chat turn.
+	sess, err := s.m.IssueSession(ctx, caller, c.TaskID, c.ID, purpose)
 	if err != nil {
 		log.Printf("[execbox] conversation %d (%s) runs without a session, so its tool processes will refuse: %v", c.ID, c.AgentKey, err)
 		return ctx
 	}
-	return execbox.WithSession(ctx, sess)
+	return executionSessionContext(ctx, s.m, sess)
 }
 
 // discoverySessionContext attaches the unbound research session a backend MCP

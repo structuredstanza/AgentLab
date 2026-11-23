@@ -8,8 +8,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -25,19 +28,145 @@ import (
 // policy answered for is not authorized.
 var NetPolicyAuthorizer netpolicy.Authorizer
 
+// NetPolicySource is the policy state behind NetPolicyAuthorizer, assigned
+// beside it. port_scan shares periodically refreshed state across workers,
+// rather than reading the database for every port.
+var NetPolicySource netpolicy.Source
+
+// OperatorExitConfigured prevents port_scan from bypassing the operator's exit.
+// The server wires it at startup; a nil callback refuses direct scans.
+var OperatorExitConfigured func() bool
+
+// snapshotSource serves one already-loaded policy state to netpolicy.Store, so
+// the snapshot is judged by netpolicy's own logic.
+type snapshotSource struct{ st netpolicy.State }
+
+func (s snapshotSource) PolicyState(context.Context, netpolicy.Session) (netpolicy.State, error) {
+	return s.st, nil
+}
+
 // authorizeDial asks the network policy whether this task may reach one
 // destination. The session is backend-internal: it carries the task, so the
 // authorizer judges the task's own authorized rules, and no revision, so a
 // policy change is observed on the next call.
-func authorizeDial(ctx context.Context, taskID int64, d netpolicy.Destination) netpolicy.Decision {
+func authorizeDial(ctx context.Context, az netpolicy.Authorizer, taskID int64, d netpolicy.Destination) netpolicy.Decision {
 	if taskID <= 0 {
 		return netpolicy.Decision{Stage: netpolicy.StagePolicy, Reason: "no task context to check the destination against"}
 	}
-	if NetPolicyAuthorizer == nil {
+	if az == nil {
 		return netpolicy.Decision{Stage: netpolicy.StagePolicy, Reason: "no network-policy authorizer is configured"}
 	}
-	s := netpolicy.Session{ID: "dial:" + strconv.FormatInt(taskID, 10), TaskID: taskID, Purpose: netpolicy.PurposeTesting}
-	return NetPolicyAuthorizer.Authorize(ctx, s, d)
+	return az.Authorize(ctx, dialSession(taskID), d)
+}
+
+// dialSession is the backend-internal session every dial authorization uses.
+func dialSession(taskID int64) netpolicy.Session {
+	return netpolicy.Session{ID: "dial:" + strconv.FormatInt(taskID, 10), TaskID: taskID, Purpose: netpolicy.PurposeTesting}
+}
+
+// resolvedAuthorizer is the dns-stage question: *netpolicy.Store answers it, and
+// it is not part of netpolicy.Authorizer because only a caller holding resolved
+// addresses can ask it.
+type resolvedAuthorizer interface {
+	AuthorizeResolved(context.Context, netpolicy.Session, netpolicy.Destination, []net.IP) netpolicy.Decision
+}
+
+type dialResolution struct {
+	addrs    []net.IP
+	recorded bool
+	literal  bool
+}
+
+type recordedAuthorizer interface {
+	AuthorizeRecorded(context.Context, netpolicy.Session, netpolicy.Destination, []net.IP) netpolicy.Decision
+}
+
+// recordedDialAddrs reads task claims once, even for scans with per-port rules.
+func (t *ToolSet) recordedDialAddrs(host string) []net.IP {
+	if t.as == nil || t.taskID <= 0 || net.ParseIP(host) != nil {
+		return nil
+	}
+	addrs, err := t.as.TaskHostAddrs(t.taskID, host)
+	if err != nil {
+		return nil
+	}
+	return addrs
+}
+
+// resolveDialHost only uses recorded addresses independently covered by the
+// task's policy. If none qualify, an authorized hostname follows the DNS path.
+// The returned addresses, never the name, are used for dialing.
+func (t *ToolSet) resolveDialHost(ctx context.Context, az netpolicy.Authorizer, host string, port int, recorded []net.IP) (dialResolution, netpolicy.Decision, error) {
+	d := netpolicy.Destination{Host: host, Port: port, Protocol: "tcp"}
+	if ip := net.ParseIP(host); ip != nil {
+		return dialResolution{addrs: []net.IP{ip}, literal: true}, authorizeDial(ctx, az, t.taskID, d), nil
+	}
+	if ra, ok := az.(recordedAuthorizer); ok && t.taskID > 0 {
+		var allowed netpolicy.Decision
+		addrs := recorded[:0]
+		sess := dialSession(t.taskID)
+		for i, ip := range recorded {
+			if dec := ra.AuthorizeRecorded(ctx, sess, d, recorded[i:i+1]); dec.Allow {
+				addrs = append(addrs, ip)
+				allowed = dec
+			}
+		}
+		if len(addrs) > 0 {
+			return dialResolution{addrs: addrs, recorded: true}, allowed, nil
+		}
+	}
+	dec := authorizeDial(ctx, az, t.taskID, d)
+	if !dec.Allow {
+		return dialResolution{}, dec, nil
+	}
+	found, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return dialResolution{}, dec, err
+	}
+	if len(found) == 0 {
+		return dialResolution{}, dec, &net.DNSError{Err: "no addresses", Name: host, IsNotFound: true}
+	}
+	addrs := make([]net.IP, len(found))
+	for i, f := range found {
+		addrs[i] = f.IP
+	}
+	return dialResolution{addrs: addrs}, dec, nil
+}
+
+// authorizeAddrs rechecks one port against the same origin used to resolve it.
+// DNS answers are judged together; a recorded address must qualify on its own.
+func (t *ToolSet) authorizeAddrs(ctx context.Context, az netpolicy.Authorizer, host string, port int, resolved dialResolution, ai int) netpolicy.Decision {
+	d := netpolicy.Destination{Host: host, Port: port, Protocol: "tcp"}
+	if resolved.recorded {
+		if ra, ok := az.(recordedAuthorizer); ok && t.taskID > 0 {
+			return ra.AuthorizeRecorded(ctx, dialSession(t.taskID), d, resolved.addrs[ai:ai+1])
+		}
+		return netpolicy.Decision{Stage: netpolicy.StageDNS, Reason: "the network-policy authorizer cannot judge recorded addresses"}
+	}
+	if resolved.literal {
+		return authorizeDial(ctx, az, t.taskID, d)
+	}
+	ra, ok := az.(resolvedAuthorizer)
+	if !ok || t.taskID <= 0 {
+		return netpolicy.Decision{Stage: netpolicy.StageDNS, Reason: "the network-policy authorizer cannot judge resolved addresses, so hostname dials are refused"}
+	}
+	return ra.AuthorizeResolved(ctx, dialSession(t.taskID), d, resolved.addrs)
+}
+
+// resolveAuthorizedDial is resolveDialHost plus the per-port dns-stage check:
+// the addresses are returned only when the destination is authorized.
+func (t *ToolSet) resolveAuthorizedDial(ctx context.Context, az netpolicy.Authorizer, host string, port int) ([]net.IP, netpolicy.Decision, error) {
+	resolved, dec, err := t.resolveDialHost(ctx, az, host, port, t.recordedDialAddrs(host))
+	if err != nil || !dec.Allow {
+		return nil, dec, err
+	}
+	if !resolved.recorded && !resolved.literal {
+		dec = t.authorizeAddrs(ctx, az, host, port, resolved, 0)
+		if !dec.Allow {
+			return nil, dec, nil
+		}
+	}
+	return resolved.addrs, dec, nil
 }
 
 // normalizeDirection fingerprints summaries while ignoring case, whitespace, and changing digits.
@@ -201,7 +330,7 @@ type ToolSet struct {
 	// paused task back to running and (re)starts the engine loops — a plain notify()
 	// can't, because the planner's terminal gate swallows wakes. Wired ONLY for the
 	// main agent (human steering); nil for the goals decomposer and workers.
-	resumeTask func()
+	resumeTask func() (string, error) // returns an honest admission acknowledgement, or the admission error
 	// notifyGoal, if set, wakes the planner AND records ONE "person added N goals:…" trigger
 	// for a whole set_goals call (batch-aware — one call, one trigger, not one per goal)
 	// so the next round spells out the added goals (instead of the planner having to
@@ -228,7 +357,12 @@ func (t *ToolSet) SetNotifyHint(fn func([]string)) { t.notifyHint = fn }
 
 // SetResumeTask wires the task-revive callback (see ToolSet.resumeTask). Set only by
 // the main-agent chat, so runtime-added goals can pull a finished task back to running.
-func (t *ToolSet) SetResumeTask(fn func()) { t.resumeTask = fn }
+func (t *ToolSet) SetResumeTask(fn func() (string, error)) { t.resumeTask = fn }
+
+// SetKillWork wires the confirmed-stop callback behind the kill_work tool.
+func (t *ToolSet) SetKillWork(fn func(ctx context.Context, taskID, intentID int64, reason string) error) {
+	t.killWork = fn
+}
 
 // SetNotify wires the planner-wake callback (see ToolSet.notify). Set by callers
 // that hold the task handle (main-agent chat, cross-task orchestration).
@@ -1301,22 +1435,58 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			// is moved back to running so that a worker can pick up this intent for execution. resumeTask is only injected by the main agent's Chat entry point
 			// (SetResumeTask); the planner's ToolSet is nil, so when the planner calls add_intent itself, this block is a
 			// no-op and does not affect its normal production of intents. The intent node has already been created above (open), so reviving the task will not mistakenly treat it as drained.
-			if createdAny && t.resumeTask != nil {
-				t.resumeTask()
+			ack, aerr := "", error(nil)
+			if createdAny {
+				ack, aerr = t.admit()
 			}
 
 			if !batch { // Single item: keep the original return value
 				if e, bad := errs["0"]; bad {
 					return actool.Errorf(e), nil
 				}
-				return actool.Text(fmt.Sprintf("intent created: %d", ids[0])), nil
+				return admissionText(fmt.Sprintf("intent created: %d (open, not executing yet)", ids[0]), ack, aerr), nil
 			}
 			out := map[string]any{"ids": ids}
 			if len(errs) > 0 {
 				out["errors"] = errs
 			}
-			return jsonResult(out)
+			return admissionJSON(out, ack, aerr)
 		})
+}
+
+// admit runs the main-agent-only task admission (nil callback = not wired, no
+// admission to report). The graph write has already happened when it is called.
+func (t *ToolSet) admit() (string, error) {
+	if t.resumeTask == nil {
+		return "", nil
+	}
+	return t.resumeTask()
+}
+
+// admissionText appends the admission outcome to a single-item reply; a failed
+// admission is an error result, because the saved node will not run by itself.
+func admissionText(msg, ack string, err error) actool.Result {
+	if err != nil {
+		return actool.Errorf(msg + "; saved, but task admission FAILED: " + err.Error())
+	}
+	if ack != "" {
+		msg += "; " + ack
+	}
+	return actool.Text(msg)
+}
+
+// admissionJSON is the batch counterpart: ids stay in the payload either way,
+// and a failed admission makes the whole result an error.
+func admissionJSON(out map[string]any, ack string, err error) (actool.Result, error) {
+	if err == nil {
+		if ack != "" {
+			out["admission"] = ack
+		}
+		return jsonResult(out)
+	}
+	out["admission_error"] = err.Error()
+	b, _ := json.Marshal(out)
+	return actool.Errorf(string(b)), nil
 }
 
 func (t *ToolSet) listGoals() actool.CoreTool {
@@ -1443,12 +1613,16 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 // --- worker write tools ---
 
 func (t *ToolSet) addFinding() actool.CoreTool {
-	return writeTool("report_finding", "Record a confirmed vulnerability; provide verifiable evidence such as command output and logs in evidence, and attach browser_screenshot paths in screenshot_paths so the UI renders them. Pass the current intent_id in task context. The returned finding_id is the independent vulnerability record ID; finding_node_id is the exploration node ID (the first line keeps this node number).", obj(map[string]any{
+	return writeTool("report_finding", "Record a confirmed vulnerability; provide verifiable evidence such as command output and logs in evidence, and attach browser_screenshot paths in screenshot_paths so the UI renders them. Pass the current intent_id in task context. No evidence kind is mandatory. For an HTTP finding whose request is repeatable and non-destructive, RECOMMENDED: replay it through the recorder (curl via the proxy env) and cite that exchange in traffic_ids. For non-HTTP or destructive findings, cite artifacts (exec artifact ids from your tool results) and flows (host/port/proto; the window defaults to this intent's run time), which pin the matching packets from the capture. The returned finding_id is the independent vulnerability record ID; finding_node_id is the exploration node ID (the first line keeps this node number).", obj(map[string]any{
 		"vulnclass": str("Vulnerability class"), "name": str("Vulnerability name"), "severity": str("critical|high|medium|low"), "summary": str("Finding summary"),
 		"intent_id": idp("Intent id of the current task"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Affected asset ids"},
 		"evidence":         str("Evidence/PoC text"),
 		"evidence_hint_id": idp("Optional: id of the hint node in this task that corresponds to this vulnerability; its structured traffic_refs are carried over automatically. Cannot reference inherited hints or hints belonging to other vulnerabilities"),
 		"screenshot_paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional. Paths returned by browser_screenshot (tasks/<taskId>/screenshots/<name>.png), recorded as renderable evidence. Each must exist as a file of at most 10 MB; at most 10 paths. A bad path refuses the whole report."},
+		"traffic_ids":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional shorthand for traffic_refs: real exchange IDs from traffic_search, bound as proof."},
+		"artifacts":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional. Exec artifact ids (exec-artifacts/<id>) from the [exec artifact: ...] line of your tool results, anchored by the hash of their manifest. At most 10."},
+		"flows": map[string]any{"type": "array", "description": "Optional. Packets of direct (non-proxied) traffic to pin from the capture. host is an authorized IP; port 0 = any; proto tcp|udp|any; from/to are RFC3339. The window cannot start before the intent was created (or the task started if no intent is given). At most 5. A flow that cannot be pinned is reported back and the finding is still recorded.",
+			"items": obj(map[string]any{"host": str("IP address"), "port": map[string]any{"type": "integer"}, "proto": map[string]any{"type": "string", "enum": []string{"tcp", "udp", "any"}}, "from": str("RFC3339 start"), "to": str("RFC3339 end")}, "host")},
 		"traffic_refs": map[string]any{"type": "array", "description": "Optional. For HTTP/HTTPS vulnerabilities, first search and verify item by item that the requests/responses actually support the vulnerability conclusion, then fill in the real IDs in reproduction order. For non-HTTP vulnerabilities such as TCP, or when traffic was not captured or no exact record is found, omit this or pass [], which does not block reporting; explain the reason in evidence and provide other verifiable evidence. Do not guess IDs, infer associations from domain or time, or repeat probes merely to pad packets. Roles: baseline = normal control; proof = proof of vulnerability; verification = supplementary verification; supporting = auxiliary evidence.",
 			"items": obj(map[string]any{"traffic_id": str("Real traffic ID returned by traffic_search"), "role": map[string]any{"type": "string", "enum": []string{"baseline", "proof", "verification", "supporting"}}, "note": str("How this traffic supports the vulnerability conclusion")}, "traffic_id")},
 	}, "vulnclass", "severity", "summary"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
@@ -1459,6 +1633,9 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			TrafficRefs                                  []db.TrafficRef   `json:"traffic_refs"`
 			EvidenceHintID                               json.RawMessage   `json:"evidence_hint_id"`
 			ScreenshotPaths                              []string          `json:"screenshot_paths"`
+			TrafficIDs                                   []string          `json:"traffic_ids"`
+			Artifacts                                    []string          `json:"artifacts"`
+			Flows                                        []findingFlow     `json:"flows"`
 		}
 		if err := json.Unmarshal(in, &a); err != nil {
 			return actool.Errorf(err.Error()), nil
@@ -1472,7 +1649,10 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		// finding over a stray parameter. The success path below reports evidence_status
 		// "not_bound" with the "Closed; can be linked manually on the page" note, which is what the caller needs.
 		if !findingTrafficBindingEnabled() {
-			a.TrafficRefs, a.EvidenceHintID = nil, nil
+			a.TrafficRefs, a.TrafficIDs, a.EvidenceHintID = nil, nil, nil
+		}
+		for _, id := range a.TrafficIDs {
+			a.TrafficRefs = append(a.TrafficRefs, db.TrafficRef{TrafficID: id, Role: "proof"})
 		}
 		if len(a.EvidenceHintID) > 0 && pid(a.EvidenceHintID) <= 0 {
 			return actool.Errorf("evidence_hint_id must be a valid hint node ID; omit it when there is no handover hint"), nil
@@ -1485,7 +1665,12 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs), Screenshots: shots}
+		intentID := pid(a.IntentID)
+		pinned, failed := t.pinEvidence(ctx, a.Artifacts, a.Flows, intentID)
+		if len(pinned) > 0 {
+			a.Evidence = strings.TrimSpace(a.Evidence + "\n\nPinned evidence:\n- " + strings.Join(pinned, "\n- "))
+		}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: intentID, VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs), Screenshots: shots}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
@@ -1514,12 +1699,17 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}
 		result := struct {
 			*db.RecordedFinding
-			EvidenceStatus string `json:"evidence_status"`
-			EvidenceNote   string `json:"evidence_note,omitempty"`
-		}{RecordedFinding: recorded, EvidenceStatus: "bound"}
+			EvidenceStatus string   `json:"evidence_status"`
+			EvidenceNote   string   `json:"evidence_note,omitempty"`
+			Pinned         []string `json:"evidence_pinned,omitempty"`
+			PinFailed      []string `json:"evidence_pin_failed,omitempty"`
+		}{RecordedFinding: recorded, EvidenceStatus: "bound", Pinned: pinned, PinFailed: failed}
 		if len(recorded.Traffic.Bindings) == 0 {
 			result.EvidenceStatus = "not_bound"
-			result.EvidenceNote = "Vulnerability saved with no traffic bound. TCP or no-packet cases can continue normally. If verified HTTP traffic already exists, backfill it with bind_finding_traffic or on the vulnerability page before completing the evidence handover. Do not create the vulnerability again."
+			result.EvidenceNote = "Vulnerability saved with no traffic bound."
+			if len(pinned) == 0 {
+				result.EvidenceNote += " " + evidenceAdvice
+			}
 			if !findingTrafficBindingEnabled() {
 				result.EvidenceNote = "Vulnerability saved. Automatic traffic binding by the agent is disabled; link traffic manually on the page."
 			}
@@ -1815,6 +2005,7 @@ func (t *ToolSet) setGoals() actool.CoreTool {
 				ids[i] = id
 				addedTexts = append(addedTexts, strings.TrimSpace(it.Text))
 			}
+			ack, aerr := "", error(nil)
 			if len(addedTexts) > 0 {
 				// Wake the planner (once for the whole batch). Prefer notifyGoal: one set_goals call records a single trigger like "the user added N goals: …",
 				// N targets: …" triggers, without flooding one message per item; the decomposer/worker has no such callback → fall back to plain notify (decomposer
@@ -1827,22 +2018,20 @@ func (t *ToolSet) setGoals() actool.CoreTool {
 				}
 				// When the main agent adds goals at runtime, pull completed/paused tasks back to running so they keep going (the terminal-state gate
 				// swallows ordinary notify; must be explicitly revived). Only mainagent wires this callback; the decomposer/worker is nil.
-				if t.resumeTask != nil {
-					t.resumeTask()
-				}
+				ack, aerr = t.admit()
 			}
 
 			if !batch { // Single item: keep the original return value
 				if e, bad := errs["0"]; bad {
 					return actool.Errorf(e), nil
 				}
-				return actool.Text(fmt.Sprintf("goal added: %d", ids[0])), nil
+				return admissionText(fmt.Sprintf("goal added: %d", ids[0]), ack, aerr), nil
 			}
 			out := map[string]any{"ids": ids}
 			if len(errs) > 0 {
 				out["errors"] = errs
 			}
-			return jsonResult(out)
+			return admissionJSON(out, ack, aerr)
 		})
 }
 
@@ -1971,9 +2160,9 @@ func (t *ToolSet) addHint() actool.CoreTool {
 				if e, bad := errs["0"]; bad {
 					return actool.Errorf(e), nil
 				}
-				return actool.Text(fmt.Sprintf("hint added: %d", ids[0])), nil
+				return actool.Text(fmt.Sprintf("hint added: %d (recorded as guidance for the planner's next round; it launches no work, changes no running intent and stops nothing - use add_intent to start work, kill_work to stop)", ids[0])), nil
 			}
-			out := map[string]any{"ids": ids}
+			out := map[string]any{"ids": ids, "note": "hints are guidance for the planner's next round; they launch no work and stop nothing"}
 			if len(errs) > 0 {
 				out["errors"] = errs
 			}
@@ -2011,9 +2200,17 @@ func (t *ToolSet) killWorkTool() actool.CoreTool {
 				return actool.Errorf("intent_id must be an intent in this task (intents from related tasks are read-only)"), nil
 			}
 			if err := t.killWork(ctx, t.taskID, id, reason); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return actool.Errorf("stop NOT confirmed for intent " + strconv.FormatInt(id, 10) + ": " + err.Error()), nil
 			}
-			return actool.Text(fmt.Sprintf("Stopped intent %d (running work terminated or intent cancelled with the given reason)", id)), nil
+			// killWork returns only after the worker settled, so the stored state is the proof.
+			state := "unknown"
+			if after, err := t.ts.GetNode(id); err == nil && after != nil {
+				state = after.State
+			}
+			if state == "running" {
+				return actool.Errorf(fmt.Sprintf("stop NOT confirmed: intent %d is still recorded as running", id)), nil
+			}
+			return actool.Text(fmt.Sprintf("Stopped intent %d: the worker has exited and the intent is now %q (reason recorded). Nothing of it is still running.", id, state)), nil
 		})
 }
 
@@ -2050,7 +2247,7 @@ func (t *ToolSet) steerWorkTool() actool.CoreTool {
 			if err := t.steerWork(id, a.Message); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			return actool.Text(fmt.Sprintf("Injected corrective instruction into the work of intent %d (takes effect at the next step)", id)), nil
+			return actool.Text(fmt.Sprintf("Queued a correction for the work of intent %d. It is NOT a stop and was not applied yet: the worker receives it before its next tool call. Use kill_work to actually stop the intent.", id)), nil
 		})
 }
 
@@ -2404,31 +2601,361 @@ func (t *ToolSet) tcpProbe() actool.CoreTool {
 			// A direct dial is contact with the target, so the task's network
 			// policy decides it before the socket is opened: an unauthorized (or
 			// unknown) destination is not probed, and its liveness is not written.
-			if dec := authorizeDial(ctx, t.taskID, netpolicy.Destination{Host: host, Port: a.Port, Protocol: "tcp"}); !dec.Allow {
+			// A name is resolved once and only the authorized addresses are dialled.
+			addrs, dec, err := t.resolveAuthorizedDial(ctx, NetPolicyAuthorizer, host, a.Port)
+			if err == nil && !dec.Allow {
 				return actool.Errorf("tcp_probe refused: " + dec.Reason), nil
 			}
 			started := time.Now()
-			conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(a.Port)))
-			result := classifyDial(err)
 			if err == nil {
-				conn.Close()
-			}
-			// Liveness is best-effort state, not a probe result: a write failure
-			// must not turn a successful connection into a failed tool call.
-			if t.as != nil {
+				var conn net.Conn
+				conn, err = (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", net.JoinHostPort(addrs[0].String(), strconv.Itoa(a.Port)))
 				if err == nil {
+					conn.Close()
+				}
+			}
+			result := classifyDial(err)
+			// Liveness is best-effort state, not a probe result: a write failure
+			// must not turn a successful connection into a failed tool call. A
+			// refusal is a reply, so the host is alive; only silence or a failed
+			// lookup marks it unreachable.
+			if t.as != nil {
+				switch result {
+				case "connected", "refused":
 					_ = t.as.ClearUnreachable(host)
-					_ = t.as.AppendIPPort(host, a.Port, "", db.PortProvenanceProbe)
-				} else {
+				default:
 					_ = t.as.MarkUnreachable(host)
+				}
+				if result == "connected" {
+					_ = t.as.AppendIPPort(addrs[0].String(), a.Port, "", db.PortProvenanceProbe)
 				}
 			}
 			out := map[string]any{
 				"host": host, "port": a.Port, "result": result,
 				"duration_ms": time.Since(started).Milliseconds(),
 			}
+			if len(addrs) > 0 && addrs[0].String() != host {
+				out["address"] = addrs[0].String()
+			}
 			if err != nil && result == "error" {
 				out["detail"] = err.Error()
+			}
+			return jsonResult(out)
+		})
+}
+
+const (
+	// portScanWorkers bounds concurrent dials. It is a file-descriptor bound,
+	// not a rate cap: the operator allows any scan size and speed.
+	portScanWorkers        = 256
+	portScanTimeout        = 1500 * time.Millisecond
+	portScanMaxTimeout     = 10 * time.Second
+	portScanPolicyInterval = 2 * time.Second
+	maxCredibleOpenPorts   = 1000
+)
+
+// portScanTop is the "top" preset: common TCP services, one list and no others.
+var portScanTop = []int{
+	21, 22, 23, 25, 53, 80, 81, 110, 111, 113, 119, 123, 135, 137, 139, 143, 161, 179, 389, 443,
+	445, 465, 500, 514, 515, 543, 544, 548, 554, 587, 593, 631, 636, 646, 873, 990, 993, 995, 1025, 1080,
+	1194, 1433, 1434, 1521, 1701, 1720, 1723, 2049, 2082, 2083, 2086, 2087, 2121, 2181, 2375, 2376, 3000, 3128, 3306, 3389,
+	3690, 4443, 4444, 4848, 5000, 5060, 5432, 5601, 5672, 5900, 5984, 5985, 5986, 6379, 6443, 6667, 7001, 7077, 8000, 8008,
+	8080, 8081, 8082, 8443, 8888, 9000, 9042, 9090, 9092, 9200, 9300, 9418, 9999, 10000, 11211, 15672, 27017, 27018, 50000,
+}
+
+// parsePorts expands "22,80,8000-8100" or "top" into ascending distinct ports.
+func parsePorts(spec string) ([]int, error) {
+	var seen [65536]bool
+	add := func(p int) { seen[p] = true }
+	if strings.TrimSpace(spec) == "top" {
+		for _, p := range portScanTop {
+			add(p)
+		}
+	} else {
+		for _, part := range strings.Split(spec, ",") {
+			lo, hi, isRange := strings.Cut(strings.TrimSpace(part), "-")
+			a, err := strconv.Atoi(strings.TrimSpace(lo))
+			b := a
+			if err == nil && isRange {
+				b, err = strconv.Atoi(strings.TrimSpace(hi))
+			}
+			if err != nil || a < 1 || b > 65535 || a > b {
+				return nil, fmt.Errorf("invalid port or range %q (want 1-65535, e.g. \"22,80,8000-8100\" or \"top\")", part)
+			}
+			for p := a; p <= b; p++ {
+				add(p)
+			}
+		}
+	}
+	var out []int
+	for p, ok := range seen {
+		if ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+type portScanJob struct{ ai, pi int }
+
+type portScanPolicy struct {
+	src            netpolicy.Source
+	session        netpolicy.Session
+	exitConfigured func() bool
+	revision       int64
+	snapshot       atomic.Pointer[netpolicy.Store]
+}
+
+func (p *portScanPolicy) refresh(ctx context.Context) error {
+	if p.exitConfigured == nil {
+		return errors.New("operator exit configuration is unavailable")
+	}
+	if p.exitConfigured() {
+		return errors.New("operator global proxy is configured")
+	}
+	if p.src == nil {
+		return errors.New("no network-policy source is configured")
+	}
+	st, err := p.src.PolicyState(ctx, p.session)
+	if err != nil {
+		return fmt.Errorf("policy unavailable: %w", err)
+	}
+	// A new revision supersedes in-flight authorizations. Stop the scan
+	// rather than letting a connection continue under the old grant.
+	if p.snapshot.Load() != nil && st.Revision != p.revision {
+		return errors.New("network policy changed during scan")
+	}
+	p.revision = st.Revision
+	p.snapshot.Store(netpolicy.NewAuthorizer(snapshotSource{st}))
+	return nil
+}
+
+// feed refreshes even while workers are busy or completing the last few dials.
+func (p *portScanPolicy) feed(ctx context.Context, jobs chan<- portScanJob, done <-chan struct{}, targets, ports int) error {
+	ticker := time.NewTicker(portScanPolicyInterval)
+	defer ticker.Stop()
+	defer func() {
+		if jobs != nil {
+			close(jobs)
+		}
+	}()
+	var j portScanJob
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-done:
+			return nil
+		case <-ticker.C:
+			refresh, stop := context.WithTimeout(ctx, portScanPolicyInterval)
+			err := p.refresh(refresh)
+			stop()
+			if err != nil {
+				return err
+			}
+		case jobs <- j:
+			j.pi++
+			if j.pi == ports {
+				j.pi = 0
+				j.ai++
+				if j.ai == targets {
+					close(jobs)
+					jobs = nil
+				}
+			}
+		}
+	}
+}
+
+type portScanTally struct {
+	open   []int
+	counts map[string]int
+}
+
+func (t *ToolSet) recordPortScanTally(host, addr string, tl *portScanTally) (map[string]any, bool) {
+	replied := tl.counts["open"]+tl.counts["refused"] > 0
+	result := map[string]any{"address": addr, "open": []int{}, "counts": tl.counts}
+	if len(tl.open) > maxCredibleOpenPorts {
+		result["note"] = fmt.Sprintf("answers on %d ports, likely a middlebox", len(tl.open))
+		return result, replied
+	}
+	if len(tl.open) > 0 {
+		sort.Ints(tl.open)
+		result["open"] = tl.open
+	}
+	// Best-effort observations; a scan entirely refused by policy learned nothing.
+	if t.as != nil {
+		for _, p := range tl.open {
+			_ = t.as.AppendIPPort(addr, p, "", db.PortProvenanceProbe)
+		}
+		for _, key := range []string{addr, host} {
+			switch {
+			case replied:
+				_ = t.as.ClearUnreachable(key)
+			case tl.counts["timed_out"]+tl.counts["error"] > 0:
+				_ = t.as.MarkUnreachable(key)
+			}
+		}
+	}
+	return result, replied
+}
+
+// portScan checks authorized TCP destinations from the backend independently of
+// the subprocess VPN lane. Resolve once and authorize the exact dial addresses;
+// portScanWorkers bounds descriptors, not request rate or port count.
+func (t *ToolSet) portScan() actool.CoreTool {
+	return writeTool("port_scan",
+		"TCP connect port scan dialled from the backend, each destination authorized by the task's network policy. Use when the scoped subprocess VPN direct lane is unavailable (no live tun0). With the lane available, run_tool nmap supports SYN, TCP connect and UDP scans as uid 1000 with CAP_NET_RAW; raw Nmap commands need --privileged -Pn (the manifest supplies these flags), never sudo or root. Do not tunnel port scans through an HTTP proxy. host may be an IP or a hostname; ports is a comma list with ranges (\"22,80,8000-8100\", \"1-65535\") or \"top\" (about 100 common ports). A name resolving to several addresses scans the first and lists the rest as other_addresses; set all_addresses to scan every one. Reports open ports plus refused / timed_out / error / not_authorized counts, and records open ports (provenance=probe) and host liveness unless the replies likely came from a middlebox.",
+		obj(map[string]any{
+			"host":          str("IP address or hostname to scan"),
+			"ports":         str("Ports to scan: comma list with ranges, e.g. \"22,80,8000-8100\" or \"1-65535\", or \"top\""),
+			"timeout_ms":    intp("Per-port dial timeout in milliseconds (default 1500, max 10000)"),
+			"all_addresses": map[string]any{"type": "boolean", "description": "When host resolves to several addresses, scan all of them instead of only the first (default false)"},
+		}, "host", "ports"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Host         string `json:"host"`
+				Ports        string `json:"ports"`
+				TimeoutMS    int    `json:"timeout_ms"`
+				AllAddresses bool   `json:"all_addresses"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("invalid input: " + err.Error()), nil
+			}
+			host := strings.TrimSpace(a.Host)
+			if host == "" {
+				return actool.Errorf("host is required"), nil
+			}
+			ports, err := parsePorts(a.Ports)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			timeout := portScanTimeout
+			if a.TimeoutMS > 0 {
+				timeout = min(time.Duration(a.TimeoutMS)*time.Millisecond, portScanMaxTimeout)
+			}
+			started := time.Now()
+			if t.taskID <= 0 {
+				return actool.Errorf("port_scan refused: no task context to check the destination against"), nil
+			}
+			policy := portScanPolicy{src: NetPolicySource, session: dialSession(t.taskID), exitConfigured: OperatorExitConfigured}
+			if err := policy.refresh(ctx); err != nil {
+				return actool.Errorf("port_scan refused: " + err.Error()), nil
+			}
+			// The pre-resolution check is port-aware (rules may list ports), so
+			// take the first port the policy admits; each port is re-judged below.
+			recorded := t.recordedDialAddrs(host)
+			var resolved dialResolution
+			var dec netpolicy.Decision
+			for _, p := range ports {
+				if resolved, dec, err = t.resolveDialHost(ctx, policy.snapshot.Load(), host, p, recorded); err != nil || dec.Allow {
+					break
+				}
+			}
+			if err != nil {
+				return actool.Errorf("port_scan: cannot resolve " + host + ": " + err.Error()), nil
+			}
+			if !dec.Allow {
+				return actool.Errorf("port_scan refused: " + dec.Reason), nil
+			}
+			// Resolution can outlast the snapshot's refresh cadence.
+			if time.Since(started) >= portScanPolicyInterval {
+				if err := policy.refresh(ctx); err != nil {
+					return actool.Errorf("port_scan stopped: " + err.Error()), nil
+				}
+			}
+			targets, others := resolved.addrs[:1], resolved.addrs[1:]
+			if a.AllAddresses {
+				targets, others = resolved.addrs, nil
+			}
+
+			tallies := make([]portScanTally, len(targets))
+			for i := range tallies {
+				tallies[i].counts = map[string]int{"open": 0, "refused": 0, "timed_out": 0, "error": 0, "not_authorized": 0}
+			}
+			scanCtx, cancelDials := context.WithCancel(ctx)
+			defer cancelDials()
+			jobs := make(chan portScanJob)
+			var mu sync.Mutex
+			var wg sync.WaitGroup
+			dialer := &net.Dialer{Timeout: timeout}
+			for range min(portScanWorkers, len(targets)*len(ports)) {
+				wg.Go(func() {
+					for j := range jobs {
+						if scanCtx.Err() != nil {
+							continue
+						}
+						port := ports[j.pi]
+						kind := "not_authorized"
+						if t.authorizeAddrs(scanCtx, policy.snapshot.Load(), host, port, resolved, j.ai).Allow {
+							conn, err := dialer.DialContext(scanCtx, "tcp", net.JoinHostPort(targets[j.ai].String(), strconv.Itoa(port)))
+							if err == nil {
+								conn.Close()
+							}
+							switch classifyDial(err) {
+							case "connected":
+								kind = "open"
+							case "refused":
+								kind = "refused"
+							case "timed-out":
+								kind = "timed_out"
+							default:
+								kind = "error"
+							}
+						}
+						mu.Lock()
+						tallies[j.ai].counts[kind]++
+						if kind == "open" {
+							tallies[j.ai].open = append(tallies[j.ai].open, port)
+						}
+						mu.Unlock()
+					}
+				})
+			}
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+			err = policy.feed(scanCtx, jobs, done, len(targets), len(ports))
+			cancelDials()
+			<-done
+			if err := ctx.Err(); err != nil {
+				return actool.Errorf("port_scan cancelled: " + err.Error()), nil
+			}
+			if err != nil {
+				return actool.Errorf("port_scan stopped: " + err.Error()), nil
+			}
+
+			results := make([]map[string]any, 0, len(targets))
+			scanned := make([]string, 0, len(targets))
+			silent := true
+			for i, ip := range targets {
+				addr := ip.String()
+				scanned = append(scanned, addr)
+				result, replied := t.recordPortScanTally(host, addr, &tallies[i])
+				results = append(results, result)
+				if replied {
+					silent = false
+				}
+			}
+			out := map[string]any{
+				"host": host, "addresses_scanned": scanned, "ports_scanned": len(ports),
+				"results": results, "duration_ms": time.Since(started).Milliseconds(),
+			}
+			if len(others) > 0 {
+				ss := make([]string, len(others))
+				for i, ip := range others {
+					ss[i] = ip.String()
+				}
+				out["other_addresses"] = ss
+				out["other_addresses_note"] = "these addresses may front the same service (load balancer / reverse proxy); set all_addresses to scan them"
+			}
+			if silent {
+				out["note"] = "no reply: filtered or host down"
 			}
 			return jsonResult(out)
 		})

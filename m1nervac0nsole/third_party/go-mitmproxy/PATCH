@@ -13,9 +13,10 @@ the dial or take over a WebSocket upgrade. See
 decisions" item 1.
 
 Behaviour with `Options.OriginTransport == nil` is upstream v1.9.2 except where a
-hunk says otherwise: Hunk 8 is an independent defect fix, and Hunks 9-10 change
-WebSocket addon delivery for every configuration (an addon that does not implement
-the optional interface sees exactly the hooks it saw before).
+hunk says otherwise: Hunk 8 is an independent defect fix; Hunks 9-10 change
+WebSocket addon delivery for every configuration (without changing hooks for
+addons that do not implement the optional interface); Hunk 11 bounds the wait
+for first bytes and switches to raw relay on timeout.
 
 ## Tests
 
@@ -69,6 +70,7 @@ coverage that matters.
 - `httpsDialFirstAttack`: a failed dial is reported by `writeOriginError`, which
   writes `OriginError.Status` (default 502), `OriginError.Header` and
   `X-M1nervac0nsole-Gateway: <stage>`; an unclassified error still yields 502.
+  A non-empty `OriginError.Reason` is sent in the body with a trailing newline.
   Without the header copy a refusal could not carry a `Proxy-Authenticate`
   challenge, and a browser would never send its proxy credential.
 - `directTransfer`: dials through `dialOrigin`, which uses the hook when set, so
@@ -150,6 +152,20 @@ Additive to the `Addon` interface, which is unchanged, so `BaseAddon`,
   so the drain cannot hang. The first error is still the one returned.
 - New `closeErr`, `frame` and `closed` helpers; `closeErr` keeps the previous
   return value (a normal close is not an error).
+
+### Hunk 11 — `proxy/entry.go`: first-bytes deadline
+
+Independent of the hook, and present in v1.9.2: both `httpsDialFirstAttack` and
+`httpsDialLazyAttack` peek 3 client bytes with no deadline. A server-speaks-first
+service (FTP, SMTP, MySQL) never lets the client speak before the banner, so the
+tunnel deadlocked.
+
+- New `firstBytesWait` (2s) and `peekFirst`: the peek runs under a read deadline,
+  cleared afterwards. A timeout (the client is waiting for the server) falls back
+  to the raw `transfer` relay, dialing first in the lazy path; any other peek
+  error keeps the old close-and-log behaviour. `bufio.Reader.Peek` clears its
+  sticky error when it returns it, so the relay reads the client normally.
+- `time` imported.
 
 ## Re-applying on an upstream bump
 

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
-	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/gateway"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
 
@@ -29,7 +29,7 @@ func unreachableAt(t *testing.T, d *db.DB, id int64) sql.NullString {
 func TestSuccessfulProbeClearsUnreachableMarker(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
-	proxyURL, caFile, _ := startMaskingProxy(t)
+	proxyURL, caFile, _ := startConnectTunnel(t)
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "<html><title>Back</title></html>")
 	}))
@@ -57,16 +57,16 @@ func TestSuccessfulProbeClearsUnreachableMarker(t *testing.T) {
 	}
 }
 
-// A response the egress proxy labelled is the proxy's failure, not the target's
+// A response the gateway labelled is the gateway's failure, not the target's
 // answer, so it must leave the marker alone.
 func TestProxyLabelledFailureKeepsUnreachableMarker(t *testing.T) {
 	d, as := testDB(t)
 	task := testTask(t, d)
 
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(egress.HeaderEgress, "dial-failed")
+		w.Header().Set(gateway.HeaderStage, "dial")
 		w.WriteHeader(http.StatusBadGateway)
-		io.WriteString(w, "m1nervac0nsole egress: upstream dial-failed\n")
+		io.WriteString(w, "gateway: upstream dial failed\n")
 	}))
 	defer proxy.Close()
 
@@ -76,7 +76,7 @@ func TestProxyLabelledFailureKeepsUnreachableMarker(t *testing.T) {
 		t.Fatalf("mark unreachable: %v", err)
 	}
 
-	engine := New(as, Options{Workers: 1, Proxy: proxy.URL, CAFile: foreignCA(t), Authorizer: netpolicy.NewAuthorizer(d)})
+	engine := New(as, Options{Workers: 1, Route: staticRouteFunc(proxy.URL, foreignCA(t)), Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	engine.ProbeSite(task.ID, id, target)
 	engine.Wait()

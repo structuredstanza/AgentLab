@@ -126,6 +126,7 @@ class SupervisorCleanupTests(unittest.TestCase):
                  mock.patch.object(supervisor, 'Session', return_value=self.session), \
                  mock.patch.object(supervisor, 'start_execbox',
                                    side_effect=lambda sess, binary: self.child()), \
+                 mock.patch.object(supervisor, 'account_recorder_ca'), \
                  mock.patch.object(supervisor, 'log'):
                 yield
         finally:
@@ -260,8 +261,7 @@ class SupervisorCleanupTests(unittest.TestCase):
                          mock.patch.object(supervisor, 'install_binary', return_value=('/fixture/app', 'fixture')), \
                          mock.patch.object(supervisor, 'app_env', return_value={}), \
                          mock.patch.object(supervisor, 'admin_password', return_value='fixture'), \
-                         mock.patch.object(supervisor, 'start_egress', return_value=mock.Mock(**{'poll.return_value': None})), \
-             mock.patch.object(supervisor, 'start_tcpdump', return_value=tcpd), \
+                         mock.patch.object(supervisor, 'start_tcpdump', return_value=tcpd), \
                          mock.patch.object(supervisor, 'start_app', return_value=app), \
                          mock.patch.object(supervisor, 'write_file', side_effect=write), \
                          mock.patch.object(supervisor, 'log', side_effect=log):
@@ -338,15 +338,15 @@ class VpnSupervisionTests(unittest.TestCase):
         vpn.returncode = 1
         tcpd = mock.Mock()
         tcpd.poll.return_value = None
+        execbox = mock.Mock(**{'poll.return_value': None})
         sess = mock.Mock()
         sess.tls = '/state/captures/fixture/tls'
-        sess.m = {'capture': {'status': 'running'}, 'm1nervac0nsole': {}, 'postgres': {'status': 'not_started'},
-                  'egress': {'status': 'starting'}}
+        sess.m = {'capture': {'status': 'running'}, 'm1nervac0nsole': {}, 'postgres': {'status': 'not_started'}}
         with mock.patch.object(supervisor, 'start_vpn', return_value=vpn), \
-             mock.patch.object(supervisor, 'start_egress', return_value=mock.Mock(**{'poll.return_value': None})), \
-             mock.patch.object(supervisor, 'start_execbox', return_value=mock.Mock(**{'poll.return_value': None})), \
+             mock.patch.object(supervisor, 'start_execbox', return_value=execbox), \
              mock.patch.object(supervisor, 'start_tcpdump', return_value=tcpd), \
              mock.patch.object(supervisor, 'start_app', return_value=app), \
+             mock.patch.object(supervisor, 'account_recorder_ca') as account_ca, \
              mock.patch.object(supervisor, 'pg_bindir', return_value='/nonexistent'), \
              mock.patch.object(supervisor, 'pg_init'), \
              mock.patch.object(supervisor, 'pg_write_hba'), \
@@ -362,41 +362,51 @@ class VpnSupervisionTests(unittest.TestCase):
              mock.patch.object(supervisor, 'write_file'), \
              mock.patch.object(supervisor, 'log'):
             supervisor.main()
+        account_ca.assert_called_once_with(sess, app, watch=(vpn, tcpd, execbox))
         errors = [call.args[0] for call in sess.error.call_args_list]
         self.assertTrue(any('openvpn exited' in str(e) for e in errors), errors)
         self.assertTrue(shutdown.called, 'cleanup must still run after the kill switch fires')
 
 class AppEnvTests(unittest.TestCase):
-    """The tool environment is what makes the identity proxy binding.
+    """The tool environment no longer routes through a masking proxy: masking
+    lives in the gateway, so no client stack may be pointed at a proxy or a CA
+    that does not exist."""
 
-    A tool that does not inherit http_proxy reaches the target directly and
-    presents its own User-Agent, which is the leak this whole mechanism exists to
-    close. So the variables are asserted here rather than trusted.
-    """
-
-    def test_target_http_is_routed_through_the_identity_proxy(self):
+    def test_no_proxy_or_egress_ca_variables(self):
         env = supervisor.app_env('postgresql://fixture', 'pw')
-        proxy = 'http://' + supervisor.EGRESS_ADDR
-        for key in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
-            self.assertEqual(env.get(key), proxy, f'{key} missing: target HTTP would bypass the proxy')
-
-    def test_the_host_native_proxy_is_excluded(self):
-        env = supervisor.app_env('postgresql://fixture', 'pw')
-        bypass = env.get('no_proxy', '') + env.get('NO_PROXY', '')
-        self.assertIn('host.microsandbox.internal', bypass,
-                      'model calls would be rewritten as if they were target traffic')
-
-    def test_the_proxy_ca_is_trusted_by_every_client_stack(self):
-        env = supervisor.app_env('postgresql://fixture', 'pw')
-        for key in ('SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
-            self.assertEqual(env.get(key), supervisor.EGRESS_CA, f'{key} missing: TLS interception fails')
-
-    def test_scan_ceilings_reach_the_agent(self):
-        env = supervisor.app_env('postgresql://fixture', 'pw')
-        for key in ('M1NERVAC0NSOLE_MAX_CONCURRENT_SCANS', 'M1NERVAC0NSOLE_MAX_SCANS_PER_TARGET',
+        for key in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'no_proxy', 'NO_PROXY',
+                    'M1NERVAC0NSOLE_EGRESS_PROXY', 'M1NERVAC0NSOLE_EGRESS_CA',
+                    'SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS',
                     'M1NERVAC0NSOLE_MAX_REQUESTS_PER_MINUTE'):
-            self.assertIn(key, env, f'{key} missing: the agent cannot be told the ceiling')
-            self.assertTrue(env[key].isdigit(), f'{key}={env[key]!r} is not a number')
+            self.assertNotIn(key, env)
+
+    def test_scan_concurrency_defaults_to_sixteen(self):
+        env = supervisor.app_env('postgresql://fixture', 'pw')
+        for key in ('M1NERVAC0NSOLE_MAX_CONCURRENT_SCANS', 'M1NERVAC0NSOLE_MAX_SCANS_PER_TARGET'):
+            self.assertEqual(env.get(key), '16')
+
+    def test_there_is_no_egress_supervision(self):
+        for name in ('start_egress', 'stop_egress', 'EGRESS_ADDR', 'EGRESS_RPM'):
+            self.assertFalse(hasattr(supervisor, name), name)
+
+    def test_tcpdump_excludes_the_session_veth_leg_once(self):
+        seen = []
+
+        def popen(cmd, **kwargs):
+            seen.append(cmd)
+            raise RuntimeError('stop after argv')
+
+        sess = mock.Mock(pcap='/tmp/pcap', logs='/tmp/logs')
+        sess.m = {'capture': {}}
+        with mock.patch.object(supervisor.shutil, 'which', return_value='/usr/sbin/tcpdump'), \
+             mock.patch.object(supervisor, 'ring_segments', return_value=4), \
+             mock.patch.object(supervisor.subprocess, 'Popen', side_effect=popen), \
+             mock.patch('builtins.open', mock.mock_open()):
+            with self.assertRaises(RuntimeError):
+                supervisor.start_tcpdump(sess)
+        self.assertEqual(seen[0][-1], 'not net 10.98.0.0/16')
+        self.assertEqual(seen[0][seen[0].index('-i') + 1], 'any')
+        self.assertEqual(sess.m['capture']['limits']['filter'], 'not net 10.98.0.0/16')
 
     def test_the_capture_reserve_reaches_the_recorder(self):
         env = supervisor.app_env('postgresql://fixture', 'pw')
@@ -552,6 +562,7 @@ class ExecboxSupervisorTests(unittest.TestCase):
             'EXECBOX_SOCKET_DIR': self.root / 'run',
             'EXECBOX_SOCKET': self.root / 'run' / 'execbox.sock',
             'EXECBOX_WORKSPACES': f'{self.root}/state/tasks,{self.root}/state/sessions',
+            'RECORDER_CA': self.root / 'state' / 'traffic' / '_ca' / 'mitmproxy-ca-cert.pem',
             'EXECBOX_TIMEOUT': 5,
         }.items():
             patch = mock.patch.object(supervisor, name, value if name == 'EXECBOX_TIMEOUT' else str(value))
@@ -576,6 +587,9 @@ class ExecboxSupervisorTests(unittest.TestCase):
         box = self.session.m['execbox']
         self.assertEqual(box['status'], 'running', box)
         self.assertIn('"isolation": true', box['probe'])
+        self.assertEqual(box['ca_cert'], supervisor.RECORDER_CA)
+        self.assertEqual(box['argv'][box['argv'].index('-ca-cert') + 1], supervisor.RECORDER_CA,
+                         'the supervisor must be told which single file to expose to sessions')
         self.assertTrue(Path(supervisor.EXECBOX_SOCKET).exists())
         self.assertTrue((Path(self.session.logs) / 'execbox.log').exists())
         for root in supervisor.EXECBOX_WORKSPACES.split(','):
@@ -612,6 +626,75 @@ class ExecboxSupervisorTests(unittest.TestCase):
         self.assertIsNotNone(app.poll(), 'the app survived shutdown')
         self.assertIsNotNone(p.poll(), 'the execution boundary survived shutdown')
         self.assertEqual(self.session.m['execbox']['status'], 'stopped')
+
+    def write_ca(self, body):
+        path = Path(supervisor.RECORDER_CA)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+
+    def live_app(self):
+        app = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+        self.addCleanup(self.reap, app.pid)
+        return app
+
+    def test_recorder_ca_creation_and_rotation_are_recorded(self):
+        app = self.live_app()
+        self.write_ca('-----BEGIN CERTIFICATE-----\none\n-----END CERTIFICATE-----\n')
+        supervisor.account_recorder_ca(self.session, app)
+        first = self.session.m['recorder_ca']
+        self.assertEqual(first['change'], 'created')
+        self.assertIsNone(first['previous_sha256'])
+        supervisor.account_recorder_ca(self.session, app)
+        self.assertEqual(self.session.m['recorder_ca']['change'], 'unchanged')
+        self.write_ca('-----BEGIN CERTIFICATE-----\ntwo\n-----END CERTIFICATE-----\n')
+        supervisor.account_recorder_ca(self.session, app)
+        rotated = self.session.m['recorder_ca']
+        self.assertEqual(rotated['change'], 'rotated')
+        self.assertEqual(rotated['previous_sha256'], first['sha256'])
+        self.assertNotEqual(rotated['sha256'], first['sha256'])
+
+    def test_missing_recorder_ca_is_reported_without_failing_the_start(self):
+        # Recording can be off, and sessions already fail closed with a named
+        # cause; killing the start would also stop the VPN kill switch running.
+        supervisor.account_recorder_ca(self.session, self.live_app(), timeout=0.3)
+        self.assertEqual(self.session.m['recorder_ca']['change'], 'missing')
+        self.assertEqual(self.session.m['recorder_ca']['exposed'], 'nothing: no certificate to mount')
+        self.assertNotEqual(self.session.m.get('state'), 'failed')
+
+    def test_recorder_ca_wait_yields_on_shutdown_or_child_exit(self):
+        for reason in ('SIGTERM', 'child exit'):
+            with self.subTest(reason=reason):
+                app = mock.Mock(**{'poll.return_value': None})
+                child = mock.Mock(**{'poll.return_value': None})
+                sess = mock.Mock(m={})
+
+                def interrupt(_delay):
+                    if reason == 'SIGTERM':
+                        supervisor.on_signal(signal.SIGTERM, None)
+                    else:
+                        child.poll.return_value = 1
+
+                with mock.patch.object(supervisor, 'STOP', {'signal': None}), \
+                     mock.patch.object(supervisor.time, 'monotonic', side_effect=(0, 0, 1)), \
+                     mock.patch.object(supervisor.time, 'sleep', side_effect=interrupt):
+                    supervisor.account_recorder_ca(sess, app, watch=(None, child), timeout=0)
+                self.assertNotIn('recorder_ca', sess.m, 'startup must yield instead of timing out')
+
+    def test_backend_that_exits_before_creating_the_ca_is_named(self):
+        app = subprocess.Popen(['/usr/bin/true'])
+        app.wait()
+        with self.assertRaises(supervisor.Fatal) as caught:
+            supervisor.account_recorder_ca(self.session, app, timeout=5)
+        self.assertIn('before creating the recorder CA', str(caught.exception))
+
+    def test_ca_file_with_a_private_key_or_no_certificate_is_refused(self):
+        app = self.live_app()
+        key = '-----BEGIN ' + 'PRIVATE KEY-----\nk\n-----END ' + 'PRIVATE KEY-----\n'
+        for body in (key + '-----BEGIN CERTIFICATE-----\nc\n-----END CERTIFICATE-----\n', 'junk'):
+            self.write_ca(body)
+            with self.assertRaises(supervisor.Fatal) as caught:
+                supervisor.account_recorder_ca(self.session, app)
+            self.assertIn('public-certificate-only', str(caught.exception))
 
 
 def proc_alive(pid):

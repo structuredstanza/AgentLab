@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/lqqyt2423/go-mitmproxy/internal/helper"
 	log "github.com/sirupsen/logrus"
@@ -322,7 +323,7 @@ func (e *entry) dialOrigin(req *http.Request, f *Flow) (net.Conn, error) {
 }
 
 // writeOriginError replies to a failed CONNECT. An OriginTransport classifies
-// its own failures, so the client sees the stage instead of a bare 502.
+// its own failures, so the client sees the stage and reason instead of a bare 502.
 func writeOriginError(res http.ResponseWriter, err error) {
 	var oe *OriginError
 	if !errors.As(err, &oe) {
@@ -340,6 +341,26 @@ func writeOriginError(res http.ResponseWriter, err error) {
 		status = 502
 	}
 	res.WriteHeader(status)
+	if oe.Reason != "" {
+		_, _ = io.WriteString(res, oe.Reason+"\n")
+	}
+}
+
+// firstBytesWait bounds the wait for a client's first bytes after CONNECT. A
+// server-speaks-first protocol (FTP, SMTP, MySQL) sends nothing until the origin
+// banner arrives, so an unbounded peek deadlocks both sides.
+const firstBytesWait = 2 * time.Second
+
+// peekFirst peeks the client's first 3 bytes under firstBytesWait. quiet reports
+// a timeout: the client is waiting for the server, so the caller relays raw.
+// bufio clears its sticky error when Peek returns it, so later reads still work.
+func peekFirst(cconn net.Conn) (peek []byte, quiet bool, err error) {
+	c := cconn.(*wrapClientConn)
+	c.SetReadDeadline(time.Now().Add(firstBytesWait))
+	peek, err = c.Peek(3)
+	c.SetReadDeadline(time.Time{})
+	var ne net.Error
+	return peek, errors.As(err, &ne) && ne.Timeout(), err
 }
 
 func (e *entry) httpsDialFirstAttack(res http.ResponseWriter, req *http.Request, f *Flow) {
@@ -364,7 +385,13 @@ func (e *entry) httpsDialFirstAttack(res http.ResponseWriter, req *http.Request,
 		return
 	}
 
-	peek, err := cconn.(*wrapClientConn).Peek(3)
+	peek, quiet, err := peekFirst(cconn)
+	if quiet {
+		transfer(log, conn, cconn)
+		cconn.Close()
+		conn.Close()
+		return
+	}
 	if err != nil {
 		cconn.Close()
 		conn.Close()
@@ -417,7 +444,19 @@ func (e *entry) httpsDialLazyAttack(res http.ResponseWriter, req *http.Request, 
 		return
 	}
 
-	peek, err := cconn.(*wrapClientConn).Peek(3)
+	peek, quiet, err := peekFirst(cconn)
+	if quiet {
+		conn, err := proxy.attacker.httpsDial(req.Context(), req)
+		if err != nil {
+			cconn.Close()
+			log.Error(err)
+			return
+		}
+		transfer(log, conn, cconn)
+		conn.Close()
+		cconn.Close()
+		return
+	}
 	if err != nil {
 		cconn.Close()
 		log.Error(err)

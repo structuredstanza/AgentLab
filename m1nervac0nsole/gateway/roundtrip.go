@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,25 +26,36 @@ func (t *Transport) RoundTrip(ctx context.Context, connCtx *mproxy.ConnContext, 
 		return failErr(req, noSession(req, "no backend-issued session for this request")), nil
 	}
 	d := requestDestination(req.URL)
-	if dec := t.cfg.Authorizer.Authorize(ctx, s, d); !dec.Allow {
+	recorded := t.mapped(s, d.Host)
+	st := t.state(connCtx)
+	if st != nil && (!strings.EqualFold(st.authority, d.Host) || st.port != d.Port ||
+		st.recorded != (recorded != nil) || st.recorded && !slices.EqualFunc(st.addrs, recorded, net.IP.Equal)) {
+		st = nil // The pinned connection belongs to a different authority or mapping.
+	}
+	var dec netpolicy.Decision
+	if recorded != nil {
+		dec = t.cfg.Authorizer.AuthorizeRecorded(ctx, s, d, recorded)
+	} else {
+		dec = t.cfg.Authorizer.Authorize(ctx, s, d)
+		// Check the DNS addresses pinned by CONNECT again in case of a revoke.
+		if dec.Allow && st != nil {
+			dec = t.cfg.Authorizer.AuthorizeResolved(ctx, s, d, st.addrs)
+		}
+	}
+	if !dec.Allow {
 		t.dropSession(s.ID)
 		return fail(req, dec.Stage, dec.Reason), nil
 	}
-	// Re-judge the addresses this connection is pinned to: a revoke that lands
-	// after the dial still stops the request, and no resolver runs again.
-	st := t.state(connCtx)
-	if st != nil && strings.EqualFold(st.authority, d.Host) && len(st.addrs) > 0 {
-		if dec := t.cfg.Authorizer.AuthorizeResolved(ctx, s, d, st.addrs); !dec.Allow {
-			t.dropSession(s.ID)
-			return fail(req, dec.Stage, dec.Reason), nil
-		}
-	}
 
-	up, err := t.upstreamFor(ctx, st, s, d)
+	up, err := t.upstreamFor(ctx, st, s, d, recorded)
 	if err != nil {
 		return failErr(req, err), nil
 	}
-	res, err := up.roundTrip(prepare(req))
+	level := MaskUA
+	if t.cfg.MaskFor != nil {
+		level = t.cfg.MaskFor(s)
+	}
+	res, err := up.roundTrip(prepare(req, level))
 	if err != nil {
 		return failErr(req, err), nil
 	}
@@ -53,16 +65,15 @@ func (t *Transport) RoundTrip(ctx context.Context, connCtx *mproxy.ConnContext, 
 // upstreamFor returns the origin client for this request: the one bound to the
 // intercepted connection when it serves the same authority, otherwise a pooled
 // one keyed by session, revision, authority and exit.
-func (t *Transport) upstreamFor(ctx context.Context, st *connState, s netpolicy.Session, d netpolicy.Destination) (*upstream, error) {
-	if st != nil && st.up != nil && strings.EqualFold(st.authority, d.Host) {
-		return st.up, nil
-	}
-	// A pinned address only applies to the authority it was resolved for.
+func (t *Transport) upstreamFor(ctx context.Context, st *connState, s netpolicy.Session, d netpolicy.Destination, recorded []net.IP) (*upstream, error) {
 	var pinned []net.IP
-	if st != nil && strings.EqualFold(st.authority, d.Host) {
+	if st != nil {
+		if st.up != nil {
+			return st.up, nil
+		}
 		pinned = st.addrs
 	}
-	return t.pooled(ctx, s, d, pinned)
+	return t.pooled(ctx, s, d, pinned, recorded)
 }
 
 // poolKey is the identity a pooled connection belongs to. The TLS profile is
@@ -79,13 +90,22 @@ type poolKey struct {
 
 // poolEntry is one pooled origin client, created on first use.
 type poolEntry struct {
-	mu sync.Mutex
-	up *upstream
+	mu       sync.Mutex
+	up       *upstream
+	recorded []net.IP // Immutable snapshot of the task mapping, nil for DNS.
+}
+
+func (e *poolEntry) closeIdle() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.up != nil {
+		e.up.closeIdle()
+	}
 }
 
 // pooled returns the pooled origin client for a destination, dialing and
 // handshaking once to learn the ALPN the origin negotiates.
-func (t *Transport) pooled(ctx context.Context, s netpolicy.Session, d netpolicy.Destination, pinned []net.IP) (*upstream, error) {
+func (t *Transport) pooled(ctx context.Context, s netpolicy.Session, d netpolicy.Destination, pinned, recorded []net.IP) (*upstream, error) {
 	key := poolKey{
 		session:   s.ID,
 		revision:  s.Revision,
@@ -94,11 +114,17 @@ func (t *Transport) pooled(ctx context.Context, s netpolicy.Session, d netpolicy
 	}
 	t.mu.Lock()
 	e := t.pool[key]
-	if e == nil {
-		e = &poolEntry{}
+	// Never reuse a client whose dialer pins a different task mapping.
+	var stale *poolEntry
+	if e == nil || !slices.EqualFunc(e.recorded, recorded, net.IP.Equal) {
+		stale = e
+		e = &poolEntry{recorded: recorded}
 		t.pool[key] = e
 	}
 	t.mu.Unlock()
+	if stale != nil {
+		stale.closeIdle()
+	}
 
 	// A failed first use leaves no client behind, so drop the placeholder
 	// instead of keeping one map entry per destination that never worked.
@@ -120,7 +146,10 @@ func (t *Transport) pooled(ctx context.Context, s netpolicy.Session, d netpolicy
 
 	// Authorization runs outside the entry lock: a refusal drops the session's
 	// pooled entries, which takes their locks, so holding this one deadlocks.
-	addrs := pinned
+	addrs := recorded
+	if addrs == nil {
+		addrs = pinned
+	}
 	if len(addrs) == 0 {
 		var err error
 		if addrs, err = t.authorizeResolved(ctx, s, d); err != nil {
@@ -151,8 +180,8 @@ func (t *Transport) pooled(ctx context.Context, s netpolicy.Session, d netpolicy
 	return e.up, nil
 }
 
-// authorizeResolved resolves a destination no CONNECT pinned and judges the
-// answers, so a pooled connection is authorized exactly like a dialed one.
+// authorizeResolved resolves and judges DNS answers for a pooled client when
+// RoundTrip has no pinned addresses.
 func (t *Transport) authorizeResolved(ctx context.Context, s netpolicy.Session, d netpolicy.Destination) ([]net.IP, error) {
 	addrs, err := t.resolve(ctx, d.Host)
 	if err != nil {
@@ -258,13 +287,15 @@ var hopByHop = []string{
 	"Proxy-Connection", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
 }
 
-// prepare clones the request for the origin: gateway credentials and
-// hop-by-hop headers are removed, everything else (duplicate headers, Accept,
-// Cookie, Authorization, content encoding) is forwarded as the client sent it.
-func prepare(req *http.Request) *http.Request {
+// prepare clones the request for the origin: the mask is applied while Upgrade
+// is still visible, then gateway credentials and hop-by-hop headers are
+// removed. Everything else (duplicate headers, Accept, Cookie, Authorization,
+// content encoding) is forwarded as the client sent it.
+func prepare(req *http.Request, level MaskLevel) *http.Request {
 	out := req.Clone(req.Context())
 	out.RequestURI = ""
-	out.Header = cleanHeader(req.Header)
+	applyMask(level, out)
+	out.Header = cleanHeader(out.Header)
 	return out
 }
 

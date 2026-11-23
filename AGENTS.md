@@ -16,8 +16,8 @@ Next.js SPA (embedded) → /api/* → server.Handler() mux → Manager/Task/Engi
   → agent (Planner/Worker/MainAgent) → db stores (PostgreSQL) → JSON/SSE
 ```
 
-- **Entry points**: `m1nervac0nsole/cmd/m1nervac0nsole/main.go` (`run()` at :48) and the same binary's `egress-proxy` subcommand (`cmd/m1nervac0nsole/egress.go`). Wiring order: `server.NewManager` → `server.New` → `srv.Handler()`.
-- **One outbound HTTP boundary** (see `m1nervac0nsole/docs/design/network-layer.md`): tool traffic goes through the recording proxy (`traffic/`, `-proxy`, default `127.0.0.1:8788`), whose origin side is the `gateway/` transport — it authorizes from a backend-issued `netpolicy` session before dialling, resolves and pins the address, runs a uTLS Chrome handshake with strict verification, applies the operator exit, and tags its own failures with `X-M1nervac0nsole-Gateway`. The proxy URL carries the run's credential (`netpolicy.ProxyURL`); a request without one is refused, never dialled direct. Tool processes run unprivileged in their own network namespace via `execbox/`, which admits only the gateway and the resolver. The masking `egress-proxy` (`egress/`, default `127.0.0.1:8888`) survives for asset-enrichment probes only and is pending retirement; `M1NERVAC0NSOLE_EGRESS_PROXY` / `M1NERVAC0NSOLE_EGRESS_CA` configure it, and with neither, enrichment probes fail closed rather than dialling direct.
+- **Entry point**: `m1nervac0nsole/cmd/m1nervac0nsole/main.go` (`run()`). Wiring order: `server.NewManager` -> `server.New` -> `srv.Handler()`.
+- **Recorded HTTP boundary** (see `m1nervac0nsole/docs/design/network-layer.md`): recorded tool traffic goes through the recording proxy (`traffic/`, `-proxy`, default `127.0.0.1:8788`) and then the `gateway/` transport. The gateway authorizes from a backend-issued `netpolicy` session before dialling, resolves and pins the address, runs a uTLS Chrome handshake with strict verification, applies the operator exit, and tags its own failures with `X-M1nervac0nsole-Gateway`. The proxy URL carries the run's credential (`netpolicy.ProxyURL`); a request without one is refused, never dialled direct. Tool processes run unprivileged in their own network namespace via `execbox/`; relay-only sessions admit only the gateway and the resolver. Asset enrichment uses per-probe recorder sessions and fails closed if the recorder is unavailable.
 - **Per task**: `Engine.Run` (`server/engine.go:783`) starts 1 planner loop + N worker loops (`workers` setting, default 3) + deadline coordinator. Planner is the sole intent producer; workers claim one intent, execute real tools, write facts/assets/findings back. When only a human can unblock the engagement the planner calls `report_blocked`, which parks the task in `needs_operator` with a `blocked_reason` until the operator resumes it.
 - **Dual graph**: global asset graph (`db/assets.go`, shared, program-computed hierarchy) and per-task exploration graph (`db/exploration.go`, goals/intents/facts/findings), joined by `exploration_anchors`.
 - **Memory**: `db/knowledge.go` (full-text knowledge base, scopes `global|environment|company|task`), `db/reflection.go` + `db/reflect_engine.go` (per-task reflection pool, engine-derived at intent and task end), `db/scrub.go` (credential and target-identifier scrubbing on every write). Agents use `recall` / `knowledge_add` / `reflect` (`agent/tools_memory.go`); `server/memory.go` builds the start-of-task block (adopted `environment` entries always included) and the per-round provider (`M1NERVAC0NSOLE_MEMORY=off|inject`). Agent writes are task-private candidates, generalized on write; only an owner promotes. See `RSI.md`.
@@ -30,13 +30,13 @@ Next.js SPA (embedded) → /api/* → server.Handler() mux → Manager/Task/Engi
 
 | Path | Purpose |
 |---|---|
-| `m1nervac0nsole/cmd/m1nervac0nsole/` | Binary entry + `egress-proxy` and `execbox serve\|probe` subcommands |
+| `m1nervac0nsole/cmd/m1nervac0nsole/` | Binary entry + `execbox serve\|probe` subcommands |
 | `m1nervac0nsole/server/` | HTTP API, `Manager`, `Engine`, LLM wiring, auth, scheduler |
 | `m1nervac0nsole/agent/` | LLM roles, prompts, tool surface, provider construction |
 | `m1nervac0nsole/db/` | PostgreSQL stores + embedded `schema.sql` (idempotent, advisory-locked migration) |
 | `m1nervac0nsole/traffic/`, `intercept/`, `guard/`, `scope/` | Recording MITM proxy; tool-call safety pipeline |
 | `m1nervac0nsole/netpolicy/`, `gateway/`, `execbox/` | Session identity and destination authorization; the origin transport every recorded request dials through; the privileged supervisor that runs each tool session unprivileged in its own namespaces |
-| `m1nervac0nsole/egress/`, `enrich/`, `limits/`, `useragent/` | Masking egress proxy (identity, CA, rate gate); engine-side asset auto-completion; shared outbound identity |
+| `m1nervac0nsole/enrich/`, `limits/`, `useragent/` | Engine-side asset auto-completion; concurrent tool-run limits; shared outbound identity |
 | `m1nervac0nsole/llmpool/`, `llmrec/`, `nativeproxy/`, `mcphttp/` | LLM transport decorators, host proxy client, MCP clients |
 | `m1nervac0nsole/manifest/` | Declarative TOML tool manifests: `builtin/*.toml` (embedded) overlaid at run time by the `tool_manifests` table (Toolbox page) |
 | `m1nervac0nsole/third_party/norma/` | Vendored agent SDK (separate module `github.com/structuredstanza/norma`, from BaaRai/Norma v0.4.6 plus local changes) |
@@ -61,7 +61,7 @@ go test -p 1 ./... -count=1 -timeout 2400s        # serial: DB suites share one 
 # Web
 cd m1nervac0nsole/web && npm ci
 npm run build:static     # NEXT_EXPORT=1 next build — the TypeScript/merge gate
-npm run test -- --run    # vitest
+npm run test -- --run    # vitest (merge gate)
 npm run check            # biome check (CI gate; use check:fix to autofix)
 
 # Umbrella suites (from repo root)
@@ -69,10 +69,10 @@ tests/run.sh [all|go|proxy|python|web|dev]
 
 # Full binary (embeds UI; requires the static export first)
 cd m1nervac0nsole && M1NERVAC0NSOLE_COMPRESS=off ./build.sh --target linux/amd64
-./dev.sh                 # backend :8787 + recording proxy :8788 + masking egress proxy :8888 + next dev :5173
+./dev.sh                 # backend :8787 + recording proxy :8788 + next dev :5173
 
 # Lab VM (host control plane)
-./lab start [--vpn PROFILE] | status | primary | export | stop
+./lab start [--vpn PROFILE] | status | export | stop
 ./lab exec -- bash -lc '...'
 ```
 
@@ -95,7 +95,7 @@ cd m1nervac0nsole && M1NERVAC0NSOLE_COMPRESS=off ./build.sh --target linux/amd64
 - All backend access goes through `web/src/lib/api.ts` + `web/src/lib/types.ts`; never fetch ad hoc from components.
 - App Router groups `(auth)`, `(main)`, `(external)`; local state hooks + localStorage; shadcn/radix components; Biome formatting (2 spaces, 120 cols, double quotes, organized imports) — `src/components/ui` and `src/components/calendar` are excluded from lint.
 - English-only edition: one catalog `web/messages/en.json`; `scripts/check-cjk.py` fails CI on Hangul, Han, **and CJK/fullwidth punctuation** in authored source. Test files are exempt by rule. There are **no content exceptions**: every string that must *match* non-English input (legacy intercept prefixes, seeded names, quota markers, ICP filings, mention tokens, the guard's forensic framing marker) is written with ASCII escapes — `\u6a21\u578b` in Go/TS, `\x{...}` for `grep -P`, `U&'...'` in SQL — so the source stays pure ASCII while the compiled value is unchanged. Add a new match string the same way; never add an exception entry.
-- Appearance is fixed to the minervacyb.org dark visual system in `web/src/app/globals.css`, with locally packaged Manrope and DM Mono in `web/src/lib/fonts/registry.ts`. There are no theme, preset or font preferences or generators; only the sidebar open/closed state remains configurable.
+- Appearance is fixed: there are no theme, preset or font preferences or generators, and only the sidebar open/closed state remains configurable.
 
 ## Important Files
 
@@ -105,7 +105,7 @@ cd m1nervac0nsole && M1NERVAC0NSOLE_COMPRESS=off ./build.sh --target linux/amd64
 - `m1nervac0nsole/db/knowledge.go`, `db/reflection.go`, `db/scrub.go`, `agent/tools_memory.go`, `server/memory.go` — knowledge base and reflection pool; protected by tests that prove task isolation and scrubbing, so keep those passing.
 - `m1nervac0nsole/intercept/intercept.go`, `guard/guard.go`, `scope/scope.go` — authorization boundary; treat as protected surfaces.
 - `m1nervac0nsole/config/config.go` — `config.json` + `M1NERVAC0NSOLE_CONFIG` / `M1NERVAC0NSOLE_PG_DSN` / `M1NERVAC0NSOLE_SKILL_DIR`; no built-in DSN fallback, startup fails loudly.
-- `deployment/provenance.json` — machine-rewritten by `./lab primary`; never hand-edit.
+- `deployment/provenance.json` — machine-written image and toolchain record; never hand-edit.
 - `deployment/sandbox.yaml`, `deployment/guest-start.py`, `deployment/export_traces.py` — VM definition, guest supervision, training export.
 - `m1nervac0nsole/docs/system-reference.md` and `deployment/README.md` — the as-built system and deployment references. Keep them current when behaviour changes; they are the map, not a policy.
 - `m1nervac0nsole/graphify-out/graph.json` + `GRAPH_REPORT.md` — prebuilt graph (13.3k nodes / 76.0k edges / 496 communities), **generated and gitignored**, so it is absent from a fresh clone. Query with `graphify query "<question>"`, `graphify path "A" "B"`, `graphify explain "X"`; rebuild with `graphify update m1nervac0nsole`.
@@ -124,7 +124,7 @@ cd m1nervac0nsole && M1NERVAC0NSOLE_COMPRESS=off ./build.sh --target linux/amd64
 - **Python**: stdlib `unittest`; `tests/python/{test_lab,test_guest_start,test_export_traces}.py` load scripts by path (`SourceFileLoader` / `sys.path`), synthesize fixtures inline, and touch no deployment state.
 - **Web**: Vitest + jsdom + Testing Library; all tests live in `m1nervac0nsole/web/tests/` (mirrors `src/`, imports via `@/…`; `vitest.config.ts` includes only `tests/**/*.test.ts(x)`); `vi.mock` for `next-intl`, `sonner`, `@/lib/api`. Go white-box tests stay beside their package because they call unexported symbols; everything that can be black-box is central (`m1nervac0nsole/tests/go/`, `tests/python/`, `m1nervac0nsole/web/tests/`).
 - **Coverage**: none configured anywhere — quality gates are pass/fail (`go vet`, `go test`, `build:static`, `biome check`, `check-cjk.py`, `check-doc-links.py`).
-- **Verification beyond unit tests**: `python3 deployment/verify_capture.py` (host `tshark` required; drives the authenticated custom-tool test endpoint, so it needs no credential), `python3 deployment/verify_completeness.py` (nonces through HTTP, SSE, a 6 MiB body and a WebSocket, plus a keylog fixture; runs its own isolated gateway and recorder, so it needs no credential and changes no policy), and `python3 deployment/verify_reasoning.py` (starts the local model).
+- **Verification beyond unit tests**: `python3 deployment/verify_capture.py` (host `tshark` required; drives the authenticated custom-tool test endpoint, so it needs no credential) and `python3 deployment/verify_completeness.py` (nonces through HTTP, SSE, a 6 MiB body and a WebSocket, plus a keylog fixture; runs its own isolated gateway and recorder, so it needs no credential and changes no policy).
 
 ## Traps
 
@@ -135,6 +135,5 @@ cd m1nervac0nsole && M1NERVAC0NSOLE_COMPRESS=off ./build.sh --target linux/amd64
 - **`web/.gitignore` ignores `*.sh`** inside `web/`; new scripts there are silently untracked.
 - **Secrets and large local data** — never read, print, or copy: `secrets/`, `jwt.key`, `proxy-state/` (secret-bearing strace), `vpn-profiles/`, `.env`, `state/` (PostgreSQL, pcap, strace), `exports/`, `microsandbox/`, root `*.tar.gz` capture archives.
 - **The guard prefix is a neutral platform-control marker** (`[platform control - not target defense]` in `guard/guard.go`); the m1nervac0nsole-branded forensic string was removed and nothing checks it automatically. Keep the wording stable: agents rely on it to tell a platform block from a target-side defense.
-- **Docs drift**: `CONTRIBUTING.en.md` understates gates (`npm run check`, vitest and `build:static` are merge gates now).
 - **Known-broken references**: `tests/run.sh` uses stdlib `unittest` (pytest is installed system-wide but is not declared anywhere). CI lives in the root `.github/` (GitHub ignores `m1nervac0nsole/.github/`); every job runs from `m1nervac0nsole/` via `working-directory`, and the `deployment-scripts` job runs the root `tests/python` suites.
 - **Operational**: never start two VMs against the shared `state/` — `./lab start` refuses while any other running `m1nervac0nsole-agentlab-*` sandbox exists; use `./lab stop` rather than a force-kill. `lab` targets the VM name at `lab:23` (also quoted in `README.md`).

@@ -45,6 +45,7 @@ func runExecboxServe(args []string) int {
 	gateway := fs.String("gateway", "", "gateway host:port a session may reach (default 127.0.0.1:8788)")
 	resolver := fs.String("resolver", "", "upstream resolver host:port (default: first nameserver in /etc/resolv.conf)")
 	workspace := fs.String("workspace", "", "comma-separated writable workspace roots")
+	caCert := fs.String("ca-cert", execbox.DefaultCACert, "recorder public CA certificate mounted read-only into every session at the same path (empty disables)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -59,6 +60,7 @@ func runExecboxServe(args []string) int {
 	if *workspace != "" {
 		cfg.WritableRoots = strings.Split(*workspace, ",")
 	}
+	cfg.CACert = *caCert
 	cfg.Logf = func(format string, a ...any) { log.Printf(format, a...) }
 	sup, err := execbox.NewSupervisor(cfg)
 	if err != nil {

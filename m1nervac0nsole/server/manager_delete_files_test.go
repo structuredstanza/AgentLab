@@ -28,7 +28,7 @@ func TestSeedAssociatesTargetAssetWithTask(t *testing.T) {
 
 	host := fmt.Sprintf("seed-%s.example.test", task.ID)
 	s := &Server{m: m}
-	s.seed(task, "https://"+host)
+	s.seed(task, "https://"+host, true)
 	taskID := mustTaskID(t, task.ID)
 	assets, err := m.Assets().QueryByTask(taskID, "", 20, 0)
 	if err != nil {

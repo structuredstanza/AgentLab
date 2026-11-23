@@ -13,7 +13,7 @@ import (
 // no authorizer at all, must both leave the destination uncontacted.
 func TestEnrichProbeAsksTheNetworkPolicyBeforeDialling(t *testing.T) {
 	d, as := testDB(t)
-	proxyURL, caFile, gate := startMaskingProxy(t)
+	proxyURL, caFile, gate := startConnectTunnel(t)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -51,7 +51,7 @@ func TestEnrichProbeAsksTheNetworkPolicyBeforeDialling(t *testing.T) {
 				}
 			}
 			id := upsertSite(t, as, task.ID, target)
-			engine := New(as, Options{Workers: 1, Proxy: proxyURL, CAFile: caFile, Authorizer: tc.auth})
+			engine := New(as, Options{Workers: 1, Route: staticRouteFunc(proxyURL, caFile), Authorizer: tc.auth})
 			defer engine.Close()
 			engine.ProbeSite(task.ID, id, target)
 			engine.Wait()

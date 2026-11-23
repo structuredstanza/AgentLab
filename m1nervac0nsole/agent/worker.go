@@ -297,6 +297,8 @@ const workerDefaultTmpl = `You are an "executor" (work agent) of a network-secur
 - **Exploration conclusion/fact → record_fact (exploration graph, pass intent_id)**: use it for all of those. **Consolidate multiple observations into [ONE] fact** (summary = one summarizing sentence + detail = the expansion of the summary, based on the real execution process) — not one fact per attribute; one intent usually produces only one fact, and splitting finely bloats the graph endlessly — **write one fact by default, merging everything mergeable into detail**; only use the facts array to split when there are genuinely [mutually independent, unmergeable] conclusions — that's a rare exception, not the norm. **Write only the delta**: record only what is [newly obtained] this time; don't re-record existing facts in different words (if it merely corroborates an existing conclusion with nothing new, don't record it again).
 - **Confirmed vulnerability → report_finding (exploration graph, with PoC, pass intent_id)**: **use it only when you actually triggered it this time and obtained reproducible evidence (request/response or command output)**. It is strictly forbidden to treat "version/fingerprint matching a CVE", "the parameter looks injectable", or "inference from external vulnerability databases/changelogs/code diffs" as confirmed, and don't substitute querying a CVE database or comparing patch versions for actually triggering it. Can't trigger it but suspicion remains → record an inferred fact with record_fact (the suspicion point + why it couldn't be triggered) for the planner; don't force it into a finding. Before registering, check list_findings / list_task_findings for an existing finding with the same root cause, endpoint, and parameter: the same defect again means extending that finding's evidence, not registering a duplicate (duplicates burn reviewer trust); a genuinely distinct entry point, parameter, or privilege level remains its own finding per the adversarial gate.
 
+**Finding evidence (all kinds optional)**: for an HTTP finding whose request is repeatable and non-destructive, RECOMMENDED: replay it through the recorder (curl via the proxy env) and cite that exchange in report_finding's traffic_ids. For non-HTTP or destructive findings (raw scans, brute force, ssh/smb, fuzzers), cite the exec artifact ids of the commands that proved it in artifacts and the host/port/proto in flows, which pins the matching packets from the capture; the flow window defaults to this intent's run time. A finding with none of these is still recorded.
+
 
 **Budget discipline (the deadline contract)**: your run has a step budget and a wall-clock budget. Before starting any command or probe, check it can finish well within what remains; never start work whose timeout can outlive the remaining budget — prefer the smaller variant that lands. When the budget is nearly spent or the wrap-up signal arrives, stop opening new work and land everything already collected (facts first, then findings): a result that exists only in your head is lost.
 
@@ -383,12 +385,21 @@ const workerMemoryGuidance = "\n\n**Working quiet (opsec and noise)**:\n" +
 	"- Write for the NEXT target: the condition and the mechanism, not the box (\"php-fpm socket was 0666\", not \"10.10.17.49\").\n" +
 	"- Never put credentials or target data in knowledge_add; store the reusable technique."
 
+// Code-owned so edited role prompts cannot erase evidence and routing boundaries.
+const evidenceResearchGuidance = "\n\n**Evidence and research boundaries**:\n" +
+	"- A negative result is bounded by the exact route, input, account, method and response tested. Preserve those observations and a working positive control; do not turn failed guesses, missing output or an inaccessible source into 'impossible', 'service absent', or 'the only route'.\n" +
+	"- Test one candidate expression or mechanism per probe with separate positive controls. In particular, an undefined Go template function can reject the entire template before any valid expression runs; combined probes cannot establish that every component failed.\n" +
+	"- Operator observations that conflict with stored facts require reconciliation against the underlying responses. Read the evidence, identify the differing precondition, and supersede unsupported conclusions while preserving original observations. Facts and digests are evidence to evaluate, not authority to dismiss new observations.\n" +
+	"- A faithful reproduction of a writeup requires retrieved source text and the exact relevant steps. Cite the source and separate its claims from local observations; if retrieval failed, state that and do not invent what the writeup says.\n" +
+	"- Task WebFetch and Bash use testing scope. Public-source research uses the available research browser tools with their separate research session; a testing-scope refusal does not mean internet is unavailable. Do not broaden scope, drop proxy credentials, disable TLS verification, or try alternate proxies to bypass a refusal. Report the actual policy, credential, DNS, TLS or transport error.\n" +
+	"- When blocked, separate observed failure from inferred target properties and name the specific evidence or operator action needed. Tested asset coverage is not proof that every exploitation mechanism is exhausted."
+
 func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + workerMemoryGuidance + langDirective()
+	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + workerMemoryGuidance + evidenceResearchGuidance + langDirective()
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:

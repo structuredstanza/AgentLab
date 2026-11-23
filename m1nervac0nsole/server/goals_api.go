@@ -80,14 +80,14 @@ func (s *Server) addGoal(w http.ResponseWriter, r *http.Request) {
 	if of, _ := t.Store.OriginFactID(); of > 0 && id > 0 {
 		_ = t.Store.Link(of, db.RelSpawns, id) // goal descends from the task root (origin fact)
 	}
-	t.NotifyGoal([]string{text}) // Record "the human added a new goal: …", which triggers and wakes the planner
-	s.reviveTask(t)              // Move a completed or paused task back to the running state so it continues to run
+	t.NotifyGoal([]string{text})     // Record "the human added a new goal: …", which triggers and wakes the planner
+	ack, admitErr := s.reviveTask(t) // Move a completed or paused task back to the running state so it continues to run
 	node, _ := t.Store.GetNode(id)
 	if node == nil {
 		writeErr(w, 500, errGoalReadAfterAdd)
 		return
 	}
-	writeJSON(w, 200, goalDTO(node))
+	writeJSON(w, 200, goalWithAdmission(node, ack, admitErr))
 }
 
 // editGoal manually modifies a goal's text (and vulnclass): update the database → record "the user changed the goal from old to new"
@@ -137,13 +137,29 @@ func (s *Server) editGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.NotifyGoalEdited(oldText, text) // Record "the human changed the goal from old to new", which triggers and wakes the planner
-	s.reviveTask(t)                   // Same as addition: revive the task to re-evaluate under the new goal
+	ack, admitErr := s.reviveTask(t)  // Same as addition: revive the task to re-evaluate under the new goal
 	updated, _ := t.Store.GetNode(gid)
 	if updated == nil {
 		writeErr(w, 500, errGoalReadAfterEdit)
 		return
 	}
-	writeJSON(w, 200, goalDTO(updated))
+	writeJSON(w, 200, goalWithAdmission(updated, ack, admitErr))
+}
+
+// goalAdmissionDTO is the goal plus what admission did. The goal is persisted
+// before admission, so a failed admission is reported here, not as a failed save.
+type goalAdmissionDTO struct {
+	GoalDTO
+	Admission      string `json:"admission,omitempty"`
+	AdmissionError string `json:"admission_error,omitempty"`
+}
+
+func goalWithAdmission(n *db.Node, ack string, err error) goalAdmissionDTO {
+	out := goalAdmissionDTO{GoalDTO: goalDTO(n), Admission: ack}
+	if err != nil {
+		out.AdmissionError = err.Error()
+	}
+	return out
 }
 
 // deleteGoal manually deletes a goal (hard delete, cascading to edges/anchors): delete from the database → record "the user deleted the goal X"

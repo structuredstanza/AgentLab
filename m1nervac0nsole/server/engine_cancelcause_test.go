@@ -20,22 +20,45 @@ func TestPauseCancelsWithNamedCause(t *testing.T) {
 	}
 }
 
+// registerSettlingWork registers a work whose cancel makes a simulated worker
+// settle (detach + complete) asynchronously, like runIntent's deferred completion.
+func registerSettlingWork(e *Engine, intentID int64, onCancel func(error)) {
+	e.registerWork(intentID, func(cause error) {
+		if onCancel != nil {
+			onCancel(cause)
+		}
+		go func() {
+			_, complete := e.detachWork(intentID)
+			complete(nil)
+		}()
+	})
+}
+
 func TestKillWorkCancelsOnlyThatWorkWithNamedCause(t *testing.T) {
-	e := NewEngine(nil)
-	execCtx := e.execContextFor(context.Background(), "t1")
-	workCtx, workCancel := context.WithCancelCause(execCtx)
-	e.registerWork(42, workCancel)
-	if err := e.KillWork(context.Background(), 0, 42, "off track"); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name  string
+		stop  func(*Engine, context.Context, int64, int64, string) error
+		cause *agent.AbortCause
+	}{
+		{"planner", (*Engine).KillWork, agent.AbortKilledByPlanner},
+		{"operator", (*Engine).killWorkByOperator, agent.AbortKilledByOperator},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEngine(nil)
+			execCtx := e.execContextFor(t.Context(), "t1")
+			workCtx, workCancel := context.WithCancelCause(execCtx)
+			registerSettlingWork(e, 42, func(cause error) { workCancel(cause) })
+			if err := tc.stop(e, t.Context(), 0, 42, "off track"); err != nil {
+				t.Fatal(err)
+			}
+			if got := context.Cause(workCtx); got != tc.cause {
+				t.Fatalf("cause = %v, want %v", got, tc.cause)
+			}
+			if execCtx.Err() != nil {
+				t.Fatal("kill_work cancelled the entire task context")
+			}
+		})
 	}
-	if code, _, _, ok := agent.AbortReason(workCtx); !ok || code != "killed_by_planner" {
-		t.Fatalf("code=%q ok=%v, want killed_by_planner", code, ok)
-	}
-	if execCtx.Err() != nil {
-		t.Fatal("kill_work cancelled the entire task context")
-	}
-	_, complete := e.detachWork(42)
-	complete(nil)
 }
 
 func TestControlWorkCarriesUserActionCause(t *testing.T) {

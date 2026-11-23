@@ -41,8 +41,9 @@ func TestPreviewRendersTheExecutedArgv(t *testing.T) {
 	for i, a := range args {
 		got[i], _ = a.(string)
 	}
-	// ports is overridden, timing and service come from the defaults.
-	want := []string{"-oX", "-", "-p", "22,80", "-T4", "-sV", "10.0.0.5"}
+	// ports is overridden; timing, service and the privileged scan-mode flags
+	// the manifest supplies come from the defaults.
+	want := []string{"--privileged", "-Pn", "-n", "-sS", "-oX", "-", "-p", "22,80", "-T4", "-sV", "10.0.0.5"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %v, want %v", got, want)
 	}

@@ -123,42 +123,6 @@ class ProviderProxyTrafficExportTests(unittest.TestCase):
             self.assertEqual(existing_artifact.read_bytes(), b'preserved raw artifact')
 
 
-
-class ModelIdentityTests(unittest.TestCase):
-    def check_runtime(self, root, runtime):
-        key = root / 'model-key'
-        key.write_text('fixture-only-key')
-        with mock.patch.object(lab, 'ROOT', root), mock.patch.object(lab, 'PRIMARY_KEY', key):
-            with mock.patch.object(lab.urllib.request, 'urlopen',
-                                   return_value=io.BytesIO(json.dumps(runtime).encode())):
-                return lab.primary_runtime()
-
-    def identity(self, root):
-        weights = root / 'model.gguf'
-        weights.write_bytes(b'fixture weights')
-        stamp = weights.stat()
-        (root / 'deployment').mkdir()
-        (root / 'deployment/provenance.json').write_text(json.dumps({'model_artifact': {
-            'path': str(weights), 'size_bytes': stamp.st_size, 'mtime_ns': stamp.st_mtime_ns}}))
-        return weights, {'model_alias': 'bonsai-2-27b', 'model_path': str(weights)}
-
-    def test_fixed_alias_cannot_hide_different_weights(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            weights, runtime = self.identity(root)
-            runtime['model_path'] = str(root / 'another-model.gguf')
-            with self.assertRaisesRegex(RuntimeError, 'different model artifact'):
-                self.check_runtime(root, runtime)
-
-    def test_replaced_weights_cannot_keep_stale_dataset_provenance(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            weights, runtime = self.identity(root)
-            weights.write_bytes(b'replaced fixture weights')
-            with self.assertRaisesRegex(RuntimeError, 'weights changed'):
-                self.check_runtime(root, runtime)
-
-
 class NativeProxyBootstrapTests(unittest.TestCase):
     def prepare(self, root):
         (root / 'secrets').mkdir()

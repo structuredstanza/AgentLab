@@ -344,6 +344,38 @@ type RecordedFinding struct {
 	Created bool `json:"created"`
 }
 
+// findingPinsBlock isolates the pin list written by report_finding from the
+// observation text, which is replaced on a fold.
+func findingPinsBlock(body string) string {
+	const heading = "Pinned evidence:\n- "
+	if i := strings.LastIndex(body, "\n"+heading); i >= 0 {
+		body = body[i+1:]
+	} else if !strings.HasPrefix(body, heading) {
+		return ""
+	}
+	for end := len(heading); ; end += len("\n- ") {
+		n := strings.IndexByte(body[end:], '\n')
+		if n < 0 {
+			return body
+		}
+		end += n
+		if !strings.HasPrefix(body[end:], "\n- ") {
+			return body[:end]
+		}
+	}
+}
+
+func foldFindingEvidence(current, previous string) string {
+	pins := findingPinsBlock(previous)
+	if pins == "" || findingPinsBlock(current) != "" {
+		return current
+	}
+	if current == "" {
+		return pins
+	}
+	return current + "\n\n" + pins
+}
+
 // ctx is passed in by the caller as the context for this transaction (rather than being obtained internally via context.Background):
 // the write of the newly added push event within the transaction should likewise be bound by the caller's cancellation and timeout.
 func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, prepared []PreparedTrafficEvidence) (*RecordedFinding, error) {
@@ -368,7 +400,6 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 			return nil, errors.New("intent_id must be an intent of this task (linked task intents are read-only)")
 		}
 	}
-	payload, _ := json.Marshal(map[string]any{"vulnclass": in.VulnClass, "name": in.Name, "severity": in.Severity, "summary": in.Summary, "evidence": map[string]any{"by": in.Worker, "poc": in.Evidence}})
 	out := &RecordedFinding{}
 
 	// The asset set is part of a finding's identity: the same vulnerability on
@@ -395,15 +426,18 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 	// decision outlives a re-observation, and reopening it would make the
 	// disposition meaningless.
 	var existingID, existingNode int64
+	var existingEvidence string
 	if in.TaskID > 0 && strings.TrimSpace(in.Name) != "" {
-		err := tx.QueryRow(`SELECT id, COALESCE(node_id,0) FROM findings
+		err := tx.QueryRow(`SELECT id, COALESCE(node_id,0), evidence FROM findings
 WHERE task_id=$1 AND lower(name)=lower($2) AND asset_ids=$3::jsonb ORDER BY id LIMIT 1 FOR UPDATE`,
 			in.TaskID, in.Name, string(assetsJSON)).
-			Scan(&existingID, &existingNode)
+			Scan(&existingID, &existingNode, &existingEvidence)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
 	}
+	in.Evidence = foldFindingEvidence(in.Evidence, existingEvidence)
+	payload, _ := json.Marshal(map[string]any{"vulnclass": in.VulnClass, "name": in.Name, "severity": in.Severity, "summary": in.Summary, "evidence": map[string]any{"by": in.Worker, "poc": in.Evidence}})
 	if existingID > 0 {
 		// evidence_version is the *traffic* evidence version: only a binding
 		// change moves it, and the archive gate reads 0 as "no proof bound".

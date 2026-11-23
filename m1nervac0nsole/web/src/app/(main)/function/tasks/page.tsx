@@ -125,20 +125,22 @@ import { getDateLocale } from "@/i18n/datetime";
 import { ApiError, api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
-import type {
-  ArchiveBatchItem,
-  AssetInterceptRuleInput,
-  ChatAttachment,
-  Company,
-  DeleteTaskOptions,
-  DeleteTaskResult,
-  LLMProfile,
-  Task,
-  TaskArchive,
-  TaskArchiveState,
-  TaskCategory,
-  TaskCredentialInput,
-  TaskStatus,
+import {
+  type ArchiveBatchItem,
+  type AssetInterceptRuleInput,
+  type ChatAttachment,
+  type Company,
+  type DeleteTaskOptions,
+  type DeleteTaskResult,
+  type LLMProfile,
+  SPEED_PROFILES,
+  type SpeedProfile,
+  type Task,
+  type TaskArchive,
+  type TaskArchiveState,
+  type TaskCategory,
+  type TaskCredentialInput,
+  type TaskStatus,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -3176,6 +3178,7 @@ function CreateTaskSheet({
   onCategoriesChanged: () => void;
 }) {
   const t = useTranslations("tasksPage");
+  const tsp = useTranslations("speedProfile");
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState("");
   const [categoryID, setCategoryID] = React.useState<number | undefined>(undefined);
@@ -3194,6 +3197,7 @@ function CreateTaskSheet({
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // Asset coverage feature; on by default. When off: coverage is not computed or displayed, scope is not accumulated, and scope-type tools are hidden (company association is unaffected)
   const [planQuietMode, setPlanQuietMode] = React.useState(true);
   const [llmRotate, setLLMRotate] = React.useState(false);
+  const [speedProfile, setSpeedProfile] = React.useState<SpeedProfile>("standard");
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // Task-level asset interception rules (apply to this task only; not added to the global table)
   const [credentials, setCredentials] = React.useState<TaskCredentialInput[]>([]);
   // Method 1 file upload: before creating the task, temporarily stage the file in drafts/<draftId>/uploads/, obtain the absolute path, and append it to the description.
@@ -3264,6 +3268,7 @@ function CreateTaskSheet({
         coverageEnabled,
         planQuietMode,
         llmRotate,
+        speedProfile,
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
@@ -3286,6 +3291,7 @@ function CreateTaskSheet({
       setCoverageEnabled(true);
       setPlanQuietMode(true);
       setLLMRotate(false);
+      setSpeedProfile("standard");
       setCredentials([]);
       setInterceptRules([]);
       setUploadCount(0);
@@ -3517,6 +3523,24 @@ function CreateTaskSheet({
                 <span className="ml-auto font-normal text-muted-foreground text-xs">{t("create.advancedSub")}</span>
               </CollapsibleTrigger>
               <CollapsibleContent className="grid gap-5 pt-5">
+                <div className="grid gap-2">
+                  <Label htmlFor="speed-profile">{tsp("label")}</Label>
+                  <Select value={speedProfile} onValueChange={(v) => setSpeedProfile(v as SpeedProfile)}>
+                    <SelectTrigger id="speed-profile" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {SPEED_PROFILES.map((p) => (
+                          <SelectItem key={p} value={p}>
+                            {tsp(`${p}.name`)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-muted-foreground text-xs">{tsp(`${speedProfile}.hint`)}</p>
+                </div>
                 <div className="grid gap-2">
                   <Label htmlFor="timeout-min">{t("create.timeoutLabel")}</Label>
                   <Input

@@ -299,13 +299,10 @@ parser = "lines"
 fields = ["value"]
 `
 
-// A manifest declaring 50 threads under a cap of 3 must run with 3: the cap
-// counts scans, not the workers inside one, so without the clamp the operator's
-// per-target intent is violated by 47 threads. A count under the cap is left
-// alone, and the run record says when it was clamped.
-func TestRunToolClampsDeclaredThreads(t *testing.T) {
+// Tool thread counts are operator instructions, not scan concurrency slots.
+func TestRunToolPreservesDeclaredThreads(t *testing.T) {
 	old := engagementLimits
-	engagementLimits = limits.New(limits.Policy{MaxConcurrentPerTarget: 3, MaxConcurrentTotal: 3, MaxRequestsPerMinute: 100})
+	engagementLimits = limits.New(limits.Policy{MaxConcurrentPerTarget: 3, MaxConcurrentTotal: 3})
 	t.Cleanup(func() { engagementLimits = old })
 
 	f := installFakeClient(t)
@@ -331,11 +328,11 @@ func TestRunToolClampsDeclaredThreads(t *testing.T) {
 	}
 
 	argv, text := run(map[string]any{"threads": 50})
-	if !strings.Contains(argv, "printf '3") {
-		t.Errorf("argv = %q, want the declared 50 threads clamped to the cap of 3", argv)
+	if !strings.Contains(argv, "printf '50") {
+		t.Errorf("argv = %q, want the declared 50 threads unchanged", argv)
 	}
-	if !strings.Contains(text, "threads clamped from 50 to 3") {
-		t.Errorf("the run record does not say the thread count was clamped: %q", text)
+	if strings.Contains(text, "clamped") {
+		t.Errorf("the run record reports an enforced thread count: %q", text)
 	}
 
 	argv, text = run(map[string]any{"threads": 2})
@@ -389,8 +386,8 @@ func TestInstallScriptGetsTheSessionProxyEnv(t *testing.T) {
 	}
 	env := strings.Join(spec.Env, " ")
 	for _, want := range []string{
-		"HTTP_PROXY=http://cred-1@127.0.0.1:8888",
-		"HTTPS_PROXY=http://cred-1@127.0.0.1:8888",
+		"HTTP_PROXY=http://cred-1:cred-1@127.0.0.1:8888",
+		"HTTPS_PROXY=http://cred-1:cred-1@127.0.0.1:8888",
 	} {
 		if !strings.Contains(env, want) {
 			t.Errorf("install environment %v is missing %q: the script cannot download", spec.Env, want)
@@ -491,7 +488,7 @@ func startExecboxSupervisor(t *testing.T, gateway string) execbox.Client {
 
 // startExecboxSupervisorWithWorkspace also returns the session workspace, so a
 // test can point a tool context at a directory the session may write.
-func startExecboxSupervisorWithWorkspace(t *testing.T, gateway string) (execbox.Client, string) {
+func startExecboxSupervisorWithWorkspace(t *testing.T, gateway string, opts ...func(*execbox.Config)) (execbox.Client, string) {
 	t.Helper()
 	base := t.TempDir()
 	ws := filepath.Join(base, "ws")
@@ -507,6 +504,9 @@ func startExecboxSupervisorWithWorkspace(t *testing.T, gateway string) (execbox.
 	cfg.Resolver = "127.0.0.1:5353"
 	if self, err := os.Executable(); err == nil {
 		cfg.Self = self
+	}
+	for _, o := range opts {
+		o(&cfg)
 	}
 	cfg.Logf = t.Logf
 	sup, err := execbox.NewSupervisor(cfg)

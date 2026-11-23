@@ -1,8 +1,8 @@
 // Package traffic implements the request-recording subsystem (docs §10): an
 // embedded go-mitmproxy proxy whose addon writes every target HTTP exchange into
 // a human-browsable file tree, with a sidecar SQLite index for paged queries.
-// Full capture, plaintext (no redaction), target HTTP only; the gateway's own
-// Proxy-Authorization header is the one thing not recorded.
+// Full capture, plaintext (no redaction), target HTTP only. The recorder uses
+// the gateway's prepared request headers, never its proxy credential.
 package traffic
 
 import (
@@ -167,6 +167,28 @@ type taskSource interface {
 	TaskID(connCtx *mproxy.ConnContext, req *http.Request) int64
 }
 
+type originRequestKey struct{}
+
+type originRequest struct {
+	sent *http.Request
+}
+
+type recordingTransport struct {
+	mproxy.OriginTransport
+}
+
+func (t recordingTransport) RoundTrip(ctx context.Context, connCtx *mproxy.ConnContext, req *http.Request) (*http.Response, error) {
+	res, err := t.OriginTransport.RoundTrip(ctx, connCtx, req)
+	// The origin response points to the clone prepared for this session.
+	// Gateway-generated refusals instead point to the unsent input request.
+	if res != nil && res.Request != nil && res.Request != req {
+		if capture, _ := ctx.Value(originRequestKey{}).(*originRequest); capture != nil {
+			capture.sent = res.Request
+		}
+	}
+	return res, err
+}
+
 // Traffic runs the recording proxy and owns the file tree + index.
 type Traffic struct {
 	dir   string
@@ -268,6 +290,9 @@ func OpenWithTransport(dir, addr string, ot mproxy.OriginTransport) (*Traffic, e
 	if ts, ok := ot.(taskSource); ok {
 		t.taskOf = ts
 	}
+	if ot != nil {
+		ot = recordingTransport{ot}
+	}
 	if err := t.initIndex(); err != nil {
 		db.Close()
 		return nil, err
@@ -294,7 +319,7 @@ func OpenWithTransport(dir, addr string, ot mproxy.OriginTransport) (*Traffic, e
 	// through that external proxy — which can't reach the target → 502. The
 	// operator's global proxy is the gateway's exit, not the recorder's own.
 	p.SetUpstreamProxy(func(*http.Request) (*url.URL, error) { return nil, nil })
-	p.AddAddon(&sink{t: t})
+	p.AddAddon(&sink{t: t, captureOriginRequest: ot != nil})
 	t.proxy = p
 	return t, nil
 }
@@ -447,7 +472,16 @@ func (t *Traffic) DB() *sql.DB { return t.db }
 // sink is the go-mitmproxy addon that records completed exchanges.
 type sink struct {
 	mproxy.BaseAddon
-	t *Traffic
+	t                    *Traffic
+	captureOriginRequest bool
+}
+
+func (s *sink) Requestheaders(f *mproxy.Flow) {
+	if !s.captureOriginRequest || f.Request.Method == http.MethodConnect {
+		return
+	}
+	raw := f.Request.Raw()
+	*raw = *raw.WithContext(context.WithValue(raw.Context(), originRequestKey{}, &originRequest{}))
 }
 
 func (s *sink) Response(f *mproxy.Flow) {
@@ -1456,17 +1490,23 @@ func headerLines(h map[string][]string) string {
 // Request.Host rather than in Header. Keeping it in request.http makes the raw
 // capture complete and directly replayable.
 //
-// Proxy-Authorization is the one header dropped: it carries the run's gateway
-// session credential, the gateway consumes it, and the capture is a plaintext
-// file tree served back through the traffic API.
+// The response's request contains the headers prepared for the origin. When
+// there is no such request, record the client's attempt without its credential.
 func requestHeaderLines(req *mproxy.Request) string {
-	headers := req.Header.Clone()
+	headers := req.Header
+	host := req.URL.Host
+	if raw := req.Raw(); raw != nil {
+		if capture, _ := raw.Context().Value(originRequestKey{}).(*originRequest); capture != nil && capture.sent != nil {
+			raw = capture.sent
+			headers = raw.Header
+		}
+		if strings.TrimSpace(raw.Host) != "" {
+			host = raw.Host
+		}
+	}
+	headers = headers.Clone()
 	headers.Del("Host")
 	headers.Del("Proxy-Authorization")
-	host := req.URL.Host
-	if raw := req.Raw(); raw != nil && strings.TrimSpace(raw.Host) != "" {
-		host = raw.Host
-	}
 	var b strings.Builder
 	if host = strings.TrimSpace(host); host != "" {
 		b.WriteString("Host: ")

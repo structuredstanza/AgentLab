@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -11,47 +12,50 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
-	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/enrich"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/useragent"
 	actool "github.com/structuredstanza/norma/tool"
 )
 
-// startMaskingProxyForTest runs the real masking egress proxy on loopback with a
-// distinctive identity and returns its URL and CA path.
-func startMaskingProxyForTest(t *testing.T) (proxyURL, caFile string) {
+// staticRoute is a fixed recorder route: one proxy and CA, no session to revoke.
+func staticRoute(proxyURL, caFile string) enrich.Route {
+	return func(context.Context, int64) (string, string, func(), error) {
+		return proxyURL, caFile, func() {}, nil
+	}
+}
+
+// startConnectTunnel runs a CONNECT tunnel on loopback that stands in for
+// the recording proxy and returns its URL and the CA to trust: the certificate
+// every httptest TLS origin presents.
+func startConnectTunnel(t *testing.T) (proxyURL, caFile string) {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "user-agent.txt"), []byte("WiringMask/1.0\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ca, err := egress.LoadOrCreateCA(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := egress.LoadIdentity(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := egress.New("127.0.0.1:0", ca, identity, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); _ = p.Serve(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		_ = p.Close()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
+	p := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up, err := net.Dial("tcp", r.Host)
+		if r.Method != http.MethodConnect || err != nil {
+			http.Error(w, "tunnel refused", http.StatusBadGateway)
+			return
 		}
-	})
-	return "http://" + p.Addr(), filepath.Join(dir, "ca.pem")
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			up.Close()
+			return
+		}
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n")
+		go func() { _, _ = io.Copy(up, conn); up.Close() }()
+		go func() { _, _ = io.Copy(conn, up); conn.Close() }()
+	}))
+	t.Cleanup(p.Close)
+	origin := httptest.NewTLSServer(http.NotFoundHandler())
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: origin.Certificate().Raw})
+	origin.Close()
+	caFile = filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p.URL, caFile
 }
 
 func insertAssetsToolFor(t *testing.T, ts *ToolSet) actool.CoreTool {
@@ -95,9 +99,9 @@ func serviceRow(t *testing.T, d *db.DB, url string) (title string, status *int, 
 }
 
 // A worker's insert_assets call persists a web service, the manager-wide engine
-// probes it through the masking proxy under the worker's task, and the origin's
+// probes it through the recorder route under the worker's task, and the origin's
 // title lands on the persisted asset. The whole chain is real: tool, engine,
-// egress proxy, local origin, database.
+// recorder stand-in, local origin, database.
 func TestInsertAssetsEnrichesPersistedServiceThroughMaskingProxy(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
@@ -113,7 +117,7 @@ func TestInsertAssetsEnrichesPersistedServiceThroughMaskingProxy(t *testing.T) {
 	}, "operator"); err != nil {
 		t.Fatalf("authorize the fixture origin: %v", err)
 	}
-	proxyURL, caFile := startMaskingProxyForTest(t)
+	proxyURL, caFile := startConnectTunnel(t)
 
 	var mu sync.Mutex
 	var ua string
@@ -127,7 +131,7 @@ func TestInsertAssetsEnrichesPersistedServiceThroughMaskingProxy(t *testing.T) {
 	url := origin.URL + "/wired"
 	defer d.Exec(`DELETE FROM assets WHERE url=$1 OR domain='127.0.0.1'`, url)
 
-	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)})
+	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Route: staticRoute(proxyURL, caFile), Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	ts := NewToolSet(nil, "worker")
 	ts.SetAssetStore(d.Assets(), d.Companies())
@@ -152,8 +156,8 @@ func TestInsertAssetsEnrichesPersistedServiceThroughMaskingProxy(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if ua != "WiringMask/1.0" {
-		t.Fatalf("origin saw User-Agent %q: the probe did not leave through the masking proxy", ua)
+	if ua != useragent.Get() {
+		t.Fatalf("origin saw User-Agent %q, want the engagement identity %q: the probe did not go through the recorder route", ua, useragent.Get())
 	}
 }
 
@@ -162,7 +166,7 @@ func TestInsertAssetsEnrichesPersistedServiceThroughMaskingProxy(t *testing.T) {
 func TestInsertAssetsWithoutTaskDoesNotProbe(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
-	proxyURL, caFile := startMaskingProxyForTest(t)
+	proxyURL, caFile := startConnectTunnel(t)
 
 	var mu sync.Mutex
 	hits := 0
@@ -175,7 +179,7 @@ func TestInsertAssetsWithoutTaskDoesNotProbe(t *testing.T) {
 	url := origin.URL + "/notask"
 	defer d.Exec(`DELETE FROM assets WHERE url=$1 OR domain='127.0.0.1'`, url)
 
-	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)})
+	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Route: staticRoute(proxyURL, caFile), Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	ts := NewToolSet(nil, "worker")
 	ts.SetAssetStore(d.Assets(), d.Companies())
@@ -201,7 +205,7 @@ func TestInsertAssetsExcludedHostIsNotProbed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.DeleteTask(task.ID)
-	proxyURL, caFile := startMaskingProxyForTest(t)
+	proxyURL, caFile := startConnectTunnel(t)
 
 	ln, err := net.Listen("tcp", "127.0.0.2:0")
 	if err != nil {
@@ -224,7 +228,7 @@ func TestInsertAssetsExcludedHostIsNotProbed(t *testing.T) {
 	if _, err := d.Assets().AddAgentScope(task.ID, "ip", "127.0.0.2", "operator excluded it", "manual", "exclude"); err != nil {
 		t.Fatal(err)
 	}
-	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Proxy: proxyURL, CAFile: caFile, Authorizer: netpolicy.NewAuthorizer(d)})
+	engine := enrich.New(d.Assets(), enrich.Options{Workers: 2, Route: staticRoute(proxyURL, caFile), Authorizer: netpolicy.NewAuthorizer(d)})
 	defer engine.Close()
 	ts := NewToolSet(nil, "worker")
 	ts.SetAssetStore(d.Assets(), d.Companies())

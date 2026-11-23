@@ -13,7 +13,6 @@ host                                  sandbox
   guest-dist/   <- /dist:ro ------>      execbox supervisor   /run/m1nervac0nsole/execbox.sock
   secrets/      <- /run/secrets -->      m1nervac0nsole       0.0.0.0:8787
                                          recording proxy      127.0.0.1:8788
-                                         masking egress       127.0.0.1:8888
                                          tcpdump, strace, openvpn
 ```
 
@@ -36,7 +35,7 @@ The host never runs application code. `./lab build` stages the binary, skills an
 
 Loading a built image into microsandbox is a separate, printed step: `docker save -o IMAGE.tar <tag>` then `MSB_HOME=<repo>/microsandbox .venv/bin/msb load -i IMAGE.tar`. A running sandbox keeps its rootfs, so a newly loaded image applies to sandboxes created afterwards.
 
-**A rebuild is not bit-identical to the historical image.** The base tag, apt indexes and several clones float, and the overlay that produced `deepseek-v1` is not in the tree. `./lab image-build` prints this and reports `reproducible: false`; it rebuilds the tag, it does not reproduce the bytes. `deployment/Dockerfile.toolchain` is the historical toolchain overlay and is not part of this path. `deployment/provenance.json` records the image id and layers, and is rewritten by `./lab primary`; never hand-edit it.
+**A rebuild is not bit-identical to the historical image.** The base tag, apt indexes and several clones float, and the overlay that produced `deepseek-v1` is not in the tree. `./lab image-build` prints this and reports `reproducible: false`; it rebuilds the tag, it does not reproduce the bytes. `deployment/Dockerfile.toolchain` is the historical toolchain overlay and is not part of this path. `deployment/provenance.json` records the image id and layers; never hand-edit it.
 
 ## Mounts
 
@@ -65,10 +64,8 @@ Loading a built image into microsandbox is a separate, printed step: `docker sav
     jwt.key
     status.json
     secrets/m1nervac0nsole-db.dsn
-    logs/egress.log
     logs/postgres/postgres.log
     logs/openvpn.log
-    egress/                     CA material; never exported
 ```
 
 `/state` is the persistent volume. Everything a tool writes outside its task workspace and the session's private `/tmp` is discarded with the session.
@@ -88,6 +85,21 @@ Stop order on SIGTERM, SIGINT, or backend exit: backend process group, then `exe
 
 The backend exit code is the supervisor's exit code (128+signal if killed), 1 on any failure.
 
+## Network routes
+
+Recorded HTTP uses the session recorder → gateway, with Chrome uTLS and selective tool-default UA masking. Stealth uses navigation masking; Careful/Standard/Unbound use UA masking. Enrichment uses recorded gateway navigation sessions. The separate masking-egress process, subcommand and environment settings are retired. Profiles are guidance, not rate/thread ceilings; default tool-run concurrency is 16 globally and per target.
+
+The backend wraps the installed execbox client for **all testing subprocesses**, including SDK/Bash, scripts and manifests. A scoped direct lane is available only with live `tun0` and no operator global proxy; research/install remain relay-only. Interactive HTTP retains recorder proxy env. Standard/Unbound bulk-HTTP manifests declaring `RateRPS` omit both proxy env and argv only after an available lane snapshot; execution refuses if the lane disappears. Raw tools can use scoped direct sockets regardless of HTTP env. Only direct sessions receive `CAP_NET_RAW`, so permitted SYN/UDP scanning is not restricted to backend connect scans.
+
+Root-namespace FORWARD rules enforce authorized scope, exclusions and protocol/port constraints in both directions, including established flows. Infrastructure denies cover loopback, `10.98.0.0/16`, link-local, guest-local addresses, `host.microsandbox.internal` and configured native-provider/profile endpoints, not entire VPN destination ranges. Filtered DNS A grants expire with TTL and are re-evaluated on policy updates. The session link has no IPv6; direct traffic is IPv4-only.
+
+The backend polls every second with a combined one-second policy read/apply deadline. Revocation normally takes at most about two seconds plus kernel teardown/scheduling. Read/apply/egress failure cancels processes without an old-policy fallback; supervisor apply failures kill sessions. Direct traffic has no gateway masking or HTTP recording: retain execution artifacts and pinned pcap, and replay safe HTTP through the recorder when inspectable evidence is needed.
+
+Tool sessions mount the recorder's **public** CA certificate read-only at the absolute path the backend names in `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO` and `NODE_EXTRA_CA_CERTS`; the research browser is launched with it. The supervisor re-encodes only the certificates (`execbox serve -ca-cert`, empty disables), so the signing key is never exposed. If the recorder has not written its CA yet, the session reports that rather than silently trusting nothing.
+
+These are source-level behavior descriptions, not claims that this redesign has been deployed or verified in a live guest. See [Network layer](../m1nervac0nsole/docs/design/network-layer.md).
+
+
 ## Capture
 
 Three independent records, all inside `/state/captures/<session-id>/`:
@@ -98,7 +110,7 @@ Three independent records, all inside `/state/captures/<session-id>/`:
 
 A reserve is kept free on the capture filesystem: 20% of the volume, never less than 1536 MB. Without it the ring filled a 5.8 GB filesystem to 100% and took the whole stack down. `traffic/` mirrors the same rule for its streamed-body spool.
 
-TLS payloads are ciphertext in the pcap. The gateway writes its origin handshake secrets to `tls/keys.log` inside the capture session (mode 0600, created by `crypto/tls`), so the pcap decrypts with a keylog that travels with the export and never enters the database. The manifest records that, along with the fact that guest root can modify or delete captures and the manifest itself.
+Gateway-origin TLS payloads are ciphertext in the pcap. The gateway writes its origin handshake secrets to `tls/keys.log` inside the capture session (mode 0600), so those flows can be decrypted with the exported keylog. Direct-lane TLS does not use the gateway and is not covered by its keylog. The manifest records that guest root can modify or delete captures and the manifest itself.
 
 ## Export
 
@@ -113,12 +125,11 @@ raw/host-events/<segment>.jsonl  host command log, rotated
 raw/provider-proxy-traffic/      one file per provider stream segment
 raw/llm_records.jsonl            provider wire bodies
 raw/reasoning.jsonl              recovered reasoning
-logs/egress.log                  egress refusals and identity decisions
 logs/postgres.log                database-side failures
 manifest.json                    sha256 per artifact, plus prunable[]
 ```
 
-The egress CA directory is never exported: it holds the CA private key. `/state/runtime` is never copied whole.
+`/state/runtime` is never copied whole. Historical exports may include `logs/egress.log`; the retired masking-egress CA directory is never exported because it holds private-key material.
 
 A failed export removes its directory; a `SIGKILL`ed one can leave a directory with no manifest, which `verify_export` and `prune` both refuse.
 
@@ -132,7 +143,6 @@ A failed export removes its directory; a `SIGKILL`ed one can leave a directory w
 | `guest-export.py` | Streams the export tar; snapshots live SQLite in the writer's kernel |
 | `export_traces.py` | Turns an export into training data (`train.jsonl`, `reasoning.jsonl`) |
 | `verify_capture.py` | End-to-end capture check; drives the authenticated custom-tool test endpoint, needs host `tshark` |
-| `verify_reasoning.py` | Runs a local-model tool task and validates the exported reasoning |
 | `verify_completeness.py` | Pushes nonces through HTTP, SSE, a large body and a WebSocket; reports collected, retained, exported, consumed |
 | `build-cliproxy.sh` | Builds the pinned CLIProxyAPI plus `core.patch` |
 | `test_extension_capture.mjs` | Harness for the browser extension's capture queue |
@@ -143,7 +153,6 @@ A failed export removes its directory; a `SIGKILL`ed one can leave a directory w
 ```sh
 ./lab start [--vpn PROFILE]   # build guest-dist if stale, create or reuse the sandbox, start the stack
 ./lab status                  # health, processes, capture state
-./lab primary                 # rewrite provenance.json
 ./lab export                  # timestamped archive with a hash manifest
 ./lab prune <export-id>       # delete what a verified export contains
 ./lab exec -- bash -lc '...'  # run a command in the guest
@@ -156,7 +165,6 @@ Never start two VMs against the shared `state/`; `./lab start` refuses while ano
 
 ```sh
 python3 deployment/verify_capture.py      # capture end to end (live run + tshark)
-python3 deployment/verify_reasoning.py    # reasoning export (local model)
 python3 deployment/verify_completeness.py # four capture shapes, byte-exact through export and re-import
 tests/run.sh python                       # host and deployment suites
 ./deployment/cliproxy/run-tests.sh        # provider proxy

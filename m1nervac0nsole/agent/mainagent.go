@@ -23,19 +23,20 @@ type MainAgent struct {
 	guard           *guard.Guard
 	prov            llm.Provider
 	model           string
-	tx              *transcript.Store                      // raw LLM conversation persistence (nil = off)
-	window          int                                    // context window in tokens (for compaction)
-	windowFn        func() int                             // optional dynamic task-chain minimum
-	maxTurns        int                                    // max agent turns per run (0 = unlimited)
-	proxyAddr       string                                 // recording proxy for WebFetch (empty = direct)
-	proxyCACert     string                                 // recording proxy's CA cert path (HTTPS verify)
-	webSearch       WebSearchOpts                          // web_search tool backend selection (off by default)
-	workDir         string                                 // shared work dir (surfaced in prompt as artifact-output target)
-	steerWork       func(intentID int64, msg string) error // engine callback: steer a running work (nil = off)
-	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
-	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
-	mem             MemoryStore                            // knowledge base (nil = recall/knowledge_add refuse)
+	tx              *transcript.Store                                                      // raw LLM conversation persistence (nil = off)
+	window          int                                                                    // context window in tokens (for compaction)
+	windowFn        func() int                                                             // optional dynamic task-chain minimum
+	maxTurns        int                                                                    // max agent turns per run (0 = unlimited)
+	proxyAddr       string                                                                 // recording proxy for WebFetch (empty = direct)
+	proxyCACert     string                                                                 // recording proxy's CA cert path (HTTPS verify)
+	webSearch       WebSearchOpts                                                          // web_search tool backend selection (off by default)
+	workDir         string                                                                 // shared work dir (surfaced in prompt as artifact-output target)
+	steerWork       func(intentID int64, msg string) error                                 // engine callback: steer a running work (nil = off)
+	killWork        func(ctx context.Context, taskID, intentID int64, reason string) error // engine callback: stop a work and wait for it to settle (nil = off)
+	nonStreamingFn  func() bool                                                            // resolver: use non-streaming (Complete) path? (nil = streaming)
+	noaEnabledFn    func() bool                                                            // resolver: use experimental noa compaction? (nil = off)
+	maxTokensFn     func() int                                                             // resolver: per-reply output cap (nil/0 = send no cap)
+	mem             MemoryStore                                                            // knowledge base (nil = recall/knowledge_add refuse)
 }
 
 // SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
@@ -87,6 +88,12 @@ func (m *MainAgent) SetWebSearch(o WebSearchOpts) { m.webSearch = o }
 // tool inject a mid-run course-correction into a running work (nil = tool off).
 func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.steerWork = fn }
 
+// SetKillWork wires the engine's confirmed per-work stop so the main agent's
+// kill_work tool is the real stop (same callback the planner uses; nil = tool off).
+func (m *MainAgent) SetKillWork(fn func(ctx context.Context, taskID, intentID int64, reason string) error) {
+	m.killWork = fn
+}
+
 // SetMemory wires the task's knowledge base into the main agent's tool set
 // (recall / knowledge_add). nil = those tools refuse.
 func (m *MainAgent) SetMemory(mem MemoryStore) { m.mem = mem }
@@ -101,7 +108,9 @@ const mainAgentDefaultTmpl = `You are the "main agent" of an authorized penetrat
    - If the person wants to "change direction / emphasize a class of vulnerability / focus on a particular area" → use add_hint to write a hint (the planner will read it next time).
    - If the person wants to "test a specific target right now" → use add_intent to inject one high-priority intent directly (priority 8-10). The system will automatically move a completed task back to the running state, let the worker take up this intent, and return it to the completed state after it finishes.
      **When all task goals are already achieved** (every goal in graph_overview is met): before issuing the intent, judge whether it implies a "new result to be achieved." If it does, restate your guess of the goal to the person in one sentence and **ask whether to register it as an official goal**. If the person says yes → register it with set_goals (the task then enters routine planning, and the planner will keep advancing on its own). If the person says no or only wants a temporary exploration → issue only this intent with add_intent; the worker returns the task to the completed state after finishing it (it will not continue on its own). If the intent is clearly a one-off check that implies no new goal, use add_intent directly without asking every time.
-   - If the person wants to "correct a running intent (work) in real time (stop doing X, focus on Y)" → use steer_work (no interruption, no loss of progress; it takes effect before the worker's next action). First use get_worker_output to see what it is doing. If the direction is entirely wrong, use add_intent to issue a new intent instead.
+   - If the person wants to **stop** a running or queued intent (work) ("stop it", "kill that scan", "cancel that") → use kill_work with a reason. It is the only real stop: it cancels the worker and returns only after the worker has exited. Report the result exactly as the tool returns it; if the tool says the stop was not confirmed, say so and do not claim it stopped. steer_work is NOT a stop: it only queues a correction that the worker reads before its next tool call. add_hint is NOT a stop or a launch either.
+   - If the person wants to "correct a running intent (work) in real time (stop doing X, focus on Y)" → use steer_work (no interruption, no loss of progress; it takes effect before the worker's next action, so say it is queued, not applied). First use get_worker_output to see what it is doing. If the direction is entirely wrong, use kill_work then add_intent.
+   - Acknowledge honestly. add_intent only creates an open intent and the tool result says whether the task was admitted and running, queued (and why), or failed admission; relay that. Never say work "started" or "is running" unless graph_overview or the tool result shows the intent in running state. If the task is paused, idle, waiting for the operator (needs_operator) or queued for a provider/slot, say so, and tell the person what resumes it.
    - If the person wants to "add a final goal to achieve" → use set_goals to add the goal. The system will write the goal into the task graph and **automatically move completed or paused tasks back to the running state** (the planner will then re-check whether the goal is achieved), with no manual resume needed.
    - If the person wants to "add or change test constraints (allow or prohibit a class of operations, such as 'only test the current port', 'no brute forcing', 'passive reconnaissance only')" → register them with set_constraints (type=allow to permit / type=deny to prohibit). Constraints are injected into the planner and worker prompts during the next planning round to frame the exploration boundaries; they can also be added, removed, or edited in the overview's "Constraint Management."
 3. Reply concisely in plain language, explaining what you did.
@@ -118,14 +127,14 @@ Untrusted content handling (prompt-injection defense):
 
 func mainAgentSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + artifactSpec(workDir) + langDirective()
+	return body + artifactSpec(workDir) + langDirective() + evidenceResearchGuidance
 }
 
 // Chat handles one human message and returns the assistant reply. emit, if
 // non-nil, receives each execution step (thinking / tool_use / tool_result /
 // text / result) so the main-agent session shows its work — exactly like the
 // worker/planner sessions — not just the final answer.
-func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
+func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify func(), resume func() (string, error), notifyGoal, notifyHint func([]string)) (string, error) {
 	ctx = intercept.WithTaskContext(ctx, fmt.Sprint(taskID), "mainagent", emit)
 	tsx := NewToolSet(ts, "human")
 	tsx.SetFindingRecorder(m.findingRecorder)
@@ -141,6 +150,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	tsx.SetNotifyGoal(notifyGoal) // set_goals adds a new goal → records a trigger for the planner: "the human added a goal: …"
 	tsx.SetNotifyHint(notifyHint) // add_hint adds a new hint → records a trigger for the planner: "the human added N strategic hint(s): …"
 	tsx.steerWork = m.steerWork   // enable steer_work tool (nil = unavailable)
+	tsx.killWork = m.killWork     // enable kill_work tool: the real, confirmed stop (nil = unavailable)
 	// Domain tools + base default toolset (Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash)
 	// When the asset coverage feature is disabled, strip add_task_scope/list_untested_assets (do not include in prompt).
 	base := append(tsx.DropCoverageTools(tsx.MainAgentTools()), actool.DefaultTools()...)

@@ -38,11 +38,12 @@ func TestRecorderGetsTheGatewayHook(t *testing.T) {
 	if got := m.Gateway().Exit().ProxyURL; got != "http://127.0.0.1:9" {
 		t.Fatalf("gateway exit = %q, want the operator proxy", got)
 	}
+	// Clearing the setting means a direct exit; no masking proxy is substituted.
 	if err := m.SetGlobalProxy(""); err != nil {
 		t.Fatalf("clear SetGlobalProxy: %v", err)
 	}
 	if got := m.Gateway().Exit().ProxyURL; got != "" {
-		t.Fatalf("gateway exit after clear = %q, want the configured fallback", got)
+		t.Fatalf("gateway exit after clear = %q, want direct (empty)", got)
 	}
 }
 

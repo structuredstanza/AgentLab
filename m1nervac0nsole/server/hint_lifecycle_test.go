@@ -84,7 +84,7 @@ func TestKillWorkRecordsReasonOnRunningWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancelled := false
-	s.engine.registerWork(intentID, func(error) { cancelled = true })
+	registerSettlingWork(s.engine, intentID, func(error) { cancelled = true })
 
 	const reason = "the direction drifted off scope"
 	if err := s.engine.KillWork(context.Background(), taskID, intentID, reason); err != nil {
@@ -126,7 +126,7 @@ func TestKillWorkCancelsWorkClaimedDuringCancelPath(t *testing.T) {
 	s.engine.SetIntentCancel(func(_ context.Context, _ *Task, iid int64, _ string) error {
 		// Simulate the claim landing between the cancel path's state snapshot
 		// and its delete: the path saw "not running" and skipped ControlWork.
-		s.engine.registerWork(iid, func(error) { cancelled = true })
+		registerSettlingWork(s.engine, iid, func(error) { cancelled = true })
 		return nil
 	})
 	if err := s.engine.KillWork(context.Background(), taskID, intentID, "retracted"); err != nil {

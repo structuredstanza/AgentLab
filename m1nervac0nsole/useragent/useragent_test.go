@@ -48,3 +48,21 @@ func TestSetIfAbsentRespectsACallerChoice(t *testing.T) {
 		t.Fatalf("did not fill an absent User-Agent: %q", set["User-Agent"])
 	}
 }
+
+func TestIsToolDefault(t *testing.T) {
+	for ua, want := range map[string]bool{
+		"":                          true,
+		"curl/8.5.0":                true,
+		"Go-http-client/1.1":        true,
+		"Fuzz Faster U Fool v2.1.0": true,
+		"Mozilla/5.0 (Windows NT 10.0; Microsoft Windows 10.0.19045; en-US) WindowsPowerShell/5.1": true,
+		"Mozilla/5.00 (Nikto/2.1.6) (Evasions:None) (Test:001)":                                    true,
+		Default:                     false,
+		"() { :; }; echo x":         false,
+		"Mozilla/5.0 Firefox/130.0": false,
+	} {
+		if got := IsToolDefault(ua); got != want {
+			t.Errorf("IsToolDefault(%q) = %v, want %v", ua, got, want)
+		}
+	}
+}

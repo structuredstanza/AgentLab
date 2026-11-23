@@ -45,6 +45,9 @@ var (
 	// Per-work context.
 	AbortKilledByPlanner = cause("killed_by_planner", "The planner terminated this intent",
 		"The planner called kill_work to terminate this intent, usually because the direction drifted or it no longer had value. The intent is marked stopped and is not claimed again automatically.")
+	// AbortKilledByOperator distinguishes a manual stop from the planner's decision.
+	AbortKilledByOperator = cause("killed_by_operator", "The operator terminated this intent",
+		"The operator terminated this intent. The intent is marked stopped and is not claimed again automatically.")
 	AbortWorkPausedByUser = cause("work_paused_by_user", "The user paused this Worker intent",
 		"The user paused the running Worker. This call was cancelled and the intent changes to paused; registered intents, facts, findings, and activity records are all kept, and the Worker restarts from scratch on resume.")
 	AbortWorkCancelledByUser = cause("work_cancelled_by_user", "The user deleted this Worker intent",

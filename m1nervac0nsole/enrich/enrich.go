@@ -3,16 +3,13 @@
 // and writes the results back into the asset graph — creating IP/port nodes,
 // resolves/exposes edges, and filling attrs.dns / attrs.http.
 //
-// Outbound HTTP probes must leave masked: the masking egress proxy (`m1nervac0nsole
-// egress-proxy`) owns the TLS fingerprint and the browser identity the target
-// sees. Every probe, and every redirect hop, goes directly to it and trusts its
-// CA explicitly; verification is never disabled. When no proxy/CA is configured
-// or the proxy is unreachable the probe fails — there is no direct fallback and
-// no detour through any other proxy.
-//
-// Capture is first-party and does not depend on a second proxy: Options.Observe
-// receives each hop as the client saw it (with explicit truncation), and the
-// manager stores it in the traffic store when capture is on.
+// Outbound HTTP probes go through the recording proxy under a backend-issued
+// session for the task being enriched (Options.Route): the gateway owns the TLS
+// fingerprint and, for an enrichment session, the browser-shaped headers, and
+// the recorder stores each exchange. Every probe, and every redirect hop, goes
+// to it and trusts its CA explicitly; verification is never disabled. With no
+// route, session or recorder the probe is skipped — there is no direct
+// fallback and no detour through any other proxy.
 //
 // The engine is shared by every task on the manager, so scope is enforced here,
 // at dispatch: a job carries the task it was discovered under, and a destination
@@ -45,7 +42,7 @@ import (
 	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
-	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/gateway"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/useragent"
 
@@ -77,15 +74,12 @@ func RedactProxyURL(raw string) string {
 	return u.Scheme + "://" + u.Host
 }
 
-// Engine owns the resolver, the masking-proxy HTTP client, and the worker pool.
+// Engine owns the resolver, the recorder route, and the worker pool.
 type Engine struct {
 	as      *db.AssetStore
 	resolv  *dnsx.DNSX
-	proxy   string       // masking egress proxy URL (may carry credentials; never logged raw)
-	client  *http.Client // nil = HTTP probing disabled (httpOff says why)
-	httpOff string
+	route   Route                // nil = HTTP probing disabled
 	auth    netpolicy.Authorizer // nil = every HTTP probe is refused
-
 	jobs    chan job
 	wg      sync.WaitGroup // one count per accepted job, for Wait
 	coolMu  sync.Mutex
@@ -103,23 +97,19 @@ type Engine struct {
 	workersWG sync.WaitGroup
 }
 
+// Route issues the recorder session a probe for taskID runs under and returns
+// the proxy URL carrying its credential, the CA that verifies the recorder's
+// leaves, and a release that revokes the session. An error means no probe: there
+// is no direct path.
+type Route func(ctx context.Context, taskID int64) (proxyURL, caFile string, release func(), err error)
+
 // Options configures an Engine.
 type Options struct {
 	// Workers is the pool size; <=0 means 4.
 	Workers int
-	// Proxy is the masking egress proxy URL. Empty resolves from
-	// M1NERVAC0NSOLE_EGRESS_PROXY. There is deliberately NO built-in default: a fixed
-	// loopback port may belong to an unrelated listener, and a probe sent there
-	// would not be masked (it could even be logged by whatever answers).
-	Proxy string
-	// CAFile is the proxy's PEM CA. Empty resolves from M1NERVAC0NSOLE_EGRESS_CA, then
-	// SSL_CERT_FILE. A missing or unparseable CA disables HTTP probing rather than
-	// falling back to unverified TLS.
-	CAFile string
-	// Observe, if set, receives every request/response pair the engine exchanged
-	// with the proxy, one per hop (redirects included), plus transport failures.
-	// It must be cheap and must not call back into the engine.
-	Observe func(Observation)
+	// Route supplies each HTTP probe's recorder session. Nil disables HTTP
+	// probing (DNS still runs).
+	Route Route
 	// Authorizer is the network-policy gate every HTTP probe asks before it
 	// dials. nil refuses every probe: a destination no policy answered for is
 	// not authorized, and enrichment is outbound contact like any other.
@@ -139,41 +129,15 @@ const (
 	// without limit.
 	maxCoolEntries = 8192
 	coolSweepEvery = 512
-
-	envEgressProxy = "M1NERVAC0NSOLE_EGRESS_PROXY"
-	envEgressCA    = "M1NERVAC0NSOLE_EGRESS_CA"
 )
 
-// MaskFromEnv returns the explicitly configured masking egress proxy and its CA
-// file: M1NERVAC0NSOLE_EGRESS_PROXY / M1NERVAC0NSOLE_EGRESS_CA, with SSL_CERT_FILE as the CA
-// fallback (the guest supervisor points it at the egress CA). Either may be
-// empty; the caller decides what an empty proxy means (here: no HTTP probing).
-func MaskFromEnv() (proxy, caFile string) {
-	proxy = strings.TrimSpace(os.Getenv(envEgressProxy))
-	caFile = strings.TrimSpace(os.Getenv(envEgressCA))
-	if caFile == "" {
-		caFile = strings.TrimSpace(os.Getenv("SSL_CERT_FILE"))
-	}
-	return proxy, caFile
-}
-
 // New builds the engine. HTTP probing is disabled (fail closed) when there is no
-// explicitly configured masking egress proxy or no usable CA; DNS still runs.
-// Returns a usable engine even if the resolver fails to init (DNS becomes a
-// no-op).
+// recorder route; DNS still runs. Returns a usable engine even if the resolver
+// fails to init (DNS becomes a no-op).
 func New(as *db.AssetStore, opts Options) *Engine {
 	workers := opts.Workers
 	if workers <= 0 {
 		workers = 4
-	}
-	proxy := strings.TrimSpace(opts.Proxy)
-	envProxy, envCA := MaskFromEnv()
-	if proxy == "" {
-		proxy = envProxy
-	}
-	caFile := strings.TrimSpace(opts.CAFile)
-	if caFile == "" {
-		caFile = envCA
 	}
 
 	resolv, err := dnsx.New(dnsx.Options{
@@ -189,25 +153,15 @@ func New(as *db.AssetStore, opts Options) *Engine {
 	e := &Engine{
 		as:     as,
 		resolv: resolv,
-		proxy:  proxy,
+		route:  opts.Route,
 		auth:   opts.Authorizer,
 		jobs:   make(chan job, queueSize),
 		cool:   map[string]time.Time{},
 		closed: make(chan struct{}),
 	}
 	e.ctx, e.cancel = context.WithCancel(context.Background())
-	if proxy == "" {
-		e.httpOff = fmt.Sprintf("no masking egress proxy configured (%s; no assumed default, no direct fallback)", envEgressProxy)
-	} else if client, err := buildClient(proxy, caFile, opts.Observe); err != nil {
-		e.httpOff = errDetail(err, proxy).Error() + " (no direct fallback)"
-	} else {
-		client.CheckRedirect = e.checkRedirect
-		e.client = client
-	}
-	if e.client == nil {
-		log.Printf("[enrich] HTTP probing disabled: %s", e.httpOff)
-	} else {
-		log.Printf("[enrich] HTTP probes exit via the masking egress proxy %s (CA verified; observed=%v)", RedactProxyURL(proxy), opts.Observe != nil)
+	if e.route == nil {
+		log.Printf("[enrich] HTTP probing disabled: no recorder session route is configured (no direct fallback)")
 	}
 	e.workersWG.Add(workers)
 	for range workers {
@@ -217,38 +171,34 @@ func New(as *db.AssetStore, opts Options) *Engine {
 }
 
 // buildClient returns an HTTP client that sends every request, and every
-// redirect hop, directly to the masking egress proxy. The proxy's CA is appended
-// to the system pool, so HTTPS verification stays on (the proxy re-signs the leaf
-// for the CONNECT authority, IP literals included). An absent or unusable CA is
-// an error, not a reason to skip verification.
-func buildClient(proxy, caFile string, observe func(Observation)) (*http.Client, error) {
+// redirect hop, to the recorder. Its CA is appended to the system pool, so HTTPS
+// verification stays on. An absent or unusable proxy or CA is an error, not a
+// reason to skip verification or dial directly.
+func buildClient(proxy, caFile string) (*http.Client, error) {
 	u, err := url.Parse(proxy)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("invalid egress proxy %q", RedactProxyURL(proxy))
+		return nil, fmt.Errorf("invalid recorder proxy %q", RedactProxyURL(proxy))
 	}
 	if caFile == "" {
-		return nil, fmt.Errorf("no CA configured for %s (%s or %s); HTTPS through it would not verify", RedactProxyURL(proxy), envEgressCA, "SSL_CERT_FILE")
+		return nil, fmt.Errorf("no CA for %s; HTTPS through it would not verify", RedactProxyURL(proxy))
 	}
 	pemBytes, err := os.ReadFile(caFile)
 	if err != nil {
-		return nil, fmt.Errorf("egress CA %s is unreadable: %w", caFile, err)
+		return nil, fmt.Errorf("recorder CA %s is unreadable: %w", caFile, err)
 	}
 	roots, err := x509.SystemCertPool()
 	if err != nil || roots == nil {
 		roots = x509.NewCertPool()
 	}
 	if !roots.AppendCertsFromPEM(pemBytes) {
-		return nil, fmt.Errorf("egress CA %s contains no certificates", caFile)
+		return nil, fmt.Errorf("recorder CA %s contains no certificates", caFile)
 	}
-	var rt http.RoundTripper = &http.Transport{
+	rt := &http.Transport{
 		Proxy:               http.ProxyURL(u),
 		TLSClientConfig:     &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 		DisableKeepAlives:   true,
-		DisableCompression:  true, // decoding is done in doHTTP, so Observe sees raw bytes for every encoding
+		DisableCompression:  true, // decoding is done in doHTTP for every encoding
 		TLSHandshakeTimeout: httpTimeout,
-	}
-	if observe != nil {
-		rt = &observingTransport{base: rt, observe: observe, secret: proxy}
 	}
 	return &http.Client{Transport: rt, Timeout: httpTimeout}, nil
 }
@@ -580,40 +530,51 @@ func (e *Engine) doHTTP(taskID, id int64, rawURL string) {
 	if host == "" {
 		return
 	}
-	client := e.client
-	if client == nil {
-		// No masked route: the probe is skipped rather than sent directly.
-		log.Printf("[enrich] http %s (task %d) skipped: %s", host, taskID, e.httpOff)
+	if e.route == nil {
+		// No recorder route: the probe is skipped rather than sent directly.
+		log.Printf("[enrich] http %s (task %d) skipped: no recorder session route is configured (no direct fallback)", host, taskID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(withTaskID(e.ctx, taskID), httpTimeout)
 	defer cancel()
+	// One session per probe, revoked when it ends, so the credential never
+	// outlives the request it was issued for.
+	proxyURL, caFile, release, err := e.route(ctx, taskID)
+	if err != nil {
+		log.Printf("[enrich] http %s (task %d) skipped: no recorder session (%v; no direct fallback)", host, taskID, errDetail(err))
+		return
+	}
+	defer release()
+	client, err := buildClient(proxyURL, caFile)
+	if err != nil {
+		log.Printf("[enrich] http %s (task %d) skipped: %v (no direct fallback)", host, taskID, errDetail(err, proxyURL))
+		return
+	}
+	client.CheckRedirect = e.checkRedirect
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		log.Printf("[enrich] http %s (task %d): %v", host, taskID, errDetail(err, rawURL))
 		return
 	}
 	useragent.SetIfAbsent(req.Header.Set, req.Header.Get("User-Agent"))
-	// The probe keeps the raw wire bytes for its observation, so it must name
-	// every coding decodeBody handles: the masker only forwards a coding the
-	// caller accepted, and decodes anything else itself. The masker replaces
-	// this header upstream anyway, so the origin still sees the browser's set.
+	// The probe decodes the body itself (decodeBody), so it names every coding
+	// it handles; the gateway's navigation mask fills Accept-Encoding only when
+	// the caller left it out.
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	resp, err := client.Do(req)
 	if err != nil {
-		// The masking route is the only way out; a failure here is final (there is
-		// no direct retry), and the URL may carry credentials, so only the host and
+		// The recorder is the only way out; a failure here is final (there is no
+		// direct retry), and the URL may carry credentials, so only the host and
 		// the scrubbed cause are logged.
-		log.Printf("[enrich] http %s (task %d) via %s: %v", host, taskID, RedactProxyURL(e.proxy), errDetail(err, rawURL, e.proxy))
+		log.Printf("[enrich] http %s (task %d) via %s: %v", host, taskID, RedactProxyURL(proxyURL), errDetail(err, rawURL, proxyURL))
 		return
 	}
 	defer resp.Body.Close()
-	// The proxy answers a CONNECT before it dials the target, so a failure it
-	// hit on the way can arrive here as an ordinary response. The header says
-	// so; storing that status would record the proxy's failure as the site's
-	// answer and bump last_seen for a host that never answered.
-	if origin := resp.Header.Get(egress.HeaderEgress); origin != "" {
-		log.Printf("[enrich] http %s (task %d): egress proxy reported %s; the target did not answer", host, taskID, origin)
+	// The gateway answers a refused or failed origin dial itself and names the
+	// stage in a header; storing that status would record the gateway's refusal
+	// as the site's answer and bump last_seen for a host that never answered.
+	if stage := resp.Header.Get(gateway.HeaderStage); stage != "" {
+		log.Printf("[enrich] http %s (task %d): the gateway refused or failed the request at %s; the target did not answer", host, taskID, stage)
 		return
 	}
 	// The probe advertised every coding it decodes, so the masker forwards the
@@ -629,13 +590,13 @@ func (e *Engine) doHTTP(taskID, id int64, rawURL string) {
 	case errors.Is(derr, errUnsupportedEncoding):
 		undecodable = true // status and headers are still real; no title from compressed bytes
 	case derr != nil:
-		log.Printf("[enrich] http %s (task %d): decoding the response failed: %v", host, taskID, errDetail(derr, rawURL, e.proxy))
+		log.Printf("[enrich] http %s (task %d): decoding the response failed: %v", host, taskID, errDetail(derr, rawURL, proxyURL))
 		return
 	default:
 		var rerr error
 		body, rerr = io.ReadAll(io.LimitReader(dec, maxBodyBytes+1))
 		if rerr != nil {
-			log.Printf("[enrich] http %s (task %d): reading the response failed: %v", host, taskID, errDetail(rerr, rawURL, e.proxy))
+			log.Printf("[enrich] http %s (task %d): reading the response failed: %v", host, taskID, errDetail(rerr, rawURL, proxyURL))
 			return
 		}
 	}

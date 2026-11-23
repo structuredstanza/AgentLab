@@ -1,6 +1,7 @@
 package execbox
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -24,8 +25,15 @@ import (
 // resolv.conf names that address, and forwarding to the operator's resolver is
 // the supervisor's decision rather than a route the session can take itself.
 
+// netnsDir is the kernel's named-network-namespace directory, and netnsPrefix
+// marks the entries this supervisor owns; the startup sweep reads both.
+const (
+	netnsDir    = "/run/netns"
+	netnsPrefix = "eb-"
+)
+
 // netnsName is the /run/netns entry for a session handle.
-func netnsName(handle string) string { return "eb-" + handle }
+func netnsName(handle string) string { return netnsPrefix + handle }
 
 // vethNames returns the root-side and session-side interface names, both within
 // the kernel's 15-character limit.
@@ -36,10 +44,10 @@ func vethNames(handle string) (outer, inner string) { return "eb" + handle + "o"
 // `ip netns add` does internally; doing it ourselves keeps the name tied to the
 // session handle and lets teardown be symmetric.
 func linkSessionNetns(name string, pid int) error {
-	if err := os.MkdirAll("/run/netns", 0o755); err != nil {
+	if err := os.MkdirAll(netnsDir, 0o755); err != nil {
 		return fmt.Errorf("netns: %w", err)
 	}
-	target := "/run/netns/" + name
+	target := netnsDir + "/" + name
 	// The mountpoint is a regular file, the way `ip netns add` creates it: the
 	// namespace is a file in nsfs, not a directory.
 	f, err := os.OpenFile(target, os.O_CREATE|os.O_RDONLY, 0o644)
@@ -54,10 +62,49 @@ func linkSessionNetns(name string, pid int) error {
 	return nil
 }
 
-func unlinkSessionNetns(name string) {
-	target := "/run/netns/" + name
-	_ = syscall.Unmount(target, syscall.MNT_DETACH)
-	_ = os.Remove(target)
+// unlinkSessionNetns removes the named namespace and reports whether it is gone.
+// A session's own mount namespace can hold a propagated copy for a moment after
+// its processes exit, so a single unmount can leave the name in place; the file
+// is then the only record the startup sweep has, because teardown removes the
+// session's state directory regardless.
+func unlinkSessionNetns(name string) error {
+	target := netnsDir + "/" + name
+	var err error
+	for range 25 {
+		_ = syscall.Unmount(target, syscall.MNT_DETACH)
+		if err = os.Remove(target); err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("netns %s not removed: %w", name, err)
+}
+
+// netnsInUse reports whether any process on the host is in the named namespace.
+// The startup sweep uses it as the ownership proof for a namespace it found by
+// name alone: another supervisor's live session is in use, a leak is not. The
+// comparison is by inode, because /run/netns/<name> and /proc/<pid>/ns/net are
+// different paths onto the same nsfs object.
+func netnsInUse(name string) bool {
+	var want syscall.Stat_t
+	if err := syscall.Stat(netnsDir+"/"+name, &want); err != nil {
+		return false
+	}
+	procs, err := os.ReadDir("/proc")
+	if err != nil {
+		return true // cannot prove it is dead, so never touch it
+	}
+	for _, p := range procs {
+		if _, err := strconv.Atoi(p.Name()); err != nil {
+			continue
+		}
+		var got syscall.Stat_t
+		if err := syscall.Stat("/proc/"+p.Name()+"/ns/net", &got); err == nil &&
+			got.Ino == want.Ino && got.Dev == want.Dev {
+			return true
+		}
+	}
+	return false
 }
 
 // mountBind bind-mounts src at dst, which must already exist.
@@ -133,7 +180,13 @@ func (s *session) setupNetwork() error {
 		return err
 	}
 
-	stop, err := startResolver(s.rootIP+":53", s.cfg.Resolver)
+	if s.lane != nil {
+		if err := s.setLane(s.spec.Lane); err != nil {
+			return fmt.Errorf("lane: %w", err)
+		}
+	}
+
+	stop, err := startResolver(s.rootIP+":53", s.cfg.Resolver, s.observeDNS)
 	if err != nil {
 		return fmt.Errorf("resolver: %w", err)
 	}
@@ -166,12 +219,17 @@ func (s *session) installRules() error {
 	if err := run("filter", "-N", chain); err != nil {
 		return err
 	}
+	// Every admission names the session's root address: matching the port alone
+	// let any destination:<gwPort> reach the recorder, so a port scan reported
+	// the platform's own proxy as an open port on the target. Refusals are
+	// admin-prohibited so a scanner reads "filtered", never "closed".
 	rules := [][]string{
+		{"!", "-s", s.sessIP, "-j", "DROP"},
 		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
-		{"-p", "tcp", "--dport", gwPort, "-j", "ACCEPT"},
-		{"-p", "udp", "--dport", "53", "-j", "ACCEPT"},
-		{"-p", "tcp", "--dport", "53", "-j", "ACCEPT"},
-		{"-j", "REJECT"},
+		{"-d", gwHost, "-p", "tcp", "--dport", gwPort, "-j", "ACCEPT"},
+		{"-d", s.rootIP, "-p", "udp", "--dport", "53", "-j", "ACCEPT"},
+		{"-d", s.rootIP, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"},
+		{"-j", "REJECT", "--reject-with", "icmp-admin-prohibited"},
 	}
 	for _, r := range rules {
 		if err := run("filter", append([]string{"-A", chain}, r...)...); err != nil {
@@ -181,14 +239,40 @@ func (s *session) installRules() error {
 	if err := run("filter", "-A", "INPUT", "-i", outer, "-j", chain); err != nil {
 		return err
 	}
-	if err := run("filter", "-A", "FORWARD", "-i", outer, "-j", "REJECT"); err != nil {
+	if err := run("filter", "-A", "FORWARD", "-i", outer, "-j", "REJECT", "--reject-with", "icmp-admin-prohibited"); err != nil {
 		return err
 	}
-	if err := run("nat", "-A", "PREROUTING", "-i", outer, "-p", "tcp", "--dport", gwPort,
+	// Nothing may be forwarded toward the session unless the lane's chain
+	// (jumped to first) admitted it as the reply to an authorized flow.
+	if err := run("filter", "-A", "FORWARD", "-o", outer, "-j", "DROP"); err != nil {
+		return err
+	}
+	if err := run("nat", "-A", "PREROUTING", "-i", outer, "-d", s.rootIP, "-p", "tcp", "--dport", gwPort,
 		"-j", "DNAT", "--to-destination", net.JoinHostPort(gwHost, gwPort)); err != nil {
 		return err
 	}
 	return nil
+}
+
+// relayFramed copies DNS-over-TCP replies from up to conn, one length-prefixed
+// message at a time so observe sees whole messages.
+func relayFramed(conn, up net.Conn, observe func([]byte)) {
+	for {
+		var hdr [2]byte
+		if _, err := io.ReadFull(up, hdr[:]); err != nil {
+			return
+		}
+		msg := make([]byte, binary.BigEndian.Uint16(hdr[:]))
+		if _, err := io.ReadFull(up, msg); err != nil {
+			return
+		}
+		if observe != nil {
+			observe(msg)
+		}
+		if _, err := conn.Write(append(hdr[:], msg...)); err != nil {
+			return
+		}
+	}
 }
 
 // installSessionRules writes the session's own default-deny rules. They are
@@ -210,10 +294,15 @@ func (s *session) installSessionRules() error {
 	rules := [][]string{
 		{"-o", "lo", "-j", "ACCEPT"},
 		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
-		{"-p", "tcp", "--dport", gwPort, "-j", "ACCEPT"},
-		{"-p", "udp", "--dport", "53", "-j", "ACCEPT"},
-		{"-p", "tcp", "--dport", "53", "-j", "ACCEPT"},
-		{"-j", "REJECT"},
+		{"-d", s.rootIP, "-p", "tcp", "--dport", gwPort, "-j", "ACCEPT"},
+		{"-d", s.rootIP, "-p", "udp", "--dport", "53", "-j", "ACCEPT"},
+		{"-d", s.rootIP, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"},
+		{"-j", "REJECT", "--reject-with", "icmp-admin-prohibited"},
+	}
+	if s.lane != nil {
+		// The root FORWARD chain judges a lane's traffic in both directions;
+		// the session only has to let it leave.
+		rules[len(rules)-1] = []string{"-j", "ACCEPT"}
 	}
 	for _, r := range rules {
 		if err := run(append([]string{"-A", "OUTPUT"}, r...)...); err != nil {
@@ -267,7 +356,9 @@ func randomSubnet() (root, sess string, err error) {
 // startResolver runs a forwarding DNS relay on addr (the session's view of the
 // resolver) and returns a stop function. It forwards to upstream only; it is not
 // a general network path, and the session cannot reach the upstream directly.
-func startResolver(addr, upstream string) (func(), error) {
+// observe, when set, sees every reply before the session does (the direct lane
+// uses it to admit the addresses of an authorized hostname).
+func startResolver(addr, upstream string, observe func(reply []byte)) (func(), error) {
 	up, err := net.ResolveUDPAddr("udp", upstream)
 	if err != nil {
 		return nil, fmt.Errorf("resolver upstream %q: %w", upstream, err)
@@ -309,6 +400,10 @@ func startResolver(addr, upstream string) (func(), error) {
 				if err != nil {
 					return
 				}
+				// The session sees the answer only after the lane knows it.
+				if observe != nil {
+					observe(reply[:n])
+				}
 				_, _ = pc.WriteTo(reply[:n], from)
 			}()
 		}
@@ -331,7 +426,7 @@ func startResolver(addr, upstream string) (func(), error) {
 				}
 				defer up.Close()
 				go func() { _, _ = io.Copy(up, conn) }()
-				_, _ = io.Copy(conn, up)
+				relayFramed(conn, up, observe)
 			}()
 		}
 	}()

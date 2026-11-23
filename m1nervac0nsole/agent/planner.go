@@ -392,7 +392,7 @@ const plannerMemoryGuidance = "\n\n**Operational memory (opsec and noise)**:\n" 
 
 func plannerSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + artifactSpec(workDir) + plannerMemoryGuidance + langDirective()
+	return body + artifactSpec(workDir) + plannerMemoryGuidance + evidenceResearchGuidance + langDirective()
 }
 
 // Plan runs one planning round. emit, if non-nil, receives the planner's execution

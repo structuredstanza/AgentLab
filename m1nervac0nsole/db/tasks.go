@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -56,6 +57,8 @@ type Task struct {
 	// PlanQuietMode gates the planner quiet-mode (#86): edge-triggered rounds
 	// are skipped while work is in flight and the open-goal set is unchanged.
 	PlanQuietMode bool `json:"plan_quiet_mode"`
+	// SpeedProfile is the operator-chosen pacing intent (stealth|careful|standard|unbound).
+	SpeedProfile string `json:"speed_profile"`
 	// CoverageEnabled is the master switch of the "asset coverage" feature (default true). When false:
 	// do not compute/show test coverage, do not auto-accumulate task_scope (source=auto), do not open
 	// add_task_scope/list_untested_assets to the agent, and do not inject the coverage block into the
@@ -173,6 +176,8 @@ type TaskCreateOptions struct {
 	PlanHeartbeatSeconds int
 	// PlanQuietMode is the per-task quiet-mode switch; nil = default on (#86).
 	PlanQuietMode *bool
+	// SpeedProfile: empty = default "standard"; anything else must be a valid profile.
+	SpeedProfile string
 	// CoverageEnabled is the "asset coverage" feature switch; nil=default on (true), letting
 	// creation paths that do not care about the switch (orchestration spawn, old API) keep the
 	// original behavior. Only web task creation can explicitly pass false to turn it off.
@@ -190,6 +195,12 @@ type TaskCreateOptions struct {
 
 // CreateTaskWithOptions commits a task, its exploration, relations, and initial credentials together.
 func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOptions) (*Task, error) {
+	if opts.SpeedProfile == "" {
+		opts.SpeedProfile = SpeedProfileStandard
+	}
+	if !ValidSpeedProfile(opts.SpeedProfile) {
+		return nil, ErrTaskSpeedProfileInvalid
+	}
 	if len(opts.SourceTaskIDs) > MaxTaskSourceCount {
 		return nil, fmt.Errorf("too many source tasks: got %d, maximum is %d", len(opts.SourceTaskIDs), MaxTaskSourceCount)
 	}
@@ -269,11 +280,12 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		PlanQuietMode:   quietMode,
 		LLMRotate:       rotate,
 		CoverageEnabled: coverageEnabled,
+		SpeedProfile:    opts.SpeedProfile,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, plan_quiet_mode, coverage_enabled, llm_rotate)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, quietMode, coverageEnabled, rotate).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, plan_quiet_mode, coverage_enabled, llm_rotate, speed_profile)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, quietMode, coverageEnabled, rotate, opts.SpeedProfile).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {
@@ -394,11 +406,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, COALESCE(blocked_reason,''), paused, paused_at, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(plan_quiet_mode,true), COALESCE(coverage_enabled,true), COALESCE(llm_rotate,false), first_run_at, deadline_at`
+description, goal, exploration_id, status, COALESCE(blocked_reason,''), paused, paused_at, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(plan_quiet_mode,true), COALESCE(coverage_enabled,true), COALESCE(llm_rotate,false), first_run_at, deadline_at, speed_profile`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.BlockedReason, &t.Paused, &t.PausedAt, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.PlanQuietMode, &t.CoverageEnabled, &t.LLMRotate, &t.FirstRunAt, &t.DeadlineAt); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.BlockedReason, &t.Paused, &t.PausedAt, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.PlanQuietMode, &t.CoverageEnabled, &t.LLMRotate, &t.FirstRunAt, &t.DeadlineAt, &t.SpeedProfile); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
@@ -444,11 +456,16 @@ type TaskPatch struct {
 	Pinned *bool
 	// PlanQuietMode flips the per-task quiet-mode switch (#86); nil = leave unchanged.
 	PlanQuietMode *bool
+	// SpeedProfile changes the pacing profile; nil = leave unchanged, invalid = ErrTaskSpeedProfileInvalid.
+	SpeedProfile *string
 }
 
 // UpdateTask applies a partial task name/pin mutation and returns the updated row.
 // Re-pinning an already pinned task preserves its original position.
 func (d *DB) UpdateTask(id int64, patch TaskPatch) (*Task, error) {
+	if patch.SpeedProfile != nil && !ValidSpeedProfile(*patch.SpeedProfile) {
+		return nil, ErrTaskSpeedProfileInvalid
+	}
 	task, err := scanTask(d.QueryRow(`UPDATE tasks SET
 	name = CASE WHEN $2::boolean THEN $3 ELSE name END,
 	pinned_at = CASE
@@ -456,9 +473,10 @@ func (d *DB) UpdateTask(id int64, patch TaskPatch) (*Task, error) {
 		WHEN $4::boolean THEN COALESCE(pinned_at, now())
 		ELSE NULL
 	END,
-	plan_quiet_mode = CASE WHEN $5::boolean THEN $6 ELSE plan_quiet_mode END
+	plan_quiet_mode = CASE WHEN $5::boolean THEN $6 ELSE plan_quiet_mode END,
+	speed_profile = COALESCE($7::text, speed_profile)
 WHERE id=$1 AND deleted_at IS NULL
-RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned, patch.PlanQuietMode != nil, patch.PlanQuietMode))
+RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned, patch.PlanQuietMode != nil, patch.PlanQuietMode, patch.SpeedProfile))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -572,6 +590,58 @@ WHERE deleted_at IS NULL AND blocked_reason <> ''`)
 			return nil, err
 		}
 		out[id] = reason
+	}
+	return out, rows.Err()
+}
+
+// Task speed profiles express operator pacing intent; none enforces a rate ceiling.
+const (
+	SpeedProfileStealth  = "stealth"
+	SpeedProfileCareful  = "careful"
+	SpeedProfileStandard = "standard"
+	SpeedProfileUnbound  = "unbound"
+)
+
+// ErrTaskSpeedProfileInvalid reports a speed profile outside the four known values.
+var ErrTaskSpeedProfileInvalid = errors.New("invalid speed profile: must be stealth, careful, standard or unbound")
+
+// ValidSpeedProfile reports whether s is one of the four speed profiles.
+func ValidSpeedProfile(s string) bool {
+	switch s {
+	case SpeedProfileStealth, SpeedProfileCareful, SpeedProfileStandard, SpeedProfileUnbound:
+		return true
+	}
+	return false
+}
+
+// TaskSpeedProfile returns the persisted speed profile of one alive task
+// (sql.ErrNoRows when it does not exist).
+func (d *DB) TaskSpeedProfile(taskID int64) (string, error) {
+	return d.TaskSpeedProfileContext(context.Background(), taskID)
+}
+
+// TaskSpeedProfileContext lets callers bound a speed-profile read on hot paths.
+func (d *DB) TaskSpeedProfileContext(ctx context.Context, taskID int64) (string, error) {
+	var profile string
+	err := d.QueryRowContext(ctx, `SELECT speed_profile FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&profile)
+	return profile, err
+}
+
+// TaskSpeedProfiles returns the speed profile of every alive task, keyed by task id.
+func (d *DB) TaskSpeedProfiles() (map[int64]string, error) {
+	rows, err := d.Query(`SELECT id, speed_profile FROM tasks WHERE deleted_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var profile string
+		if err := rows.Scan(&id, &profile); err != nil {
+			return nil, err
+		}
+		out[id] = profile
 	}
 	return out, rows.Err()
 }

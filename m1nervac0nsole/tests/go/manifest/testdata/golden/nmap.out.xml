@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<nmaprun scanner="nmap" args="nmap -oX - -p 8099,22 127.0.0.1" version="7.93">
+<nmaprun scanner="nmap" args="nmap --privileged -Pn -n -sS -oX - -p 8099,22 127.0.0.1" version="7.93">
 <host><status state="up" reason="localhost-response"/>
 <address addr="127.0.0.1" addrtype="ipv4"/>
 <hostnames><hostname name="localhost" type="PTR"/></hostnames>

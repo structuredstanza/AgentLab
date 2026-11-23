@@ -6,25 +6,23 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
-	"github.com/structuredstanza/AgentLab/m1nervac0nsole/egress"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/enrich"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/traffic"
 )
 
-// With traffic capture ON, a real recorder, a real masking proxy and TLS origins,
-// enrichment goes straight to the mask in every case (hostname or IP literal,
-// redirects included) with verification on, and what it exchanged is stored
-// through the existing RecordExternal path — only when the evidence is exact.
-func TestManagerEnrichmentWithCaptureOnAndTLSOrigins(t *testing.T) {
+// Enrichment goes through the real recorder and gateway under a backend-issued
+// enrichment session: the origin sees the Chrome identity and navigation headers
+// the gateway applies to that session, the recorder stores the exchange against
+// the task, an origin outside the task's grant is never contacted, the session
+// is revoked afterwards, and with capture off nothing is probed (no direct path).
+func TestManagerEnrichmentGoesThroughTheRecorderSession(t *testing.T) {
 	dsn, _, err := db.DSN()
 	if err != nil {
 		t.Skipf("no database config (%v)", err)
@@ -34,83 +32,76 @@ func TestManagerEnrichmentWithCaptureOnAndTLSOrigins(t *testing.T) {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
 	defer pg.Close()
-	task, err := pg.CreateTask("manager enrich capture", "mask direct with first-party capture", nil, 0, 0)
+	task, err := pg.CreateTask("manager enrich session", "enrichment through the recorder", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pg.DeleteTask(task.ID)
 	as := pg.Assets()
 
-	edir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(edir, "user-agent.txt"), []byte("ManagerMask/1.0\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ca, err := egress.LoadOrCreateCA(edir)
+	m := &Manager{pg: pg, assets: as, trafficOn: true}
+	m.gw = m.newGatewayTransport()
+	addr := freeServerLoopbackAddr(t)
+	tr, err := openRecorder(filepath.Join(t.TempDir(), "traffic"), addr, m.gw)
 	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := egress.LoadIdentity(edir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mask, err := egress.New("127.0.0.1:0", ca, identity, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mctx, mcancel := context.WithCancel(context.Background())
-	mdone := make(chan struct{})
-	go func() { defer close(mdone); _ = mask.Serve(mctx) }()
-	defer func() {
-		mcancel()
-		_ = mask.Close()
-		select {
-		case <-mdone:
-		case <-time.After(5 * time.Second):
-		}
-	}()
-
-	// Real traffic store (capture ON). Its recorder is not in the probe path.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	raddr := ln.Addr().String()
-	_ = ln.Close()
-	tr, err := traffic.OpenWithTransport(t.TempDir(), raddr, nil)
-	if err != nil {
-		t.Fatalf("open traffic store: %v", err)
+		t.Fatalf("open recorder: %v", err)
 	}
 	defer tr.Close()
-
-	m := &Manager{
-		pg: pg, assets: as, traffic: tr, trafficOn: true,
-		enrichMask: "http://" + mask.Addr(), enrichMaskCA: filepath.Join(edir, "ca.pem"),
-	}
-	// Enrichment asks the network policy before it dials: authorize the fixture origins.
-	for _, pattern := range []string{"localhost", "127.0.0.1"} {
-		if _, err := pg.AddPolicyRule(t.Context(), task.ID, netpolicy.Rule{Effect: "include", Pattern: pattern, Authorized: true}, "operator"); err != nil {
-			t.Fatalf("authorize %s: %v", pattern, err)
-		}
-	}
-	engine := enrich.New(as, enrich.Options{Workers: 1, Proxy: m.enrichMask, CAFile: m.enrichMaskCA, Observe: m.observeEnrichment, Authorizer: netpolicy.NewAuthorizer(pg)})
-	defer engine.Close()
+	m.traffic = tr
+	go func() { _ = tr.Start() }()
+	waitServerListening(t, addr)
 
 	var mu sync.Mutex
-	var uas []string
-	origin := func(h http.HandlerFunc) *httptest.Server {
-		return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mu.Lock()
-			uas = append(uas, r.Header.Get("User-Agent"))
-			mu.Unlock()
-			h(w, r)
-		}))
+	var seenUA, seenMode string
+	hits := 0
+	granted := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seenUA, seenMode = r.Header.Get("User-Agent"), r.Header.Get("Sec-Fetch-Mode")
+		hits++
+		mu.Unlock()
+		io.WriteString(w, "<html><title>Via Recorder</title></html>")
+	}))
+	defer granted.Close()
+	// A second origin on another loopback address is outside the task's grant.
+	ln, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.2: %v", err)
 	}
-	probe := func(t *testing.T, rawURL string) (title string, status *int) {
+	outside := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		io.WriteString(w, "<html><title>Outside</title></html>")
+	}))
+	_ = outside.Listener.Close()
+	outside.Listener = ln
+	outside.StartTLS()
+	defer outside.Close()
+
+	// The grant covers 127.0.0.1 only; the origins' certificates are self-signed,
+	// so the operator's certificate exception for the granted authority applies.
+	for _, pattern := range []string{"localhost", "127.0.0.1"} {
+		if _, err := pg.AddPolicyRule(t.Context(), task.ID, netpolicy.Rule{Effect: "include", Pattern: pattern, Authorized: true}, "operator"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A hostname, not the IP literal: Go sends no SNI for an IP.
+	grantedURL := strings.Replace(granted.URL, "127.0.0.1", "localhost", 1)
+	if err := pg.AddCertException(t.Context(), task.ID, "localhost", "fixture origin", nil, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	engine := enrich.New(as, enrich.Options{Workers: 1, Route: m.enrichRoute, Authorizer: netpolicy.NewAuthorizer(pg)})
+	defer engine.Close()
+
+	probe := func(rawURL string) (string, *int) {
 		t.Helper()
 		id, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: rawURL, TaskID: task.ID})
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer as.DeleteByHost("localhost")
+		defer as.DeleteByHost("127.0.0.1")
+		defer as.DeleteByHost("127.0.0.2")
 		engine.ProbeSite(task.ID, id, rawURL)
 		engine.Wait()
 		rows, err := as.GetByIDs([]int64{id})
@@ -119,113 +110,107 @@ func TestManagerEnrichmentWithCaptureOnAndTLSOrigins(t *testing.T) {
 		}
 		return rows[0].PageTitle, rows[0].StatusCode
 	}
-	count := func() int { n, _ := tr.Count(); return n }
 
-	// Redirects: hostname -> final on an IP literal. Both hops are verified (the
-	// mask mints the leaf for the CONNECT authority, IPs included) and recorded.
-	t.Run("hostname redirecting to an https IP literal, every hop recorded", func(t *testing.T) {
-		final := origin(func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, "<html><title>Chain Final</title></html>")
-		})
-		defer final.Close()
-		hop := origin(func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, final.URL+"/landing", http.StatusFound) // https://127.0.0.1:port
-		})
-		defer hop.Close()
-		defer as.DeleteByHost("localhost")
-		defer as.DeleteByHost("127.0.0.1")
-		before := count()
-		title, status := probe(t, strings.Replace(hop.URL, "127.0.0.1", "localhost", 1)+"/start")
-		if title != "Chain Final" || status == nil || *status != http.StatusOK {
-			t.Fatalf("redirect chain not persisted: title=%q status=%v", title, status)
-		}
-		if got := count() - before; got != 2 {
-			t.Fatalf("expected both redirect hops recorded, got %d new exchanges", got)
-		}
-	})
-
-	t.Run("https IP literal, no special route", func(t *testing.T) {
-		o := origin(func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, "<html><title>IP Origin</title></html>")
-		})
-		defer o.Close()
-		defer as.DeleteByHost("127.0.0.1")
-		before := count()
-		title, status := probe(t, o.URL+"/ip")
-		if title != "IP Origin" || status == nil || *status != http.StatusOK {
-			t.Fatalf("IP-literal TLS probe not persisted: title=%q status=%v", title, status)
-		}
-		if got := count() - before; got != 1 {
-			t.Fatalf("expected 1 recorded exchange, got %d", got)
-		}
-	})
-
-	t.Run("an over-cap body is stored as a partial exchange", func(t *testing.T) {
-		// Over the 256 KiB observation cap, under the probe's 1 MiB read cap, so
-		// the full length is exact.
-		bigBody := "<title>Big Page</title>" + strings.Repeat("x", 400<<10)
-		big := origin(func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, bigBody)
-		})
-		defer big.Close()
-		defer as.DeleteByHost("127.0.0.1")
-		before := count()
-		title, status := probe(t, big.URL+"/big")
-		if title != "Big Page" || status == nil {
-			t.Fatalf("big page not enriched: title=%q status=%v", title, status)
-		}
-		if got := count() - before; got != 1 {
-			t.Fatalf("an over-cap probe must leave one exchange, got %d", got)
-		}
-		rows, _, err := tr.Page(traffic.PageQuery{RespMin: -1, RespMax: -1}, 0, 1)
-		if err != nil || len(rows) != 1 {
-			t.Fatalf("load the recorded exchange: %d rows, err=%v", len(rows), err)
-		}
-		if rows[0].RespLen != len(bigBody) {
-			t.Fatalf("resp_len = %d, want the declared %d", rows[0].RespLen, len(bigBody))
-		}
-		_, resp, err := tr.Get(rows[0].ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(resp, "body not captured in full: partial") {
-			t.Fatalf("the partial marker is missing: %q", resp)
-		}
-		_, body, ok := strings.Cut(resp, "\n\n")
-		if !ok || len(body) != 256<<10 {
-			t.Fatalf("stored body = %d bytes, want the 256 KiB prefix", len(body))
-		}
-	})
-
-	t.Run("capture off stores nothing", func(t *testing.T) {
-		m.mu.Lock()
-		m.trafficOn = false
-		m.mu.Unlock()
-		defer func() {
-			m.mu.Lock()
-			m.trafficOn = true
-			m.mu.Unlock()
-		}()
-		o := origin(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "<title>Quiet</title>") })
-		defer o.Close()
-		defer as.DeleteByHost("127.0.0.1")
-		before := count()
-		if title, _ := probe(t, o.URL+"/quiet"); title != "Quiet" {
-			t.Fatalf("probe failed with capture off: %q", title)
-		}
-		if got := count() - before; got != 0 {
-			t.Fatalf("capture is off but %d exchange(s) were stored", got)
-		}
-	})
+	title, status := probe(grantedURL + "/in")
+	if title != "Via Recorder" || status == nil || *status != http.StatusOK {
+		t.Fatalf("probe through the recorder not persisted: title=%q status=%v", title, status)
+	}
+	mu.Lock()
+	ua, mode := seenUA, seenMode
+	mu.Unlock()
+	if !strings.Contains(ua, "Chrome/") {
+		t.Fatalf("origin saw User-Agent %q, want the Chrome identity", ua)
+	}
+	if mode != "navigate" {
+		t.Fatalf("origin saw Sec-Fetch-Mode %q: the enrichment session did not get navigation masking", mode)
+	}
+	if _, total, err := tr.Page(traffic.PageQuery{TaskID: task.ID, RespMin: -1, RespMax: -1}, 0, 10); err != nil || total != 1 {
+		t.Fatalf("recorder stored %d exchange(s) for the task (err=%v), want the probe's one", total, err)
+	}
+	m.sessMu.RLock()
+	live := len(m.sessions)
+	m.sessMu.RUnlock()
+	if live != 0 {
+		t.Fatalf("%d gateway session(s) still live after the probe batch", live)
+	}
 
 	mu.Lock()
-	defer mu.Unlock()
-	if len(uas) == 0 {
-		t.Fatal("no origin was reached")
+	before := hits
+	mu.Unlock()
+	if title, status := probe(outside.URL + "/out"); status != nil || title != "" {
+		t.Fatalf("an origin outside the grant was probed: title=%q status=%v", title, status)
 	}
-	for _, ua := range uas {
-		if ua != "ManagerMask/1.0" {
-			t.Fatalf("an origin saw User-Agent %q, want the mask's identity", ua)
+	mu.Lock()
+	after := hits
+	mu.Unlock()
+	if after != before {
+		t.Fatalf("the out-of-grant origin was contacted %d time(s)", after-before)
+	}
+
+	// Capture off: no recorder to probe through, and no direct fallback.
+	m.mu.Lock()
+	m.trafficOn = false
+	m.mu.Unlock()
+	if _, status := probe(grantedURL + "/off"); status != nil {
+		t.Fatalf("a probe ran with capture off: status=%d", *status)
+	}
+}
+
+// Each speed profile maps to its masking level, enrichment sessions always get
+// navigation masking, and a session with no task (research, install) gets the
+// default.
+func TestMaskForMapsProfilesAndEnrichment(t *testing.T) {
+	for profile, want := range map[string]string{
+		db.SpeedProfileStealth:  "navigation",
+		db.SpeedProfileCareful:  "ua",
+		db.SpeedProfileStandard: "ua",
+		db.SpeedProfileUnbound:  "ua",
+		"no-such-profile":       "ua",
+		"":                      "ua",
+	} {
+		if got := string(maskForProfile(profile)); got != want {
+			t.Errorf("maskForProfile(%q) = %q, want %q", profile, got, want)
 		}
+	}
+	m := &Manager{}
+	for name, tc := range map[string]struct {
+		s    netpolicy.Session
+		want string
+	}{
+		"enrichment":       {netpolicy.Session{ID: enrichSessionPrefix + "abc", TaskID: 5, Purpose: netpolicy.PurposeTesting}, "navigation"},
+		"research no task": {netpolicy.Session{ID: "r", Purpose: netpolicy.PurposeResearch}, "ua"},
+		"install no task":  {netpolicy.Session{ID: "i", Purpose: netpolicy.PurposeInstall}, "ua"},
+	} {
+		if got := string(m.maskFor(tc.s)); got != tc.want {
+			t.Errorf("%s: maskFor = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// maskFor must not read PostgreSQL per gateway request: two requests inside the
+// TTL cost one profile read, and a stealth task maps to navigation masking.
+func TestMaskForCachesTheTaskProfile(t *testing.T) {
+	reads := 0
+	m := &Manager{}
+	m.readProfile = func(ctx context.Context, _ int64) (string, error) {
+		reads++
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("profile read has no deadline")
+		}
+		if !m.profMu.TryLock() {
+			t.Error("profile cache is locked during the database read")
+		} else {
+			m.profMu.Unlock()
+		}
+		return db.SpeedProfileStealth, nil
+	}
+	s := netpolicy.Session{ID: "s", TaskID: 9, Purpose: netpolicy.PurposeTesting}
+	for range 2 {
+		if got := m.maskFor(s); got != "navigation" {
+			t.Fatalf("maskFor = %q, want navigation", got)
+		}
+	}
+	if reads != 1 {
+		t.Fatalf("TaskSpeedProfile read %d times for two requests inside the TTL, want 1", reads)
 	}
 }

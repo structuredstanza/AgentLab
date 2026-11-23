@@ -254,7 +254,8 @@ export function BrowserTab({ taskId }: { taskId: string }) {
   else if (state === "error") badge = "destructive";
 
   return (
-    <section className="flex min-w-0 flex-col gap-3 border-border border-t pt-3">
+    // Same window-fit height as the Sessions tab, so the surface never scrolls the page.
+    <section className="flex h-[calc(100svh-10rem)] min-w-0 flex-col gap-3 border-border border-t pt-3 lg:h-[calc(100svh-13rem)]">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <Switch
@@ -313,7 +314,7 @@ export function BrowserTab({ taskId }: { taskId: string }) {
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the surface is the page's keyboard target; role=application makes it interactive.
         tabIndex={0}
         aria-label={t("canvasLabel")}
-        className="relative aspect-[16/10] w-full overflow-hidden border border-border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="relative min-h-60 w-full flex-1 overflow-hidden border border-border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
         onMouseDown={onMouseDown}
         onMouseUp={onMouseUp}
         onMouseMove={onMouseMove}

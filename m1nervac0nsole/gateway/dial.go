@@ -16,25 +16,33 @@ import (
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
 )
 
-// Dial authorizes the CONNECT authority, resolves it, checks every answer and
-// opens the transport connection to the pinned address. It runs before the
-// proxy answers 200, so a refusal is what the client sees instead of a tunnel
-// that was never opened.
+// Dial authorizes the CONNECT authority, judges its DNS or task-recorded
+// addresses, and opens the connection to a pinned address. It runs before the
+// proxy answers 200, so the client sees a refusal instead of an unopened tunnel.
 func (t *Transport) Dial(ctx context.Context, connCtx *mproxy.ConnContext, req *http.Request) (net.Conn, error) {
 	s, ok := t.session(req, connCtx)
 	if !ok {
 		return nil, noSession(req, "no backend-issued session for this connection")
 	}
 	d := dialDestination(req)
-	if dec := t.cfg.Authorizer.Authorize(ctx, s, d); !dec.Allow {
-		t.dropSession(s.ID)
-		return nil, originError(dec)
+	addrs := t.mapped(s, d.Host)
+	recorded := addrs != nil
+	var dec netpolicy.Decision
+	if recorded {
+		dec = t.cfg.Authorizer.AuthorizeRecorded(ctx, s, d, addrs)
+	} else {
+		if dec := t.cfg.Authorizer.Authorize(ctx, s, d); !dec.Allow {
+			t.dropSession(s.ID)
+			return nil, originError(dec)
+		}
+		var err error
+		addrs, err = t.resolve(ctx, d.Host)
+		if err != nil {
+			return nil, &mproxy.OriginError{Stage: netpolicy.StageDNS, Status: http.StatusBadGateway, Reason: err.Error()}
+		}
+		dec = t.cfg.Authorizer.AuthorizeResolved(ctx, s, d, addrs)
 	}
-	addrs, err := t.resolve(ctx, d.Host)
-	if err != nil {
-		return nil, &mproxy.OriginError{Stage: netpolicy.StageDNS, Status: http.StatusBadGateway, Reason: err.Error()}
-	}
-	if dec := t.cfg.Authorizer.AuthorizeResolved(ctx, s, d, addrs); !dec.Allow {
+	if !dec.Allow {
 		t.dropSession(s.ID)
 		return nil, originError(dec)
 	}
@@ -44,7 +52,7 @@ func (t *Transport) Dial(ctx context.Context, connCtx *mproxy.ConnContext, req *
 	}
 
 	key := connCtx.Id().String()
-	t.putState(connCtx, &connState{session: s, authority: d.Host, port: d.Port, addrs: addrs})
+	t.putState(connCtx, &connState{session: s, authority: d.Host, port: d.Port, addrs: addrs, recorded: recorded})
 	// The proxy closes the origin connection when the client connection ends;
 	// dropping the state there keeps the map bounded by live connections.
 	return &trackedConn{Conn: conn, onClose: func() { t.dropState(key) }}, nil
@@ -61,6 +69,15 @@ type trackedConn struct {
 func (c *trackedConn) Close() error {
 	c.once.Do(c.onClose)
 	return c.Conn.Close()
+}
+
+// mapped returns the task-recorded addresses for a hostname, or nil for an IP
+// literal, no hook or no mapping.
+func (t *Transport) mapped(s netpolicy.Session, host string) []net.IP {
+	if t.cfg.HostsFor == nil || net.ParseIP(host) != nil {
+		return nil
+	}
+	return t.cfg.HostsFor(s, host)
 }
 
 // resolve returns the addresses a destination name resolves to. A literal is

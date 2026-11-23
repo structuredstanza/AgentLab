@@ -31,6 +31,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 	researchAuth := netpolicy.NewAuthorizer(pg)
 	// tcp_probe dials from the backend, outside the gateway: it asks the same policy.
 	agent.NetPolicyAuthorizer = researchAuth
+	agent.NetPolicySource = pg
 	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
 		a, err := pg.GetAgentByKey(agentKey)
 		if err != nil || a == nil {
@@ -226,7 +227,9 @@ func (f closerFunc) Close() error {
 // researchServer returns the row to launch for m. The research browser gets the
 // gateway as its --proxy argument, because its own HTTP client ignores
 // HTTP_PROXY, and the recorder's CA in SSL_CERT_FILE, because the recorder
-// re-signs every certificate it forwards; revoke ends the session credential
+// re-signs every certificate it forwards (the supervisor mounts that public
+// certificate, and nothing else of the CA directory, at this same path in every
+// session; see execbox.Config.CACert); revoke ends the session credential
 // once the child is gone. Every other server is launched exactly as stored.
 func researchServer(ctx context.Context, m *db.MCPServer) (*db.MCPServer, func(), error) {
 	if m.Name != researchMCPServer {

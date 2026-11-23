@@ -1830,3 +1830,7 @@ CREATE TABLE IF NOT EXISTS mcp_audit (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_audit_token ON mcp_audit(token_id, created_at DESC);
+
+-- Profiles express operator intent without enforcing a request-rate ceiling.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS speed_profile TEXT NOT NULL DEFAULT 'standard'
+    CHECK (speed_profile IN ('stealth', 'careful', 'standard', 'unbound'));

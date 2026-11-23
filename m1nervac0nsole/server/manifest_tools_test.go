@@ -88,3 +88,23 @@ func TestPublishedArtifact(t *testing.T) {
 		t.Fatalf("publishedArtifact kept the stale digest %s after the file changed", replaced.SHA256)
 	}
 }
+
+// An nmap run that sees nothing from the sandbox must say why; a run that
+// found something must not carry the warning.
+func TestSandboxBlindNote(t *testing.T) {
+	nmap := builtinManifests.Get("nmap")
+	if nmap == nil {
+		t.Fatal("builtin nmap manifest missing")
+	}
+	if got := sandboxBlindNote(nmap, 0, 0); !strings.Contains(got, "Use port_scan") {
+		t.Fatalf("empty nmap run has no note: %q", got)
+	}
+	if got := sandboxBlindNote(nmap, 1, 0); got != "" {
+		t.Fatalf("nmap run with an asset got a note: %q", got)
+	}
+	if ffuf := builtinManifests.Get("ffuf"); ffuf != nil {
+		if got := sandboxBlindNote(ffuf, 0, 0); got != "" {
+			t.Fatalf("non-scanner got the note: %q", got)
+		}
+	}
+}

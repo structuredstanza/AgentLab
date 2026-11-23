@@ -62,7 +62,7 @@ func TestRunProxyURLCarriesTheRunSessionCredential(t *testing.T) {
 	ctx := execbox.WithSession(context.Background(), sess)
 
 	got := runProxyURL(ctx, "http://127.0.0.1:8788")
-	if want := "http://cred-abc@127.0.0.1:8788"; got != want {
+	if want := "http://cred-abc:cred-abc@127.0.0.1:8788"; got != want { // user and password: Python sends auth only with both
 		t.Fatalf("runProxyURL = %q, want %q", got, want)
 	}
 	// A run with no session gets no proxy at all rather than the bare address.

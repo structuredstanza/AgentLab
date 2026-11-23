@@ -53,12 +53,17 @@ func TestAuthCookieScope(t *testing.T) {
 	streamCookie := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: streamCookieName, Value: tok}) }
 	marker := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: authCookieName, Value: "1"}) }
 
-	// Explicit credentials keep working everywhere, including mutations.
+	// Explicit credentials keep working everywhere, including mutations; a bearer
+	// call also re-issues the stream cookie so a browser that lacks it can open SSE.
 	if rec := mutation(bearer); rec.Code != http.StatusOK {
 		t.Fatalf("bearer mutation: status=%d body=%s", rec.Code, rec.Body.String())
+	} else if c := rec.Result().Cookies(); len(c) != 1 || c[0].Name != streamCookieName || c[0].Value != tok {
+		t.Fatalf("bearer call did not re-issue the stream cookie: %v", c)
 	}
 	if rec := mutation(query); rec.Code != http.StatusOK {
 		t.Fatalf("query-token mutation: status=%d body=%s", rec.Code, rec.Body.String())
+	} else if c := rec.Result().Cookies(); len(c) != 0 {
+		t.Fatalf("query-token call set cookies: %v", c)
 	}
 	if rec := stream(bearer); rec.Code != http.StatusOK {
 		t.Fatalf("bearer stream: status=%d body=%s", rec.Code, rec.Body.String())

@@ -85,6 +85,7 @@ func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.Co
 func stripTrafficParameters(schema map[string]any) {
 	props, _ := schema["properties"].(map[string]any)
 	delete(props, "traffic_refs")
+	delete(props, "traffic_ids")
 	delete(props, "evidence_hint_id")
 	if required, ok := schema["required"].([]any); ok {
 		kept := required[:0]

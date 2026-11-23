@@ -46,11 +46,11 @@ const (
 	queuedFIFOSummary                = "Queued: earlier tasks are waiting, so it will start automatically in FIFO order"
 )
 
-func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
+func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent, operatorApproved bool) {
 	if !s.engine.beginTaskOperation(t.ID) {
 		return
 	}
-	s.seed(t, seedText)
+	s.seed(t, seedText, operatorApproved)
 	if seedFirstIntent {
 		s.seedFirstIntent(t)
 	}
@@ -223,13 +223,7 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	}
 	if shouldQueue {
 		if !wasQueued {
-			summary := fmt.Sprintf(queuedConcurrencyLimitSummaryFmt, limit)
-			switch {
-			case !ready:
-				summary = queuedNoLLMSummary
-			case readyBacklog:
-				summary = queuedFIFOSummary
-			}
+			summary := s.queueSummary(t, limit, ready, readyBacklog)
 			s.engine.emitActivity(t, db.Activity{Worker: "system", Kind: "text", Summary: summary})
 		}
 		return true, nil
@@ -376,13 +370,32 @@ func (s *Server) reconcileConcurrency() {
 //
 // Why an explicit revive is required: the terminal-state gate in the planner/worker loop (engine.go) swallows ordinary notify calls — changing only
 // the graph and calling Notify cannot wake a task already judged complete; after a restart, the goroutine for a terminal task may also be gone, so Run must be called too.
-func (s *Server) reviveTask(t *Task) {
+func (s *Server) reviveTask(t *Task) (string, error) {
 	if t == nil {
-		return
+		return "", fmt.Errorf("task not found")
 	}
-	if _, err := s.admitTask(t, "resume"); err != nil {
+	queued, err := s.admitTask(t, "resume")
+	if err != nil {
 		log.Printf("[revive] task %s failed to resume: %v", t.ID, err)
+		return "", err
 	}
+	if queued {
+		enabled, limit := s.m.ConcurrencyLimit()
+		return "task admission: QUEUED, not running. " + s.queueSummary(t, limit, s.engine.ReadyFor(t), enabled && s.hasReadyQueuedTask(t.ID)), nil
+	}
+	return "task admission: admitted (running); a worker must still claim the intent", nil
+}
+
+// queueSummary is the single source of the queue reason shown in the activity
+// feed and in acknowledgements to the caller.
+func (s *Server) queueSummary(t *Task, limit int, ready, readyBacklog bool) string {
+	switch {
+	case !ready:
+		return queuedNoLLMSummary
+	case readyBacklog:
+		return queuedFIFOSummary
+	}
+	return fmt.Sprintf(queuedConcurrencyLimitSummaryFmt, limit)
 }
 
 // createGoals materializes the goal node(s) under the task root (rel objective).

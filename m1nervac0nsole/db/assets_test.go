@@ -300,6 +300,38 @@ func TestUpsertSubdomain(t *testing.T) {
 	}
 }
 
+func TestTaskHostAddrs(t *testing.T) {
+	d, av2, _ := testSetup(t)
+	t.Cleanup(func() { d.Close() })
+	defer d.Exec(`DELETE FROM assets WHERE domain LIKE '%thatest.com' OR ip IN ('10.77.0.1','10.77.0.2','10.77.0.3')`)
+
+	if _, err := av2.UpsertSubdomain(UpsertSubdomainReq{Domain: "vh.thatest.com", RecordType: "A", RecordValue: []string{"10.77.0.1"}, TaskID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := av2.UpsertIP(UpsertIPReq{IP: "10.77.0.2", BoundDomains: []string{"vh.thatest.com"}, TaskID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// Another task's mapping for the same name must not leak.
+	if _, err := av2.UpsertIP(UpsertIPReq{IP: "10.77.0.3", BoundDomains: []string{"vh.thatest.com"}, TaskID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := av2.TaskHostAddrs(1, "VH.thatest.com.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var strs []string
+	for _, ip := range got {
+		strs = append(strs, ip.String())
+	}
+	slices.Sort(strs)
+	if len(strs) != 2 || strs[0] != "10.77.0.1" || strs[1] != "10.77.0.2" {
+		t.Fatalf("task 1 addrs = %v, want [10.77.0.1 10.77.0.2]", strs)
+	}
+	if got, _ := av2.TaskHostAddrs(1, "10.77.0.1"); got != nil {
+		t.Fatalf("IP literal mapped: %v", got)
+	}
+}
+
 func TestUpsertSubdomainDedup(t *testing.T) {
 	d, av2, _ := testSetup(t)
 	t.Cleanup(func() { d.Close() })

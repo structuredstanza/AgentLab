@@ -93,6 +93,17 @@ func normalizeHeaders(headers map[string]string) (map[string]string, error) {
 	return out, nil
 }
 
+// directTransport is the transport of every MCP client: operator-configured
+// servers are control plane, so it never follows the backend's HTTP(S)_PROXY.
+func directTransport(insecure bool) *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil
+	if insecure {
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return tr
+}
+
 // New connects to a remote MCP endpoint and performs the initialize handshake.
 // headers are sent on every request (Authorization, custom API keys, …).
 // When insecure is true, TLS certificate verification is skipped so servers that
@@ -109,10 +120,7 @@ func New(ctx context.Context, server, url string, headers map[string]string, ins
 	if timeoutSeconds > 0 {
 		timeout = time.Duration(timeoutSeconds) * time.Second
 	}
-	hc := &http.Client{Timeout: timeout}
-	if insecure {
-		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
+	hc := &http.Client{Timeout: timeout, Transport: directTransport(insecure)}
 	c := &Client{
 		server:   server,
 		url:      url,
@@ -134,10 +142,7 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{} // the SSE stream is intentionally long-lived.
-	if insecure {
-		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
+	hc := &http.Client{Transport: directTransport(insecure)} // the SSE stream is intentionally long-lived.
 	streamCtx, cancel := context.WithCancel(context.Background())
 	// Caller cancellation owns setup only; a returned stream lives until Close.
 	bridgeDone := make(chan struct{})

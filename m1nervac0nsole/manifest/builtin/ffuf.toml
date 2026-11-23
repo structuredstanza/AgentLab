@@ -1,6 +1,6 @@
 id = "ffuf"
 name = "ffuf"
-description = "Content and parameter discovery, parsed from its JSON report"
+description = "Content and parameter discovery, parsed from its streaming JSONL matches"
 category = "web"
 accepts = ["url", "domain", "subdomain"]
 requires = ["ffuf"]
@@ -13,7 +13,7 @@ rate = { type = "number", label = "Requests per second", default = "50" }
 
 [command]
 program = "ffuf"
-args = ["-u", "{{ target.value }}/FUZZ", "-w", "{{ params.wordlist }}", "-of", "json", "-o", "/dev/stdout", "-mc", "{{ params.match_codes }}", "-rate", "{{ params.rate }}", "{{ params.extensions | -e }}", "{{ proxy | -x }}", "-H", "User-Agent: {{ useragent }}"]
+args = ["-u", "{{ target.value }}/FUZZ", "-w", "{{ params.wordlist }}", "-json", "-noninteractive", "-mc", "{{ params.match_codes }}", "-rate", "{{ params.rate }}", "{{ params.extensions | -e }}", "{{ proxy | -x }}", "-H", "User-Agent: {{ useragent }}"]
 timeout_seconds = 1800
 
 [limits]
@@ -21,8 +21,7 @@ param = "rate"
 unit = "rps"
 
 [emit]
-parser = "json"
-records = "$.results"
+parser = "jsonl"
 fields = ["url", "status", "length", "words", "content-type"]
 
 [[emit.targets]]

@@ -14,8 +14,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +29,7 @@ import (
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/gateway"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/netpolicy"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/useragent"
 )
 
 // gatewaySource is a policy source that returns one fixed state.
@@ -217,6 +220,75 @@ func TestSingleInterceptionBoundary(t *testing.T) {
 	}
 	if got := handshakes.Load(); got != 1 {
 		t.Fatalf("origin handshakes = %d, want 1 (one interception boundary)", got)
+	}
+}
+
+func TestRecorderStoresForwardedHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		level gateway.MaskLevel
+		h2    bool
+	}{
+		{gateway.MaskNone, false},
+		{gateway.MaskNavigation, true},
+	} {
+		t.Run(string(tc.level), func(t *testing.T) {
+			seen := make(chan http.Header, 1)
+			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen <- r.Header.Clone()
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			srv.EnableHTTP2 = tc.h2
+			srv.StartTLS()
+			defer srv.Close()
+
+			hook := gateway.New(gateway.Config{
+				Authorizer: netpolicy.NewAuthorizer(&gatewaySource{st: loopbackPolicy()}),
+				SessionFor: func(*http.Request) (netpolicy.Session, bool) {
+					return netpolicy.Session{ID: "fixture", TaskID: 1, Purpose: netpolicy.PurposeTesting, Revision: 1}, true
+				},
+				CertException: func(netpolicy.Session, string) bool { return true },
+				MaskFor: func(s netpolicy.Session) gateway.MaskLevel {
+					if s.TaskID == 1 {
+						return tc.level
+					}
+					return gateway.MaskUA
+				},
+			})
+			rec := startRecorder(t, hook)
+			req, err := http.NewRequest(http.MethodGet, originURL(srv)+"/headers", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("User-Agent", "curl/8.0")
+			req.Header.Set("Accept", "*/*")
+			res, err := rec.client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+			if res.StatusCode != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204", res.StatusCode)
+			}
+			want := <-seen
+			want.Set("Host", req.URL.Host)
+			wantUA := "curl/8.0"
+			if tc.level == gateway.MaskNavigation {
+				wantUA = useragent.Get()
+			}
+			if got := want.Get("User-Agent"); got != wantUA {
+				t.Fatalf("origin User-Agent = %q, want %q", got, wantUA)
+			}
+
+			_, _, _, reqHead, _ := singleExchange(t, rec.tr)
+			_, lines, _ := strings.Cut(reqHead, "\n")
+			got, err := textproto.NewReader(bufio.NewReader(strings.NewReader(lines + "\n"))).ReadMIMEHeader()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(http.Header(got), want) {
+				t.Fatalf("stored req_head headers = %v, origin received %v", got, want)
+			}
+		})
 	}
 }
 
@@ -782,12 +854,22 @@ func TestRefusedConnectIsRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var refusalBody string
 	client := &http.Client{Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
 		TLSClientConfig: &tls.Config{RootCAs: rec.pool},
+		OnProxyConnectResponse: func(_ context.Context, _ *url.URL, _ *http.Request, res *http.Response) error {
+			body, err := io.ReadAll(res.Body)
+			refusalBody = string(body)
+			return err
+		},
 	}}
 	if _, err := client.Get(originURL(srv) + "/x"); err == nil {
 		t.Fatal("a refused CONNECT succeeded at the client")
+	}
+	wantReason := "no authorized rule covers http localhost:" + portOf(srv.Listener.Addr().String()) + "\n"
+	if refusalBody != wantReason {
+		t.Errorf("CONNECT body = %q, want %q", refusalBody, wantReason)
 	}
 
 	method, host, status, reqHead, respHead := singleExchange(t, rec.tr)

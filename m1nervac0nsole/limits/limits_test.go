@@ -5,30 +5,21 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/structuredstanza/AgentLab/m1nervac0nsole/manifest"
 )
 
-func rpsManifest() *manifest.Manifest {
-	return &manifest.Manifest{
-		ID:     "ffuf",
-		Limits: manifest.Limits{Param: "rate", Unit: manifest.RateRPS},
-	}
-}
-
-// The guidance must state the ceilings the limiter actually enforces, or the
-// agent is told to respect numbers that are not in force.
-func TestGuidanceStatesTheEnforcedCeilings(t *testing.T) {
-	l := New(Policy{MaxRequestsPerMinute: 100, MaxConcurrentPerTarget: 3, MaxConcurrentTotal: 2})
-	g := l.Guidance()
-	for _, want := range []string{"100", "3", "2"} {
-		if !strings.Contains(g, want) {
-			t.Errorf("guidance omits %q: %s", want, g)
+func TestGuidanceForProfiles(t *testing.T) {
+	seen := map[string]bool{}
+	for _, profile := range []string{"stealth", "careful", "standard", "unbound"} {
+		g := GuidanceFor(profile)
+		if seen[g] || !strings.Contains(g, "Operator instructions") || !strings.Contains(g, "not enforced limits") {
+			t.Fatalf("profile %s has duplicate or misleading guidance: %s", profile, g)
 		}
+		seen[g] = true
 	}
-	// An unconstrained engagement has nothing to say.
-	if New(Policy{}).Guidance() != "" {
-		t.Error("a zero policy should not emit guidance")
+	for _, profile := range []string{"", "unknown"} {
+		if GuidanceFor(profile) != GuidanceFor("standard") {
+			t.Errorf("%q does not default to standard", profile)
+		}
 	}
 }
 
@@ -152,111 +143,6 @@ func TestZeroPolicyAllowsEverything(t *testing.T) {
 	}
 }
 
-// The per-minute budget is a reservation, so two tools at the ceiling cannot
-// both run: 1 rps each is 120/min, over a 100/min budget.
-func TestPerMinuteBudgetBlocksOversubscription(t *testing.T) {
-	l := New(Policy{MaxRequestsPerMinute: 100, MaxConcurrentPerTarget: 5})
-	params := map[string]string{"rate": "1"}
-	held, err := l.Acquire(context.Background(), "t", rpsManifest(), params)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer held()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	if _, err := l.Acquire(ctx, "t", rpsManifest(), params); err == nil {
-		t.Fatal("two runs at 1 rps each were admitted against a 100/min budget")
-	}
-}
-
-// The hard cap is the operator's stated rule: never exceed 100 requests a
-// minute. The test asserts the property that rule actually states, that no
-// sixty-second span contains more than the limit, rather than an average.
-func TestRateGateNeverExceedsTheLimitInAnyWindow(t *testing.T) {
-	const limit = 20
-	g := NewPerHostRateGate(limit)
-	// A short window keeps the test fast; the mechanism is window-length
-	// agnostic and production uses a minute.
-	g.window = 2 * time.Second
-	ctx := context.Background()
-
-	var admitted []time.Time
-	for i := 0; i < limit*2; i++ {
-		if ok, why := g.Allow(ctx, "h", "/"); !ok {
-			t.Fatalf("request %d refused rather than delayed: %s", i, why)
-		}
-		admitted = append(admitted, time.Now())
-	}
-
-	// Every trailing window must hold at most the limit.
-	for i := range admitted {
-		count := 0
-		for j := i; j < len(admitted); j++ {
-			if admitted[j].Sub(admitted[i]) < g.window {
-				count++
-			}
-		}
-		if count > limit {
-			t.Fatalf("a window starting at request %d held %d requests, over the %d limit", i, count, limit)
-		}
-	}
-
-	// The first `limit` are immediate; the rest wait for the window to slide,
-	// which at limit/minute is roughly a minute for a full second batch.
-	if elapsed := admitted[len(admitted)-1].Sub(admitted[0]); elapsed < g.window/2 {
-		t.Fatalf("the second batch was admitted after only %v; the window is not binding", elapsed)
-	}
-}
-
-// A full bucket must not admit a burst: the bug this replaced allowed the whole
-// per-minute budget in the first second.
-func TestRateGateDoesNotPermitAnInstantBurst(t *testing.T) {
-	g := NewPerHostRateGate(50)
-	ctx := context.Background()
-	start := time.Now()
-	for i := 0; i < 50; i++ {
-		g.Allow(ctx, "h", "/")
-	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Fatalf("the first 50 took %v; a small window should admit them at once", elapsed)
-	}
-	// The 51st must still be blocked seconds later: with a 50/min window it
-	// cannot be admitted for a minute, and any admission sooner is a burst.
-	admitted := make(chan struct{})
-	go func() {
-		g.Allow(ctx, "h", "/")
-		close(admitted)
-	}()
-	select {
-	case <-admitted:
-		t.Fatal("the 51st request was admitted inside the window; a burst slipped through")
-	case <-time.After(3 * time.Second):
-		// Still waiting, which is the property under test.
-	}
-}
-
-func TestRateGateRefusesOnCancellation(t *testing.T) {
-	g := NewPerHostRateGate(2)
-	ctx := context.Background()
-	for i := 0; i < 2; i++ {
-		g.Allow(ctx, "h", "/")
-	}
-	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	if ok, _ := g.Allow(waitCtx, "h", "/"); ok {
-		t.Fatal("a cancelled wait was admitted")
-	}
-}
-
-// A nil gate admits everything, so a VM with no engagement is not throttled.
-func TestNilRateGateAllows(t *testing.T) {
-	var g *RateGate
-	if ok, _ := g.Allow(context.Background(), "h", "/"); !ok {
-		t.Fatal("a nil gate refused a request")
-	}
-}
-
 // A global cap is what stops a backlog of machines multiplying the load: three
 // scans per target across ten targets is thirty scans, which is not what an
 // operator asking for "three at a time" meant.
@@ -312,58 +198,4 @@ func TestPerTargetCapHoldsUnderGlobalBudget(t *testing.T) {
 	if _, err := l.Acquire(waitCtx, "h", nil, nil); err == nil {
 		t.Fatal("a second scan on the same target was admitted despite a per-target cap of 1")
 	}
-}
-
-func threadsManifest() *manifest.Manifest {
-	return &manifest.Manifest{
-		ID:     "httpx",
-		Limits: manifest.Limits{Param: "threads", Unit: manifest.RateThreads},
-	}
-}
-
-// A declared thread count is not a concurrency unit: 50 threads under a cap of
-// three is one scan holding 50 workers, so it must run with three rather than
-// wait for 47 slots that cannot exist.
-func TestClampThreadsCapsTheDeclaredCount(t *testing.T) {
-	l := New(Policy{MaxConcurrentPerTarget: 3})
-
-	params := map[string]string{"threads": "50"}
-	from, to, clamped := l.ClampThreads(threadsManifest(), params)
-	if !clamped || from != 50 || to != 3 || params["threads"] != "3" {
-		t.Fatalf("50 threads under a cap of 3: from=%d to=%d clamped=%v params=%v", from, to, clamped, params)
-	}
-
-	// Under the cap, the operator's count stands.
-	params = map[string]string{"threads": "2"}
-	if _, _, clamped := l.ClampThreads(threadsManifest(), params); clamped || params["threads"] != "2" {
-		t.Fatalf("2 threads under a cap of 3 was changed: %v", params)
-	}
-
-	// An rps manifest is a request rate, not a worker count: unchanged.
-	rps := map[string]string{"rate": "50"}
-	if _, _, clamped := l.ClampThreads(rpsManifest(), rps); clamped || rps["rate"] != "50" {
-		t.Fatalf("an rps manifest was clamped: %v", rps)
-	}
-
-	// No per-target cap means nothing to clamp to.
-	uncapped := map[string]string{"threads": "50"}
-	if _, _, clamped := New(Policy{}).ClampThreads(threadsManifest(), uncapped); clamped || uncapped["threads"] != "50" {
-		t.Fatalf("an unset per-target cap clamped a thread count: %v", uncapped)
-	}
-}
-
-// The clamped run is admitted immediately: threads reserve no slots, so a
-// 50-thread scan must not block behind a cap of three.
-func TestClampThreadsAdmitsTheRun(t *testing.T) {
-	l := New(Policy{MaxConcurrentPerTarget: 3, MaxConcurrentTotal: 3, MaxRequestsPerMinute: 100})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	params := map[string]string{"threads": "50"}
-	l.ClampThreads(threadsManifest(), params)
-	release, err := l.Acquire(ctx, "example.com", threadsManifest(), params)
-	if err != nil {
-		t.Fatalf("a clamped 50-thread scan was never admitted: %v", err)
-	}
-	release()
 }
