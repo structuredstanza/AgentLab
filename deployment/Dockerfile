@@ -76,7 +76,11 @@ ARG ENUM4LINUX_NG_VERSION=v1.3.10
 # NetExec's v1.5.1 tag pulls certipy-ad, whose current releases require Python
 # >=3.12; bookworm ships 3.11. Pin the commit verified against this image.
 ARG NETEXEC_COMMIT=97b31bf1d017e12476a1082c30203d4c5febe85c
-ARG IMPACKET_VERSION=impacket_0_13_1
+ARG IMPACKET_TAG=impacket_0_13_1
+# The tag's commit, asserted at fetch time so a re-tag cannot silently move the
+# pin. Install with .git still present so setuptools_scm describes the tag;
+# stripping it first made the package report 0.14.0.dev0+<date>.<hash>.
+ARG IMPACKET_COMMIT=c456746d7a0f0bb25e8968a59f25aae1ad519935
 ARG WAFW00F_VERSION=2.4.2
 ARG WPSCAN_VERSION=3.8.28
 ARG SECLISTS_VERSION=2026.2
@@ -120,9 +124,15 @@ RUN set -eux; \
     git clone --depth 1 https://github.com/CiscoCXSecurity/enum4linux /opt/enum4linux; \
     rm -rf /opt/enum4linux/.git; \
     install -m 0755 /opt/enum4linux/enum4linux.pl /usr/local/bin/enum4linux; \
-    git clone --depth 1 --branch "$IMPACKET_VERSION" https://github.com/fortra/impacket /opt/impacket; \
-    rm -rf /opt/impacket/.git; \
+    git init -q /opt/impacket; \
+    cd /opt/impacket; \
+    git remote add origin https://github.com/fortra/impacket; \
+    git fetch -q --depth 1 origin "refs/tags/${IMPACKET_TAG}:refs/tags/${IMPACKET_TAG}"; \
+    [ "$(git rev-parse "${IMPACKET_TAG}^{commit}")" = "$IMPACKET_COMMIT" ] \
+      || { echo "impacket tag moved off the pinned commit"; exit 1; }; \
+    git checkout -q --detach "$IMPACKET_COMMIT"; \
     python3 -m pip install --no-cache-dir --break-system-packages /opt/impacket; \
+    rm -rf /opt/impacket/.git; \
     for f in /opt/impacket/examples/*.py; do \
       b=$(basename "$f" .py); \
       [ "$b" = __init__ ] && continue; \
