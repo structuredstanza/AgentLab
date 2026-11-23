@@ -281,8 +281,34 @@ func setupSessionRoot(cfg *childConfig) error {
 		if err := os.MkdirAll(root+"/etc", 0o755); err != nil {
 			return fmt.Errorf("/etc: %w", err)
 		}
-		if _, err := os.Stat(root + "/etc/resolv.conf"); err == nil {
-			if err := syscall.Mount(path, root+"/etc/resolv.conf", "", syscall.MS_BIND, ""); err != nil {
+		// Bind the file over whatever /etc/resolv.conf is. On systemd-resolved
+		// hosts it is a symlink into /run, and this namespace's /run is a fresh
+		// tmpfs, so the target does not exist yet: recreate it, and bind onto
+		// the resolved path — never onto the symlink itself, because before
+		// pivot_root an absolute target resolves against the supervisor's root
+		// and the mount would attach outside the session tree.
+		dest := root + "/etc/resolv.conf"
+		if fi, err := os.Lstat(dest); err == nil {
+			if fi.Mode()&os.ModeSymlink != 0 {
+				target, err := os.Readlink(dest)
+				if err != nil {
+					return fmt.Errorf("resolv.conf link: %w", err)
+				}
+				abs := target
+				if !filepath.IsAbs(abs) {
+					abs = filepath.Join("/etc", target)
+				}
+				dest = filepath.Join(root, filepath.Clean("/"+abs))
+				if _, err := os.Stat(dest); err != nil {
+					if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+						return fmt.Errorf("resolv.conf target dir: %w", err)
+					}
+					if err := os.WriteFile(dest, nil, 0o644); err != nil {
+						return fmt.Errorf("resolv.conf target: %w", err)
+					}
+				}
+			}
+			if err := syscall.Mount(path, dest, "", syscall.MS_BIND, ""); err != nil {
 				return fmt.Errorf("resolv.conf bind: %w", err)
 			}
 		}
