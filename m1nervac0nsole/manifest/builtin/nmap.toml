@@ -7,7 +7,7 @@ requires = ["nmap"]
 
 [params]
 ports = { type = "string", label = "Ports", placeholder = "22,80,443 or -", default = "-", description = "Port spec passed to -p; '-' means all 65535 ports" }
-scan = { type = "enum", label = "Scan mode", default = "sS", options = ["sS", "sT", "sU"], description = "SYN, TCP connect or UDP; requires the scoped VPN direct lane. --privileged tells Nmap to use the granted raw capability, not root." }
+scan = { type = "enum", label = "Scan mode", default = "sS", options = ["sS", "sT", "sU"], description = "sS = SYN, sT = TCP connect, sU = UDP; pass the code, not the word; requires the scoped VPN direct lane. --privileged tells Nmap to use the granted raw capability, not root." }
 service = { type = "bool", label = "Service detection", default = "true", description = "Add -sV to fingerprint the service behind each open port" }
 scripts = { type = "string", label = "NSE scripts", placeholder = "default,safe", description = "NSE script names passed to --script" }
 timing = { type = "enum", label = "Timing template", default = "T4", options = ["T2", "T3", "T4"] }
