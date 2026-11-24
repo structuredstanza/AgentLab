@@ -12,9 +12,7 @@ import (
 
 const maxWorkerMessageBytes = 64 << 10
 
-// User-facing exposure of the Worker intervention API (injects a message written by a human into the paused Worker's intent)
-// This is an error response string. It is shown as-is in a toast in the Korean UI, so it is kept in Korean. Worker
-// Worker is the engine role name, so it stays romanized per the glossary, and request_id is a request field name, so the original is preserved.
+// Error responses from the API for sending a message to a paused Worker.
 const (
 	errIntentRequestTooLarge   = "The request body is too large"
 	errIntentMessageEmpty      = "The message cannot be empty"

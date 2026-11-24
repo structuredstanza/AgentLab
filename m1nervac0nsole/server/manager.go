@@ -381,11 +381,8 @@ func (m *Manager) Workers() int {
 	return n
 }
 
-// errWorkersPositive is returned by SetWorkers when the worker agent count setting (settingWorkers) is less than 1.
-// Returns a user-facing error. Its only caller is the settings PUT handler (server.go:3512),
-// which responds with writeErr(400, err.Error()) as-is. No path feeds it back into the agent tool (actool),
-// Since there is no such entry, this is treated as user-only and kept in Korean. Terms are aligned with the UI settings screen (ko.json
-// Match settings.workers ("number of work agents").
+// errWorkersPositive is shown as-is in the settings UI when the work agent
+// count is less than one.
 const errWorkersPositive = "the work agent count must be 1 or more"
 
 // SetWorkers persists the concurrent work-agent count. Values <=0 are rejected.

@@ -50,7 +50,7 @@
       "a4Title": "Article 4 · Intellectual Property",
       "a5Body": "This software is an open-source program that you can deploy yourself; the authors operate no centralized service and do not collect or upload your usage data. All data you create, process, or access while using it is managed by you alone, and you are responsible for its legality and security. You bear all consequences arising from improper handling of data.",
       "a5Title": "Article 5 · Data and Privacy",
-      "a6Body": "You must comply on your own with all laws and regulations of your country or region regarding network security, data security and privacy protection, computer crime, and the like (in the Republic of Korea, including but not limited to the Act on Promotion of Information and Communications Network Utilization and Information Protection and the Personal Information Protection Act).",
+      "a6Body": "You must comply with all applicable laws and regulations on network security, data security, privacy, and computer crime.",
       "a6Emphasis": "All legal liability and consequences arising from your violation of the above laws and regulations or of the terms of this notice are borne by you alone and have no connection to the authors or contributors of this software.",
       "a6Title": "Article 6 · Compliance and Legal Responsibility",
       "a7Body": "This software is provided \"AS IS\" and \"AS AVAILABLE,\" without any warranty of any kind, whether express or implied, including warranties of merchantability, fitness for a particular purpose, accuracy, and non-infringement. To the maximum extent permitted by applicable law, the authors and contributors of this software shall not be liable for any direct, indirect, incidental, special, or consequential damages arising from the use or inability to use this software (regardless of whether it was used appropriately), including but not limited to data loss, system damage, business interruption, loss of profits, and legal disputes.",
@@ -1940,7 +1940,7 @@
   "assetInterceptPage": {
     "title": "Asset blocking",
     "subtitle": "A global asset blacklist. Matched domains / IPs / URLs / ranges are blocked and no task runs against them",
-    "intro": "Supports exact and partial matching of domains / IPs / URLs, plus CIDR ranges. By default, government (.gov / .gov.cn) and education (.edu / .edu.cn) sites are built in to be blocked by partial match",
+    "intro": "Supports exact and partial matching of domains, IPs, and URLs, plus CIDR ranges. Built-in rules block certain government and education domains by partial match.",
     "add": "Add rule",
     "loading": "Loading…",
     "empty": "No asset blocking rules",

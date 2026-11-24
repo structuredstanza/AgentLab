@@ -25,7 +25,7 @@ const NAV_BUTTON_CLASS = "rounded-sm font-mono text-xs";
 export function NavMain({ items }: { readonly items: readonly NavGroup[] }) {
   const t = useTranslations("nav");
   const rawPath = usePathname();
-  // Route segments contain Chinese characters, so pathname may be percent-encoded. Decode it before comparing with the nav url, so that highlighting matches correctly.
+  // Decode percent-encoded route segments before comparing them with navigation URLs.
   // Static export has trailingSlash enabled, so strip the trailing slash before
   // matching; otherwise no item is ever active on a directly loaded route.
   const path = (() => {

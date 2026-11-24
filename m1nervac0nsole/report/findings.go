@@ -160,8 +160,8 @@ func FindingFilename(f *db.DBFinding) string {
 	return name + ".md"
 }
 
-// FindingsCSV renders multiple findings as CSV (includes a UTF-8 BOM so that Excel correctly recognizes Korean text
-// ). Full report/evidence text is not included; only summary-level fields are emitted.
+// FindingsCSV renders summary fields as CSV with a UTF-8 BOM so Excel reads
+// non-ASCII text correctly. Full report and evidence text are not included.
 // Export as Markdown/JSON when the full text is needed.
 func FindingsCSV(fs []*db.DBFinding) []byte {
 	items := append([]*db.DBFinding(nil), fs...)

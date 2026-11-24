@@ -8,9 +8,7 @@ import (
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
 )
 
-// Error response text that goals_api.go returns to the user. Command and request field names (text, vulnclass, ...) are kept unchanged.
-// gid) and enum values remain unchanged; human-readable messages are in English. English writeErr messages
-// (task not found·invalid JSON·bad goal id) is within the F3b Chinese-only scope, so it is preserved.
+// User-facing error responses from the goal API.
 const (
 	errGoalTaskDeletingAdd    = "The task is being deleted, so no goal can be added"
 	errGoalTaskDeletingEdit   = "Cannot modify the goal while the task is being deleted"

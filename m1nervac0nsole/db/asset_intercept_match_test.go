@@ -17,7 +17,7 @@ func TestMatchAssetInterceptRules(t *testing.T) {
 		wantVal string
 	}{
 		{"built-in fuzzy government domain match", []AssetInterceptRule{rule("fuzzy_domain", ".gov.cn", true)},
-			[]string{"www.beijing.gov.cn"}, nil, nil, true, "www.beijing.gov.cn"},
+			[]string{"www.example.gov.cn"}, nil, nil, true, "www.example.gov.cn"},
 		{"fuzzy education domain match", []AssetInterceptRule{rule("fuzzy_domain", ".edu", true)},
 			[]string{"mit.edu"}, nil, nil, true, "mit.edu"},
 		{"exact domain match is case insensitive", []AssetInterceptRule{rule("exact_domain", "Example.com", true)},
@@ -32,8 +32,8 @@ func TestMatchAssetInterceptRules(t *testing.T) {
 			nil, []string{"192.168.5.20"}, nil, true, "192.168.5.20"},
 		{"CIDR does not match", []AssetInterceptRule{rule("cidr", "192.168.0.0/16", true)},
 			nil, []string{"10.0.0.1"}, nil, false, ""},
-		{"exact URL match", []AssetInterceptRule{rule("exact_url", "https://a.gov.cn/login", true)},
-			nil, nil, []string{"https://a.gov.cn/login"}, true, "https://a.gov.cn/login"},
+		{"exact URL match", []AssetInterceptRule{rule("exact_url", "https://example.com/login", true)},
+			nil, nil, []string{"https://example.com/login"}, true, "https://example.com/login"},
 		{"fuzzy URL matches the path", []AssetInterceptRule{rule("fuzzy_url", "/admin", true)},
 			nil, nil, []string{"https://x.com/admin/panel"}, true, "https://x.com/admin/panel"},
 		{"a disabled rule does not match", []AssetInterceptRule{rule("fuzzy_domain", ".gov.cn", false)},
@@ -101,14 +101,14 @@ func TestEvaluateAssetGate(t *testing.T) {
 
 func TestAssetInterceptCandidates(t *testing.T) {
 	// Service assets that carry only a URL: the host should be split out and added to the domain candidates, so that it gets matched by fuzzy_domain.
-	a := &Asset{Type: "service", URL: "https://portal.beijing.gov.cn:8443/app"}
+	a := &Asset{Type: "service", URL: "https://portal.example.gov.cn:8443/app"}
 	domains, _, urls := a.interceptCandidates()
 	if len(urls) != 1 || urls[0] != a.URL {
 		t.Fatalf("urls = %v", urls)
 	}
 	found := false
 	for _, d := range domains {
-		if d == "portal.beijing.gov.cn" {
+		if d == "portal.example.gov.cn" {
 			found = true
 		}
 	}

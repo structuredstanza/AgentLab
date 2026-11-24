@@ -8,10 +8,7 @@ import (
 	"github.com/structuredstanza/norma/llm"
 )
 
-// User-facing side-question outputs are Korean. The agent-brain prompts
-// (request.go:instruction, context.go:summaryInstruction) stay in their
-// benchmarked Chinese; only text and errors shown to the user are localized
-// (per BRIEF localization policy: only the output language is Korean; prompt body is preserved).
+// These user-facing errors are separate from the model instructions in request.go and context.go.
 var (
 	errSideModelInterrupted = errors.New("The model response was interrupted. Please ask again.")
 	errSideNoAnswer         = errors.New("The model did not return an answer.")

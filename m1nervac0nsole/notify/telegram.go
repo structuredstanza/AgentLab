@@ -86,7 +86,7 @@ func (c telegramChannel) Send(ctx context.Context, cfg map[string]any, m Message
 }
 
 // telegramEndpoint builds the sendMessage URL. When base_url is empty, the official API is used,
-// when non-empty, it is used for a self-hosted Bot API reverse proxy (a common need on networks inside China).
+// when non-empty, it is used for a self-hosted Bot API reverse proxy.
 func telegramEndpoint(cfg map[string]any) (string, error) {
 	base := cfgString(cfg, "base_url")
 	if base == "" {

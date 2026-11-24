@@ -6,6 +6,8 @@ This document records the changes in this edition. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+- Use jurisdiction-neutral legal notices and examples across the application and documentation, without changing existing matching and compatibility rules.
+
 ### Defensive closeout
 
 - Reinforce tool boundaries, operator handoffs and evidence discipline in the existing agent prompts, including operator-edited prompt bodies at runtime.
@@ -452,11 +454,11 @@ This document records the changes in this edition. The format follows [Keep a Ch
 - Retain only English UI catalogs and documentation variants; remove language selectors and localized server/config message wrappers.
 - Translate application-authored errors, notifications, role/tool metadata, editable built-in prompts, and conversation framing. Use English date formatting and native English mention kinds while retaining readers for historical mention syntax.
 - Migrate only exact known shipped prompt/tool/trigger defaults. Preserve operator-custom values, tool bindings, limits, historical conversations, and all previous prompt versions.
-- Write model approval reasons with `[Model]` while keeping classification and display support for records written with the legacy Chinese prefix.
+- Write model approval reasons with `[Model]` while continuing to recognize the legacy prefix in saved records.
 - Translate authored source comments into English, including embedded SQL, script heredocs, and Markdown code fences. Preserve non-comment code and literal legacy protocol data.
-- Translate the prompts that reach the model, which the earlier pass missed: the cold-node compaction prompt, the planner's to-do and change blocks, the worker's traffic and artifact rules, the goal framing, and the judge's input boundary. The compaction prompt being Chinese made every compacted summary come back in Chinese and flow on into planner context and the graph view. Chat mention labels shown in the dropdown are English too.
-- Preserve every legacy and third-party match string byte-for-byte, but spell each non-ASCII character as a `\u`/`\x{}`/`U&` escape so no CJK character remains in source: the legacy `[Model]`-era reason prefixes and mention tokens for saved history, the relabel migrations and orchestration constants that match shipped bytes verbatim, ICP scope keywords, log-severity keywords, and the quota markers that classify provider error text (an upstream may answer in Chinese whatever this application's own language is).
-- Replace the web-only CJK check with `scripts/check-cjk.py`, which gates every authored source file (Go, Python, TypeScript, JavaScript, JSON, CSS, SQL, TOML) and the built HTML, and rejects any CJK codepoint outright — with no content exceptions, since every retained match byte now lives only as an ASCII escape. The old check read only `web/out` and `web/src`, so a Chinese prompt string that no browser renders but every model reads passed it — which is how the compaction prompt drove the model to answer in Chinese unnoticed.
+- Translate the cold-node compaction prompt, planner to-do and change blocks, worker traffic and artifact rules, goal framing, judge input boundary, and chat mention labels into English.
+- Preserve legacy and third-party match strings byte-for-byte using ASCII escapes, including saved approval prefixes, mention tokens, migration operands, and provider quota markers.
+- Replace the web-only character check with `scripts/check-cjk.py`, which also checks authored source, including model prompts that never reach the browser.
 
 ### Fixed
 
@@ -511,28 +513,23 @@ Four behaviours that this fork had lost relative to its own base commit (`7f8c7c
 
 ## [0.3.15-global.1] · 2026-10-14 · m1nervac0nsole-global transition release
 
-The release that turns the Korean edition (`0.3.15-ko.1`) into m1nervac0nsole-global, a multilingual edition for defenders and researchers worldwide. Based on upstream m1nervac0nsole 0.3.15; no agent features were changed.
+Transition to a multilingual edition for defenders and researchers worldwide, based on upstream m1nervac0nsole 0.3.15. No agent features changed.
 
 ### Identity · multilingual (m1nervac0nsole-global rename)
 
-- **Rebranded the m1nervac0nsole Korean edition as the m1nervac0nsole global edition.** The identity shifts from a region-specific edition to a multilingual edition that defenders and researchers worldwide can reach. No agent features were changed; only the multilingual layer and the docs were touched.
-  - **Switched the default language from Korean to English.** User-facing output now defaults to English (bootstrap layer `config.DefaultLanguage`, web `DEFAULT_LOCALE`, `config.example.json`, and the `.env.example` comment); Korean, Chinese, and Spanish are selectable in Settings. The agent-package standalone fallback (`agent.defaultOutputLang`) and the Korean golden tests were left in place to avoid regressions.
-  - **Reworded the identity strings to the global edition.** Replaced the "Korean edition" wording in the READMEs (Korean, English, Chinese), CONTRIBUTING, SECURITY, the maintainer runbook, and the issue/PR templates, and renamed the English README's "Why a Korean edition" section and its anchor (`#why-a-korean-edition` → `#why-a-global-edition`). The repository slug and image path are renamed to `m1nervac0nsole` together in the 'Repository rename' section below in this release.
+- Rebrand the project as the global edition and switch the default language to English.
 
 ### English-first README and screenshots
 
-- **Promoted the English README to the repository landing page.** The English document is now `README.md` (the first screen), the Korean body moved to a separate file that has since been removed, and the links and anchors from the root docs to the top-level README were rewired to English. The README links inside the detections tree were left as-is.
-- **Replaced the preview screenshots with English ones.** Recaptured the mock UI in the default English and placed them under `screenshots/en/` (dashboard, findings, chat); the old Korean captures (`screenshots/ko/`) were removed.
-- **Made on-screen dates follow the app language.** Replaced 18 hard-coded `ko-KR` locales with `getDateLocale()` in `web/src/i18n/datetime.ts` (display language → BCP47), so dates render in English by default.
-- **Translated the demo data to English.** Translated ~220 user-facing Korean strings in the mock data (`web/src/lib/mock/{data,handler}.ts`) to English, preserving commands, payloads, URLs, and identifiers verbatim.
+- Make the English README the repository landing page, refresh the preview screenshots and demo data in English, and derive date formatting from the display language.
 
-### Repository rename (m1nervac0nsole-ko → m1nervac0nsole)
+### Repository rename
 
 - **Renamed the repository to `m1nervac0nsole`.** Changed the GitHub slug to `jiwoochris/m1nervac0nsole` (old URLs kept via GitHub redirects) and the container image path to `ghcr.io/jiwoochris/m1nervac0nsole`. Replaced 126 occurrences across 37 files in the repo — badges, clone URLs, `docker-compose.yml`, `release.yml`, `install.sh`, docs, edition labels, detection-rule authors, the MISP event name. The Go module path and the historical version tag (`0.3.15-ko.1`) were left unchanged.
 
 ### Localization (i18n)
 
-- **Show built-in agent names and descriptions per language.** The built-in agents (goal decomposition, planning, main, execution, Auto, penetration test, vulnerability retest) are DB seed data (`builtinAgents` in `db/db.go` and the retest agent in `server/finding_retests.go`), so their names, descriptions, and prompt-variable labels used to appear only in Chinese. They are now looked up by agent `key` in `web/messages/` and shown in the current language (falling back to the DB value). User-created agents keep showing their DB values. Applied to the agent list, the editor drawer, and the chat screen; approval/intercept records that come from a chat now show the agent name instead of its internal key (e.g. `pentest`).
+- Look up built-in agent names, descriptions, and prompt-variable labels by key in `web/messages/`, falling back to their database values. User-created agents keep their stored names. Approval and interception records show the agent's display name rather than its internal key.
 
 ### Upstream sync
 
@@ -542,13 +539,13 @@ The release that turns the Korean edition (`0.3.15-ko.1`) into m1nervac0nsole-gl
 
 - **Closed the remaining gaps in the #22 auth hardening.** A failed password-hash read was still folded into "no password" in token verification and in startup first-run handling, caching an empty hash. Token verification now refuses on a failed read, and startup skips env-var initialisation and setup-token issuance. `M1NERVAC0NSOLE_ADMIN_PASSWORD` initialisation is also stored once via `InsertSettingIfAbsent` and checked against the 72-byte limit. The `/setup` screen shows a retry notice instead of the form when it cannot confirm the state (the UI part of upstream #197).
 
-## [0.3.15-ko.1] · 2026-10-12 · First Korean-edition release
+## [0.3.15-ko.1] · 2026-10-12 · First localized release
 
-The first release of the Korean edition, based on upstream m1nervac0nsole 0.3.15.
+Based on upstream m1nervac0nsole 0.3.15.
 
 ### Distribution
 
-- **The Korean-edition Docker image is now published.** Upstream's `autumn27/m1nervac0nsole` image was taken down from Docker Hub, which broke the `docker compose up -d` quick start. Each release tag now pushes a multi-architecture (amd64/arm64) image to `ghcr.io/jiwoochris/m1nervac0nsole`, and `docker-compose.yml` pulls that image.
+- **Published the Docker image.** Each release tag publishes an amd64/arm64 image to `ghcr.io/jiwoochris/m1nervac0nsole`, which `docker-compose.yml` uses.
 
 ### Security
 
@@ -560,11 +557,8 @@ The first release of the Korean edition, based on upstream m1nervac0nsole 0.3.15
 
 ### Localization (i18n)
 
-- **Added switching to English, Chinese and Spanish.** Korean remains the default. Picking a language under "Display language" in Settings switches the web UI (`web/messages/{ko,en,zh,es}.json`), agent-written reports, summaries and chat replies, and server error messages and status labels together. Operator console logs and the server default followed the configured language. The agent's behavioural-instruction body is still left in its original language.
-- **Forced user-facing output into Korean.** The benchmarked agent's behavioral-instruction body (the "brain") is left in its original language to preserve performance, and a code-level fixed segment (`langDirective`) instructs the agent to write only the user-facing output (vulnerability reports, fact summaries, final summaries, chat replies) in Korean. Commands, payloads, code, and raw logs are kept in their original form.
-- **Translated the web UI into Korean.** Introduced `next-intl` into the Next App Router and split the strings into `web/messages/ko.json` and `web/messages/zh.json`. The original Chinese is preserved in `zh.json` so that it can be compared against upstream updates. Screen strings for the dashboard, vulnerabilities, chat, notification delivery, interception, LLM settings, and more were translated into Korean.
-- **Translated the server API's user-facing errors and responses into Korean.** HTTP error and response text that is returned to the browser was replaced with Korean. Text that feeds back into the agent brain as input, however, was kept in its original language to prevent benchmark drift, and the reasoning behind each such decision is recorded in the repository's working documents.
-- **Reorganized the documentation in Korean.** Created a Korean `README.md`, kept an English `README.en.md` alongside it, and preserved the original Chinese as an upstream-preserved file.
+- Added a display-language setting covering the UI, agent-facing output shown to users, server errors, status labels, and logs. Kept agent instruction bodies and raw artifacts unchanged.
+- Introduced `next-intl` for the App Router and reorganized the documentation around translated variants.
 
 ### Defense and detection resources
 
@@ -576,12 +570,11 @@ The first release of the Korean edition, based on upstream m1nervac0nsole 0.3.15
 
 ### Repository hardening
 
-- **Added security and misuse warnings and Korean legal notices.** The scope of use, notices under the Network Act and the Personal Information Protection Act, and a misuse-prohibition warning were added at the top of the README.
-- **Replaced the screen preview with Korean UI screenshots.**
+- Added an authorized-use notice and refreshed the UI preview screenshots.
 - **Set up a maintainer runbook and a contributing guide.** Added a runbook (`MAINTAINING.en.md`, since removed with the retired localization pipeline) for preventing upstream-sync and translation drift, and a detection-rule contribution contract ([`CONTRIBUTING.en.md`](CONTRIBUTING.en.md)). The runbook also documents the release pipeline's build assumptions and how to verify them locally without a tag.
-- **Added push/PR merge-gate CI.** The upstream repository ran CI only on tag releases, but this fork runs — on every push and pull request — a Go build, static analysis (`go vet`), and unit tests ([`ci.yml`](../.github/workflows/ci.yml)); a Korean UI static build ([`web.yml`](../.github/workflows/web.yml)); and integrity checks for the documentation's repository-internal links and image references ([`docs.yml`](../.github/workflows/docs.yml)), catching regressions introduced during localization before they merge. Integration tests that require a database are verified alongside a PostgreSQL service isolated per package. The documentation link check runs as a deterministic script ([`scripts/check-doc-links.py`](scripts/check-doc-links.py)) that does not depend on an external network, so the many relative links the multilingual documents point at one another — and the screen-preview images — cannot merge while broken. Documentation anchor (`#heading`) links are also checked against headings using the same slug rules as GitHub, catching table-of-contents and cross-reference links that silently break when heading text changes. The detection-rule suite is handled by the merge gate described in the "Defense and detection resources" section above.
+- **Added push/PR merge-gate CI.** Run the Go build, vet and tests ([`ci.yml`](../.github/workflows/ci.yml)), the UI static export ([`web.yml`](../.github/workflows/web.yml)), and internal documentation link and image checks ([`docs.yml`](../.github/workflows/docs.yml)). Run database integration tests with a PostgreSQL service isolated per package.
 - **Periodically checks external-link liveness.** External links the documents point at — the defense guide's incident-reporting channels and standards references — depend on remote server state and are flaky, so they are kept out of the merge gate; instead a non-blocking workflow ([`external-links`](../.github/workflows/external-links.yml)) runs a browser-User-Agent, GET, redirect-following check ([`scripts/check-external-links.py`](scripts/check-external-links.py)) every Monday and on manual dispatch. A host that is alive but blocks the check method (bot protection, rate limiting) and upstream-inherited dead links we cannot fix (an allowlist) are not counted as failures, so it turns red only when an external link our documents curate newly breaks.
 - **Established contribution and governance infrastructure.** Added bug and feature issue templates ([`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)) and a pull-request template ([`PULL_REQUEST_TEMPLATE.md`](../.github/PULL_REQUEST_TEMPLATE.md)), a security-vulnerability reporting policy ([`SECURITY.en.md`](SECURITY.en.md)), and a code of conduct ([`CODE_OF_CONDUCT.en.md`](CODE_OF_CONDUCT.en.md)), so that external contributors submit issues, PRs, and security reports in a consistent format.
-- **Completed an English documentation layer for overseas contributors.** This repository is Korean-first, but English versions of the core documents are provided so that contributors, security researchers, and defenders who do not read Korean can reach the same information. In addition to the English README and the defense guide (`docs/defense-en.md`), there are English versions of the changelog ([`CHANGELOG.en.md`](CHANGELOG.en.md)), the security reporting policy ([`SECURITY.en.md`](SECURITY.en.md)), the code of conduct ([`CODE_OF_CONDUCT.en.md`](CODE_OF_CONDUCT.en.md)), the contributing guide ([`CONTRIBUTING.en.md`](CONTRIBUTING.en.md)), the maintainer runbook (`MAINTAINING.en.md`, since removed with the retired localization pipeline), the traffic-evidence design document ([`docs/finding-traffic-evidence-en.md`](docs/finding-traffic-evidence-en.md)), and the bug and feature issue templates.
+- Added English versions of the README, defense guide, changelog, security policy, code of conduct, and contributing guide.
 
 ---

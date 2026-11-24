@@ -11,7 +11,7 @@ import (
 // Match the domain/IP/URL of the "target asset" against the enabled rules. Provided for agent tools (add_intent, IP/URL
 // Called before insert_assets issues an intent / inserts assets; if matched, the operation is rejected.
 
-// AssetInterceptKindLabel returns the Chinese label for kind, used for the explanatory messages given to the agent.
+// AssetInterceptKindLabel returns the display label for an asset rule kind.
 func AssetInterceptKindLabel(kind string) string {
 	switch kind {
 	case "exact_domain":
@@ -32,7 +32,7 @@ func AssetInterceptKindLabel(kind string) string {
 	return kind
 }
 
-// Reason returns a human-readable hit reason, in the form: hit asset intercept rule [domain(fuzzy): .gov.cn] (remark).
+// Reason describes the matched rule and includes its note when present.
 func (r AssetInterceptRule) Reason() string {
 	s := fmt.Sprintf("matched asset intercept rule [%s: %s]", AssetInterceptKindLabel(r.Kind), r.Pattern)
 	if note := strings.TrimSpace(r.Note); note != "" {

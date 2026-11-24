@@ -59,7 +59,7 @@ export interface SelectedMention {
 }
 
 // Wire tokens use the native English kind (e.g. @[finding#12 label]).
-// Legacy Chinese labels (\u6F0F\u6D1E, \u8D44\u4EA7, …) from stored history are still accepted,
+// Legacy labels from stored history are still accepted,
 // matching server/chat_mentions.go chatMentionPattern. The UI localizes the kind
 // through mentionTextarea.kind.* in the consuming component.
 export function selectedMentions(value: string): SelectedMention[] {

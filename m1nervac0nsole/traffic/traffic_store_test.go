@@ -109,8 +109,8 @@ func TestRecordKeepsBodiesInIndex(t *testing.T) {
 }
 
 // TestFullTextSearchMatchesBodies covers what the trigram index buys over the
-// previous URL-only search: arbitrary substrings and CJK, across request and
-// response bodies.
+// previous URL-only search: arbitrary substrings, including multibyte text,
+// across request and response bodies.
 func TestFullTextSearchMatchesBodies(t *testing.T) {
 	tr, _ := openTraffic(t)
 	if !tr.fts {
@@ -119,8 +119,7 @@ func TestFullTextSearchMatchesBodies(t *testing.T) {
 	const host = "api.example.com"
 	tr.record(newFlow(host, "POST", "/v1/login",
 		[]byte(`{"user":"admin","password":"P@ssw0rd"}`),
-		// The tag is CJK written as escapes: the source stays ASCII while the
-		// unicode61 tokenizer still has to index a multi-byte token.
+		// The escaped tag keeps the source ASCII while exercising multibyte search.
 		[]byte("{\"token\":\"abc123\",\"note\":\"internal test account\",\"tag\":\"\u5185\u7f51\u6d4b\u8bd5\"}")))
 	tr.record(newFlow(host, "GET", "/v1/health", nil, []byte(`{"status":"ok"}`)))
 
@@ -140,7 +139,7 @@ func TestFullTextSearchMatchesBodies(t *testing.T) {
 		t.Fatalf("substring search for ssw0r matched %d rows, expected 1", n)
 	}
 	if n := hits("\u5185\u7f51\u6d4b\u8bd5"); n != 1 {
-		t.Fatalf("Chinese search matched %d rows, expected 1", n)
+		t.Fatalf("multibyte search matched %d rows, expected 1", n)
 	}
 	if n := hits("nonexistent-marker"); n != 0 {
 		t.Fatalf("unrelated keyword matched %d rows, expected 0", n)

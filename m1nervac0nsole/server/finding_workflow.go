@@ -30,6 +30,18 @@ func (s *Server) seedFindingWorkflowTools() {
 			_ = s.m.pg.SetSetting(hostSearchDescriptionFlag, "true")
 		}
 	}
+	const neutralSearchDescriptionFlag = "finding_workflow_tools_v4_neutral_search_description"
+	if value, _, _ := s.m.pg.GetSetting(neutralSearchDescriptionFlag); value != "true" {
+		// Match the exact previous shipped description without retaining its prose.
+		const previous = "cee9c6fbc82303cac43968035ab61e45c52fc5659e41c6bbdcc6d70ed536a399"
+		if _, err := s.m.pg.Exec(`UPDATE tools SET description=$1,updated_at=now()
+			WHERE key='traffic_search' AND system AND encode(sha256(convert_to(description,'UTF8')),'hex')=$2`,
+			traffic.TrafficSearchDescription, previous); err != nil {
+			log.Printf("[evidence] refresh traffic_search wording: %v", err)
+		} else {
+			_ = s.m.pg.SetSetting(neutralSearchDescriptionFlag, "true")
+		}
+	}
 	const flag = "finding_workflow_tools_v2_reporter"
 	if value, _, _ := s.m.pg.GetSetting(flag); value == "true" {
 		return

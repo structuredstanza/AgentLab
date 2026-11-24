@@ -192,7 +192,7 @@ func TestEmailMessageIsWellFormed(t *testing.T) {
 	if !strings.Contains(msg, "To: a@example.com, b@example.com\r\n") {
 		t.Fatalf("To header is wrong:\n%s", msg)
 	}
-	// Chinese subjects must be RFC 2047 encoded, otherwise clients will display them as garbled text.
+	// Non-ASCII subjects need RFC 2047 encoding for email clients to display them correctly.
 	if !strings.Contains(msg, "Subject: =?utf-8?") {
 		t.Fatalf("subject is not RFC 2047 encoded:\n%s", msg)
 	}

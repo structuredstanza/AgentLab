@@ -22,11 +22,8 @@ testing **autonomously**. Contributors are bound by the same scope limits as use
   intentionally vulnerable target you own, such as OWASP Juice Shop or DVWA launched with Docker).
 - We do not accept code that scans, probes, or exploits real, production, or remote systems
   outside the authorized scope, nor changes that encourage such use.
-- In the Republic of Korea, intruding into another party's information and communications
-  network without authorization, or causing a disruption to it, violates the Act on Promotion
-  of Information and Communications Network Utilization and Information Protection; and any
-  personal data collected or exposed falls under the Personal Information Protection Act. The
-  full notice is in the [README](README.md#️-read-first--authorized-use-and-legal-notice).
+- Follow applicable computer-crime and data-protection laws. See the
+  [authorized-use and legal notice](README.md#️-read-first--authorized-use-and-legal-notice).
 
 Legal responsibility for how the code or documentation you contribute is used rests with the
 user who runs it. This repository is provided "AS IS."

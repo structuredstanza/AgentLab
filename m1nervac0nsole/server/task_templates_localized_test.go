@@ -12,7 +12,7 @@ import (
 // TestTaskTemplateResponsesLocalized drives the real response paths that do not
 // touch the database: the body decoder rejects an oversized request, the field
 // validator rejects an over-length name, and writeTaskTemplateErr maps the
-// name-conflict sentinel to the Korean 409 body.
+// name-conflict sentinel to an HTTP 409 response.
 func TestTaskTemplateResponsesLocalized(t *testing.T) {
 	// decodeTaskTemplateRequest — MaxBytesReader errors on an oversized body
 	// before any DB access, so the 413 message is produced on its own.
@@ -28,14 +28,14 @@ func TestTaskTemplateResponsesLocalized(t *testing.T) {
 	}
 
 	// validateTaskTemplateRequest — a name past the rune limit returns the
-	// Korean field-too-long error (surfaced via writeErr in the handlers).
+	// field-too-long error surfaced by writeErr.
 	longName := strings.Repeat("a", db.MaxTaskTemplateNameRunes+1)
 	err := validateTaskTemplateRequest(taskTemplateRequest{Name: &longName})
 	if err == nil {
 		t.Fatal("name-too-long: validation must not pass")
 	}
 
-	// writeTaskTemplateErr — the name-conflict sentinel maps to the Korean 409.
+	// The name-conflict sentinel maps to HTTP 409.
 	rec = httptest.NewRecorder()
 	writeTaskTemplateErr(rec, db.ErrTaskTemplateNameConflict)
 	if rec.Code != http.StatusConflict {

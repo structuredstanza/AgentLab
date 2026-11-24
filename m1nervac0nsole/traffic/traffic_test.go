@@ -171,9 +171,9 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 			t.Fatal(err)
 		}
 	}
-	// "api.example.com" is a substring of "api.example.com.cn".
+	// "api.example.com" is a substring of "api.example.com.test".
 	seed("1-0001", "api.example.com")
-	seed("1-0002", "api.example.com.cn")
+	seed("1-0002", "api.example.com.test")
 	seed("1-0003", "shop.example.com")
 
 	// Duplicate entry in the batch must not double-delete or error.
@@ -190,15 +190,15 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 	if _, err := os.Stat(filepath.Join(dir, "shop.example.com")); !os.IsNotExist(err) {
 		t.Fatalf("shop.example.com tree still exists: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "api.example.com.cn")); err != nil {
-		t.Fatalf("api.example.com.cn removed by an exact delete that shouldn't match: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "api.example.com.test")); err != nil {
+		t.Fatalf("api.example.com.test removed by an exact delete that shouldn't match: %v", err)
 	}
 	var c int
 	if err := tr.DB().QueryRow(`SELECT COUNT(*) FROM exchanges`).Scan(&c); err != nil {
 		t.Fatal(err)
 	}
 	if c != 1 {
-		t.Fatalf("rows=%d, want 1 (api.example.com.cn only)", c)
+		t.Fatalf("rows=%d, want 1 (api.example.com.test only)", c)
 	}
 }
 

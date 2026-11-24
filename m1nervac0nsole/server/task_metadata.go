@@ -15,8 +15,7 @@ const (
 	maxTaskMetadataRequestSize = 16 << 10
 )
 
-// Error response message that the task metadata modification API returns to the user. JSON field name API
-// (name, pinned) are kept verbatim, while only the human-readable message is written in Korean.
+// User-facing error responses from the task metadata API.
 const (
 	errTaskMetaRequestTooLarge = "The request body is too large"
 	errTaskMetaNoFields        = "You must provide either name or pinned"

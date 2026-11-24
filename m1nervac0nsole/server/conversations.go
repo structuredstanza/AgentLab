@@ -53,11 +53,8 @@ const (
 	legacyConvDefaultTitle = "\uc0c8 \ub300\ud654"
 )
 
-// Closing reason for re-verification (finding_retest). Used when runConversationTurn seals the re-verification conversation,
-// it is stored in the finding_retests.error column and is displayed as-is as item.error in the retest panel (finding-retest-panel), i.e., shown to the user.
-// Its sibling reasons in db/finding_retests.go (conclusion not stored, service restart) share the same column and panel, so they are also written in Korean in that file.
-// The terminal status values ("failed"/"stopped"/
-// "completed") are sentinels mapped to Korean labels via StatusLabel, so they stay in ASCII (F9).
+// These retest closing reasons are stored in finding_retests.error and displayed
+// as-is. Terminal status values are separate sentinels rendered via StatusLabel.
 const (
 	convRetestFailedToStart    = "Failed to start the re-verification"
 	convRetestStatusReadFailed = "Failed to read the re-verification status. Please restart it"
@@ -553,10 +550,8 @@ func (s *Server) conversationRunContext(c *db.Conversation, busyKey string) (con
 	return ctx, cancel
 }
 
-// transcriptErrorSummary builds the error summary that is recorded in the activity transcript when an execution fails.
-// label identifies the party that failed: an empty string for a chat turn, and the work main agent for a task.
-// Place the "main agent" here. Gather both transcriptions in one place so that both render the same way, as "(…error: …)".
-// Keep the original err text as-is and localize only the outer label into Korean (F9).
+// transcriptErrorSummary adds a display label to the original error text.
+// A chat turn has no label; a task execution identifies the main agent.
 func transcriptErrorSummary(label, errMsg string) string {
 	if label != "" {
 		label += " "

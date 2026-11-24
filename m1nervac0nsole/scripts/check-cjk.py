@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Fail when non-English text (Hangul, Han, or CJK punctuation) reaches shipped code or the web UI.
+"""Fail when text in the configured Unicode ranges reaches shipped code or the web UI.
 
 Surfaces checked
 ----------------
 1. Built HTML under `web/out`, raw, including inline scripts and React Server
    Components flight data, because user-visible strings travel there too.
 2. Every authored source file in the repository: Go, Python, TypeScript,
-   JavaScript, JSON, CSS, SQL and TOML. This is what catches a Chinese prompt
+   JavaScript, JSON, CSS, SQL and TOML. This is what catches a non-English prompt
    string that no browser ever renders but every model reads.
 
 Test files are exempt by rule, not by exception entry: `_test.go` and
 `*.test.*` deliberately feed non-ASCII input to prove the system handles it,
 and they ship nothing.
 
-Hangul covers syllables (U+AC00-U+D7A3), Jamo (U+1100-U+11FF, U+3130-U+318F).
-Han covers CJK Unified Ideographs (extension A and the main block), compatibility
-ideographs, and supplementary-plane extensions. CJK punctuation and fullwidth
-forms (U+3000-U+303F, U+FE30-U+FE4F, U+FF01-U+FF60, U+FFE0-U+FFE6) are checked
-too, so bracketed or joined CJK cannot slip through.
+Checked ranges include syllables (U+AC00-U+D7A3) and their component letters
+(U+1100-U+11FF, U+3130-U+318F), CJK Unified Ideographs (extension A and the main
+block), compatibility ideographs, and supplementary-plane extensions. The gate
+also checks CJK punctuation and fullwidth forms (U+3000-U+303F, U+FE30-U+FE4F,
+U+FF01-U+FF60, U+FFE0-U+FFE6).
 
 Exceptions
 ----------
@@ -39,8 +39,8 @@ import subprocess
 import sys
 
 NON_ENGLISH = re.compile(
-    r"[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F"  # Hangul
-    r"\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF"  # Han
+    r"[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F"  # Syllables and component letters
+    r"\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF"  # Ideographs
     # CJK punctuation and fullwidth forms (U+3000-303F, U+FE30-FE4F,
     # fullwidth U+FF01-FF60, U+FFE0-FFE6) so bracketed/joined CJK cannot pass.
     r"\u3000-\u303F\uFE30-\uFE4F\uFF01-\uFF60\uFFE0-\uFFE6"

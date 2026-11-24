@@ -424,9 +424,7 @@ func IsQuotaExhaustedMessage(message string) bool {
 		"exceeded your current quota", "billing_hard_limit_reached",
 		"billing hard limit", "billing_not_active", "credit balance", "insufficient credit",
 		"insufficient balance", "balance is too low", "payment required", "status 402",
-		// Provider error text is whatever the upstream chose to send, so the
-		// classifier matches Chinese wording too even though this application is
-		// English-only. Do not translate these.
+		// Match upstream quota messages verbatim, regardless of the application's output language.
 		"\u4f59\u989d\u4e0d\u8db3", "\u989d\u5ea6\u4e0d\u8db3", "\u989d\u5ea6\u5df2\u7528\u5c3d", "\u6b20\u8d39",
 	}
 	for _, marker := range markers {

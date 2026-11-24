@@ -26,16 +26,8 @@ const (
 	maxArchiveBytes = int64(1 << 47) // 128 TiB safety ceiling for corrupt headers.
 )
 
-// errArchiveStagedAndOriginalCoexist is used to notify the user of an inconsistent state where,
-// while moving an archive package to a temporary file for deletion, the original file and the deletion temporary file (.deleting-N) exist at the same time.
-//
-// Call graph notes (user-facing only): stageTaskArchivePackageDelete (line 506 below) →
-// deleteTaskArchive (task_archives.go:400) → background archive worker runOneTaskArchiveJob
-// (task_archives.go:102) → FailTaskArchiveJob stores the error in the task_archives.error column
-// (db/task_archives.go:435) → the API exposes it as TaskArchive.Error ("error" JSON) →
-// TaskArchivesPanel in tasks/page.tsx displays it directly on screen as {archive.error}.
-// Translated to Korean because this is a feedback path 0 of actool·planner (not brain input). Sibling errors on the same propagation path
-// (task_archives.go:120·132·173 in archiveTask, 421·433 in validateArchivePath) are already in Korean.
+// errArchiveStagedAndOriginalCoexist is shown in archive history when both
+// the original package and its staged deletion file exist.
 const errArchiveStagedAndOriginalCoexist = "The original archive package and its temporary deletion file both exist"
 
 type archiveFileMove struct {

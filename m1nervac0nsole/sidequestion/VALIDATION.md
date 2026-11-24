@@ -80,7 +80,7 @@ First, `grok-4.6` was probed. The OpenAI-compatible interface is `http://127.0.0
 - Asked a follow-up after actually stopping and restarting the Go service: preserved the previous 3 side-question history entries, answered the asset, marker, and title directly from the persisted snapshot, and did not rerun the main agent.
 - Used the Grok non-streaming configuration in a new session: correctly answered the asset and `ATOMIC-0910`, and returned and saved usage (input 11734, output 138, cache_read 11520).
 
-The main session in the asset case read the public first page using WebFetch and Bash/curl; the landing page was `https://id.redhaze.top/home`, and the title returned by the page was the Chinese-language portal title "RedHaze Group · Global Conglomerate Portal". Bash briefly saved the response to a local test file only; it did not perform a remote write. This was verified separately from the fact that "the side question did not execute tools."
+The main session in the asset case read the public first page using WebFetch and Bash/curl; the landing page was `https://id.redhaze.top/home`, and the title returned by the page was "RedHaze Group · Global Conglomerate Portal". Bash briefly saved the response to a local test file only; it did not perform a remote write. This was verified separately from the fact that "the side question did not execute tools."
 
 Main transcript verification value: `e7e61f135a4a120954b539f357e8c4205d7d5cd7460dcaf3dc0fd066463e1d00`.
 

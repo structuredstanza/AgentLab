@@ -95,14 +95,9 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 		g.interceptor.Log(ctx, intercept.ConvIDFromContext(ctx), dec, ev.ToolName, ev.Input, "allowed")
 		return hook.Result{}
 	case "ask":
-		// F14 brain-preservation judgment: the two block reasons below and the systemBlockMessage framing must not be translated
-		// without translating it, keeping the original Chinese text. This string flows from g.block → hook.Result.Message to the agent
-		// to the agent as tool_result (intentional steering text to keep the pentest agent from mistaking the block for a target defense and attempting a bypass
-		// Deliberate manipulative phrasing that discourages attempts, BRIEF [A] performance-preservation target. Moreover
-		// Unlike the deny path, the ask block path does not go through Interceptor.Log, so the framing text reaches only
-		// the model, not the history rows. In other words, one string serves as both agent input and display (F16 isomorph).
-		// To separate out only the display into Korean, g.block would need to be restructured to carry the two strings
-		// separately, but since this is high-risk and low-value, it is on hold.
+		// The ask-block reasons and framing reach the model as a tool result so
+		// it can distinguish a platform block from a target response. Unlike the
+		// deny path, this framing is not recorded in interception history.
 		//
 		// If the worker context is already cancelled (task stopped / killed), block
 		// immediately without creating a pending record — avoids orphaned DB entries

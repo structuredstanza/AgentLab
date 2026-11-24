@@ -11,15 +11,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
-	"golang.org/x/text/encoding/simplifiedchinese"
+	gbkencoding "golang.org/x/text/encoding/simplifiedchinese"
 )
 
-// Go's archive/zip has only two built-in decompressors, Store(0) and Deflate(8), so when it
-// encounters any other method it returns "zip: unsupported compression algorithm". Archiving tools
-// Other methods are often used in non-default settings (bzip2 from 7-Zip, zstd from WinZip), so here
-// we add support for two of them that can be decompressed with pure Go. For cases that truly cannot be decompressed (Deflate64 / LZMA /
-// XZ / PPMd / encrypted files), we output a Korean guidance message before attempting decompression, and do not pass the underlying error
-// through to the user as is.
+// Go's archive/zip provides Store and Deflate. We also support bzip2 and
+// zstd. For unsupported methods and encrypted entries, give guidance before
+// attempting decompression rather than returning the generic ZIP error.
 const (
 	zipMethodStore     = 0
 	zipMethodDeflate   = 8
@@ -108,15 +105,14 @@ func skillZipEntries(zr *zip.Reader) []skillZipEntry {
 	return out
 }
 
-// zipEntryName returns the entry path as UTF-8. On Windows, 7-Zip / WinRAR / File Explorer
-// write Korean and Chinese file names to the zip in GBK when the UTF-8 flag bit is not set, and Go
-// preserves the bytes as they are. As a result, the name is neither valid UTF-8 nor able to pass path validation,
-// so we fall back to decoding it as GBK here.
+// zipEntryName returns the entry path as UTF-8. Some archivers write GBK
+// names without the UTF-8 flag; Go preserves those bytes, so decode them
+// before path validation.
 func zipEntryName(f *zip.File) string {
 	if utf8.ValidString(f.Name) {
 		return f.Name
 	}
-	if dec, err := simplifiedchinese.GBK.NewDecoder().String(f.Name); err == nil && utf8.ValidString(dec) {
+	if dec, err := gbkencoding.GBK.NewDecoder().String(f.Name); err == nil && utf8.ValidString(dec) {
 		return dec
 	}
 	return f.Name

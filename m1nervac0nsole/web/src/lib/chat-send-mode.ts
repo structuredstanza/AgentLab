@@ -15,8 +15,7 @@ export type ChatSendMode = "enter" | "ctrl-enter";
 const CHAT_SEND_MODE_KEY = "m1nervac0nsole_chat_send_mode";
 const DEFAULT_CHAT_SEND_MODE: ChatSendMode = "enter";
 
-// Options for the transport-method dropdown on the settings screen. Because the labels vary by locale, they are returned from a hook rather than a constant
-// module. Hardcoding Korean in a pure module would garble the zh locale into Korean.
+// The settings dropdown reads its labels from the message catalog through this hook.
 // The value is a stable identifier, so it is used as-is for the localStorage key and behavior checks.
 export function useChatSendModeOptions(): { value: ChatSendMode; label: string }[] {
   const t = useTranslations("chatSendMode.option");
@@ -66,7 +65,7 @@ export function setChatSendMode(mode: ChatSendMode) {
 }
 
 // shouldSubmitOnKey determines whether a single key press counts as a submit.
-// isComposing / keyCode 229 means the input method (e.g., Korean or Chinese) is composing a character,
+// isComposing / keyCode 229 means an input method is composing a character,
 // so these must always be passed through. Otherwise, confirming a character with Enter would submit it incorrectly.
 // enter mode excludes only Shift, preserving 0.3.2 behavior exactly (so users who have not changed
 // the setting keep the same feel). The ctrl-enter mode accepts both Ctrl and Cmd (macOS)

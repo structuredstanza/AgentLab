@@ -2045,8 +2045,7 @@ export const activity: Activity[] = [
     kind: "tool_result",
     tool: "bash",
     tool_use_id: "t52",
-    summary:
-      '{ "order_id":1002, "user_id":77, "amount":1299, "phone":"138****6021", "address":"Gangnam-gu, Seoul ****" }',
+    summary: '{ "order_id":1002, "user_id":77, "amount":1299, "phone":"138****6021", "address":"**** Example Street" }',
     detail:
       "Read another user's order (including phone number/address) via authorization bypass; there is no ownership check.",
   },
@@ -3040,7 +3039,7 @@ Content-Length: 655
   "order_id": 1002,
   "user_id": 77,
   "amount": 1299.00,
-  "address": "Gangnam-gu, Seoul ****",
+  "address": "**** Example Street",
   "phone": "138****6021",
   "items": [{ "sku": "A-100", "qty": 1 }]
 }`,

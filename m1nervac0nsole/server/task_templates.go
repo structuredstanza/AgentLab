@@ -14,8 +14,7 @@ import (
 
 const maxTaskTemplateRequestBytes = 512 << 10
 
-// Response messages that the job template API returns to the user. Identifiers, JSON field names, request bodies
-// Identifiers, JSON field names, and request body keys stay in their original form; only the human-readable messages are in Korean.
+// User-facing error responses from the task template API.
 const (
 	errTaskTemplateRequestTooLarge = "The request body is too large"
 	errTaskTemplateNameConflict    = "This template name already exists"

@@ -1,5 +1,5 @@
 @echo off
-rem Switch the console to UTF-8. Otherwise, Korean text in this file garbles on GBK terminals.
+rem Switch the console to UTF-8 so non-ASCII output displays correctly.
 chcp 65001 >nul 2>&1
 rem m1nervac0nsole daemon start script (Windows)
 rem

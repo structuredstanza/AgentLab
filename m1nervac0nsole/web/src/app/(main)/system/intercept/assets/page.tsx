@@ -25,10 +25,10 @@ import type { AssetInterceptKind, AssetInterceptRule } from "@/lib/types";
 type KindGroup = "exact" | "fuzzy" | "cidr";
 
 const KIND_OPTIONS: { value: AssetInterceptKind; group: KindGroup; placeholder: string }[] = [
-  { value: "exact_domain", group: "exact", placeholder: "example.gov.cn" },
+  { value: "exact_domain", group: "exact", placeholder: "example.com" },
   { value: "exact_ip", group: "exact", placeholder: "203.0.113.10" },
-  { value: "exact_url", group: "exact", placeholder: "https://example.gov.cn/login" },
-  { value: "fuzzy_domain", group: "fuzzy", placeholder: ".gov.cn" },
+  { value: "exact_url", group: "exact", placeholder: "https://example.com/login" },
+  { value: "fuzzy_domain", group: "fuzzy", placeholder: ".example.com" },
   { value: "fuzzy_ip", group: "fuzzy", placeholder: "203.0.113." },
   { value: "fuzzy_url", group: "fuzzy", placeholder: "/admin" },
   { value: "cidr", group: "cidr", placeholder: "192.168.0.0/16" },

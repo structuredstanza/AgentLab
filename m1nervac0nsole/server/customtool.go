@@ -51,9 +51,7 @@ type customToolReq struct {
 
 var reToolKey = reAgentKey // Same agent key rule: starts with a lowercase letter, followed by lowercase letters, digits, or underscores
 
-// Validation messages that the custom tool CRUD and trial-run endpoints return to the user via writeErr
-// Pin error responses to Korean. Tool execution results read by the agent (actool.Errorf) and tool
-// The schema description is a brain boundary, so the original Chinese text is preserved (per the BRIEF performance-preservation policy).
+// Validation errors returned by the custom tool management and trial-run endpoints.
 const (
 	errCustomToolKeyFormat          = "key must start with a lowercase letter and may contain only lowercase letters, digits, and underscores"
 	errCustomToolKindInvalid        = "The kind value must be one of command, script, http, or shell"

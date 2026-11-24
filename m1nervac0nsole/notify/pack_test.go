@@ -12,7 +12,7 @@ import (
 func TestTelegramPackingUsesRuneBudget(t *testing.T) {
 	m := batchMsg(200)
 	text, kept := telegramHTML(m)
-	// Telegram limits length by **character count**; using a byte count would compress Chinese messages to one third of their capacity.
+	// A byte budget would fit fewer multibyte characters than Telegram allows.
 	if n := utf8.RuneCountInString(text); n > telegramTextLimit {
 		t.Fatalf("body is %d characters, over the limit of %d", n, telegramTextLimit)
 	}

@@ -17,9 +17,7 @@ type taskLLMResolution struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-// User-facing reason and source name (GET /api/tasks/{id}/llm/resolution response). Task LLM settings chain
-// Rendered as-is on the system/llm screen, so the taskDetail.llm namespace notation in ko.json (settings, global,
-// Source enum values and English error messages are not translation targets.
+// The API returns these reason and source labels for direct display in the UI.
 const (
 	reasonLLMProfileMissing     = "LLM configuration not found"
 	reasonLLMProfileNoAPIKey    = "No API Key or OAuth login is configured for the LLM configuration"

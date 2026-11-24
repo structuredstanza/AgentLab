@@ -28,17 +28,7 @@ type goalSpec struct {
 	VulnClass string
 }
 
-// launchTask runs the shared post-creation sequence for a task created via ANY
-// path (HTTP createTask or orchestration spawn_task), to avoid duplicated copy-paste in two places:
-//  1. Seed the root asset and feed it into the event-driven loop;
-//  2. Optionally seed an intent so the worker starts running directly without waiting for the first planner round;
-//  3. Asynchronously perform goal decomposition in the background (post the "0th goal decomposition" round + LLM decomposition steps + per-item goals, visible on the page),
-//     and only call engine.Run after decomposition finishes. The engine starts only once the goal nodes are ready, avoiding a race where the planner runs before the goals.
-//
-// It is asynchronous (goroutine), so the caller returns immediately; both paths behave the same way: the task is created instantly and goals are split in the background.
-// Display-only activity summary (work unit and node_id omitted; exposed only in the transcript; does not touch the feedback path).
-// Note on the initial goal-decomposition round and the concurrent execution queue status. Do not touch the Korean-to-English gloss; the brain input is unchanged.
-// (BRIEF boundary #1) must not be touched. Format argument (%d) is preserved as-is. [[G132]]
+// Display-only summaries of initial goal decomposition and queue status.
 const (
 	goalBreakdownRound0Summary       = "Round 0: goal breakdown"
 	queuedConcurrencyLimitSummaryFmt = "Queued: the concurrency limit of %d has been reached; it will start automatically when a slot frees up"
@@ -46,6 +36,9 @@ const (
 	queuedFIFOSummary                = "Queued: earlier tasks are waiting, so it will start automatically in FIFO order"
 )
 
+// launchTask seeds the task and optionally dispatches the first intent. It starts
+// goal decomposition in the background so the caller can return immediately, but
+// waits for goal nodes before starting the planner.
 func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent, operatorApproved bool) {
 	if !s.engine.beginTaskOperation(t.ID) {
 		return

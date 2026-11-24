@@ -1264,10 +1264,10 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 }
 
 const TASK_RULE_KIND_OPTIONS: { value: AssetInterceptKind; placeholder: string }[] = [
-  { value: "exact_domain", placeholder: "example.gov.cn" },
+  { value: "exact_domain", placeholder: "example.com" },
   { value: "exact_ip", placeholder: "203.0.113.10" },
   { value: "exact_url", placeholder: "https://example.com/login" },
-  { value: "fuzzy_domain", placeholder: ".gov.cn" },
+  { value: "fuzzy_domain", placeholder: ".example.com" },
   { value: "fuzzy_ip", placeholder: "203.0.113." },
   { value: "fuzzy_url", placeholder: "/admin" },
   { value: "cidr", placeholder: "192.168.0.0/16" },

@@ -1,9 +1,5 @@
 name: web
-# Run the static export build of the Korean UI (web/) on every push and PR to catch frontend regressions
-# before merge. The release workflow (release.yml) builds web only on tags (v*), and
-# This fork has no tag push history, so it has never been run even once — so the routine web
-# verifying routine web changes (TypeScript, React, i18n, next-intl). Go
-# builds and tests are handled by ci.yml, so this runs only when web/ changes (paths filter).
+# Verify frontend changes on pushes and pull requests. Backend checks run in ci.yml.
 on:
   push:
     branches: ["**"]
@@ -46,9 +42,7 @@ jobs:
         run: npm run test -- --run
       - name: build:static (merge gate · includes type check)
         run: npm run build:static
-      - name: UI Han-character leak guard (merge gate · no Chinese characters in out HTML)
-        # The core achievement of this fork is that "there is no Chinese text on the screens visible to users."
-        # Prevents regressions where contributors hardcode Chinese text or omit translations, catching them before merge.
+      - name: English-only source and static HTML check
         # The script locates web/out under the git root by itself, so it does not depend on the working directory.
         run: python3 -I ../scripts/check-cjk.py
       - name: biome check (merge gate · zero lint, format, and a11y errors)

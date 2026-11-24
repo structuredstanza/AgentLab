@@ -18,8 +18,7 @@ type companyScopeInputs []db.ScopeInput
 
 const maxCompanyMutationBodyBytes = 2 << 20
 
-// Error response text that the company/asset API returns to users. Per the glossary, company should be
-// Only the human-readable message is kept in Korean; identifiers and field names are preserved as-is.
+// Error responses returned by the company and asset API.
 const (
 	errCompanyRequestTooLarge = "The request body is too large"
 	errCompanyNameConflict    = "The company name already exists"

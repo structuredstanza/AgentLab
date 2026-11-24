@@ -40,9 +40,7 @@ import (
 // Defaults to "dev" for local builds. Exposed to the frontend via GET /api/health.
 var BuildVersion = "dev"
 
-// User-facing writeErr response message (Korean). Prompts and tools passed to the agent
-// Preserve the original description, payload, and logs, and the HTTP handler exports them via writeErr/fmt.Errorf
-// Keep only the final user-facing response in Korean. (F3b; the translated terms match the completed file and the web i18n notation)
+// User-facing errors returned through writeErr.
 const (
 	// Intent control and rerun (controlIntent / rerunIntent / rerunBlocked)
 	errTaskDeletingIntentControl = "The intent cannot be controlled because the task is being deleted"
@@ -79,9 +77,7 @@ const (
 	errMainAgentBusy          = "The main agent is still processing a previous message. Please try again shortly"
 )
 
-// User-facing response message (in Korean) that is not passed through writeErr. writeJSON's error
-// field of writeJSON or a method return displays it on screen as-is, so it has the same nature as the block above but takes a different path.
-// The nav path uses the same notation as the web i18n labels (nav.system="System", llmConfig="LLM Config"). (F34)
+// These messages also appear in JSON response fields and conversation records.
 const (
 	// Reason the chat LLM is unavailable (chatUnavailableReason → writeErr 503 / reason for ending the conversation)
 	errChatNoLLMProfile       = "No LLM configuration exists yet: add one under System → LLM settings"
@@ -93,10 +89,7 @@ const (
 	errWebSearchProbeNoResults = "The search returned 0 results (the request may have been throttled, or the proxy may not be connected)"
 )
 
-// User-facing reply (in Korean) for rule-mode chat (fallbackChat, which the human operates directly when no LLM is configured).
-// reply is exposed to the user as-is in both writeJSON and the conversation log. Input trigger keywords
-// also accept Korean aliases (\uC758\uB3C4/\uD78C\uD2B8) just like the existing English aliases (intent/hint)—
-// this is pure input parsing and not a wire format, so Chinese and English triggers are kept and only additions are made.
+// Rule-mode chat replies are shown in the response and conversation log.
 const (
 	fallbackIntentInjected = "Injected one high-priority intent: "
 	fallbackHintRecorded   = "The hint has been recorded. The planner will read it next: "
@@ -3542,7 +3535,7 @@ func (s *Server) deleteTraffic(w http.ResponseWriter, r *http.Request) {
 
 // deleteTrafficHosts removes traffic for a set of EXACT hosts (JSON body
 // {"hosts": [...]}) — the batch path for the page's multi-select delete. Exact
-// match, so picking "api.example.com" never sweeps "api.example.com.cn".
+// match, so picking "api.example.com" never sweeps "api.example.com.test".
 // Returns the number of exchanges deleted.
 func (s *Server) deleteTrafficHosts(w http.ResponseWriter, r *http.Request) {
 	tr := s.m.Traffic()
@@ -4191,11 +4184,8 @@ func (s *Server) stopChat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"status": "stopping"})
 }
 
-// fallbackCommand classifies a rule-mode chat message into an intent/hint command
-// plus the trimmed argument. The trigger keywords accept Chinese (\u610f\u56fe/\u63d0\u793a), English
-// (intent/hint) and Korean (\uC758\uB3C4/\uD78C\uD2B8) prefixes — pure input parsing, not a wire
-// format, so the Korean aliases are additive and backward compatible. cmd is
-// "intent", "hint" or "" (status summary). (F34 d)
+// fallbackCommand recognizes intent and hint prefixes, including legacy aliases.
+// It returns the command and trimmed argument, or an empty command for a status summary.
 func fallbackCommand(msg string) (cmd, text string) {
 	m := strings.TrimSpace(msg)
 	lower := strings.ToLower(m)
@@ -4333,9 +4323,6 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
-	// Substitutes the original Korean response phrases with the active output language (en/zh/es/ja). If the phrase is not in the catalog
-	// or is Korean, the original text is passed through as-is. Arbitrary err.Error() propagated from lower layers usually has no key
-	// so it passes through unchanged.
 	writeJSON(w, code, map[string]any{"error": msg})
 }
 

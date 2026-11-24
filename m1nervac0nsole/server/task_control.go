@@ -15,10 +15,8 @@ import (
 
 const maxBatchControlIDs = 100
 
-// User-facing task and intent control error message text (Korean localization, F3b). Identifiers, enum (paused etc.)
-// %w wrapping are kept as they are. The messages in applyTaskControlWithCause are mainly used for single-task control responses (controlTask)
-// and batch control responses (controlTasksBatch), and the orchestrator pause tool
-// (orchestration.go) also uses the same messages when it references err.Error() again.
+// Control errors are returned by the single-task and batch endpoints, and
+// by the orchestrator's pause tool.
 const (
 	errTaskCtrlDeleting      = "Cannot control the task while it is being deleted"
 	errTaskCtrlTerminalPause = "A terminated task cannot be paused"

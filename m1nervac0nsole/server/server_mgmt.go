@@ -31,9 +31,8 @@ import (
 	"github.com/structuredstanza/norma/skill"
 )
 
-// validSkillName checks the agentskills.io name constraints, widened so a skill can
-// also be named in Chinese (or any other script): ASCII must stay lowercase
-// alphanumeric + hyphens, while non-ASCII letters/digits are accepted as-is.
+// validSkillName follows agentskills.io naming rules but also accepts non-ASCII
+// letters and digits. ASCII letters must be lowercase.
 // 1-64 runes, must start with a letter, no leading/trailing/consecutive hyphens.
 // The name doubles as a directory name under skillDir, so nothing that could carry a
 // path (separators, dots, spaces, control characters) is allowed through.
@@ -66,9 +65,7 @@ func validSkillName(name string) bool {
 // lowercase letters / digits / underscores.
 var reAgentKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// F3b: Gather only the response messages exposed to users (admin console UI) via writeErr/writeJSON, written in Korean.
-// Per the BRIEF policy, keep the original text of the brain segment [A], agent tool descriptions, log output (log.Printf), and code comments as they are,
-// Keep identifiers and field names (key, llm_profile_id, file, SKILL.md, name), enum, %s/%d, and err.Error() unchanged as well.
+// User-facing responses from the management API.
 const (
 	// Shared DB gate (pg) that every admin handler passes through.
 	errMgmtPGUnavailable = "Not connected to the admin console data source (PostgreSQL)"
@@ -102,7 +99,7 @@ const (
 	errMgmtSkillNoMDInZip   = "SKILL.md was not found inside the archive"
 	errMgmtSkillReadMDFail  = "Could not read SKILL.md: "
 	errMgmtSkillNamePre     = "The skill name is invalid (taken from the name field in SKILL.md): "
-	errMgmtSkillNamePost    = " (64 characters or fewer, must start with a letter, and may contain lowercase letters, digits, hyphens, or non-ASCII characters such as Korean; spaces, periods, and path separators are not allowed)"
+	errMgmtSkillNamePost    = " (64 characters or fewer, must start with a letter, and may contain lowercase ASCII letters, digits, hyphens, or non-ASCII letters and digits; spaces, periods, and path separators are not allowed)"
 	// The web UI offers overwrite based on HTTP 409 status, not on this text.
 	errMgmtSkillExistsPre    = "The skill already exists: "
 	errMgmtSkillExistsPost   = " (To overwrite, confirm and try again)"
@@ -1432,7 +1429,7 @@ func skillNameFromFrontmatter(md []byte) string {
 		}
 		if inFM && strings.HasPrefix(t, "name:") {
 			v := strings.TrimSpace(strings.TrimPrefix(t, "name:"))
-			return strings.Trim(v, `"'`) // name: "Chinese skill names" are also accepted
+			return strings.Trim(v, `"'`)
 		}
 	}
 	return ""
@@ -1636,9 +1633,8 @@ func (s *Server) fsDeleteSkill(w http.ResponseWriter, r *http.Request) {
 const skillPathBlocked = `\%#?*:"<>|`
 
 // skillPathRune reports whether r may appear in a client-supplied skill path.
-// It is a blacklist over Unicode rather than an ASCII whitelist so that Chinese (and any
-// other script) file names work, while everything that makes path validation hard is
-// still refused: control/format characters, look-alike whitespace, separators.
+// Non-ASCII names are allowed, but control and format characters, look-alike
+// whitespace, and path separators are not.
 func skillPathRune(r rune) bool {
 	switch {
 	case r < 0x20, r == 0x7f, r == utf8.RuneError:
@@ -1662,7 +1658,7 @@ const maxSkillPathLen = 512
 // can't survive normalization.
 func skillRelPath(file string) (string, string) {
 	// 1. Character check — before normalization. Defeats null bytes, backslash,
-	//    '%', control characters and unicode look-alikes; CJK names pass through.
+	//    '%', control characters and Unicode look-alikes.
 	if file == "" || len(file) > maxSkillPathLen {
 		return "", "invalid path: empty or too long"
 	}

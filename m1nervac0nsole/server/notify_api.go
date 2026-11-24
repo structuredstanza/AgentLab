@@ -16,11 +16,7 @@ import (
 // This file is the HTTP interface for the push feature. All routes are mounted behind requireAuth (see Handler()),
 // consistent with the other management interfaces.
 
-// This is the user-facing error message that notify_api.go returns as the HTTP response. It is shown in the Korean UI as a notification.
-// This phrase is shown as-is in a toast when the settings request fails, so it stays in Korean. Identifiers (id), JSON
-// field names, enum values (realtime, digest), and channel type keys are values the user uses to fix their settings, so they stay in their original form.
-// Leave the original text as is. Constants containing %s or %q are fmt.Sprintf format strings.
-// Per policy, this is the lowest priority and falls outside this group.
+// Notification API errors are shown as-is in the settings UI.
 const (
 	notifyErrBadJSON         = "Request body is not valid JSON: "
 	notifyErrKindInvalidFmt  = "Invalid channel type. Allowed values: %s"
@@ -34,8 +30,8 @@ const (
 	notifyErrChannelNotFound = "Notification channel not found"
 )
 
-// This is the body of the test message sent when checking a channel connection. It is actually delivered to the channel the user registered, so
-// it stays in Korean, but it is made clear at a glance that it is a test so the recipient does not mistake it for a real vulnerability.
+// Test messages are delivered to the registered channel and labeled as tests so
+// recipients do not mistake them for actual findings.
 const (
 	notifyTestName    = "Test message · Channel configured correctly"
 	notifyTestClass   = "Connection test"

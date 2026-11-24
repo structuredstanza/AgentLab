@@ -19,7 +19,6 @@ import type { NotificationChannel, NotificationDelivery } from "@/lib/types";
 export function DeliveryList({ channels }: { channels: NotificationChannel[] }) {
   const t = useTranslations("notifyPage");
   // Delivery status and severity labels come from the globally shared `status` namespace (same source as StatusBadge).
-  // The Chinese strings in lib/status.ts are dead fallbacks kept for upstream comparison, so they are not used directly (see the pitfall noted in turn 129).
   const ts = useTranslations("status");
   const tp = useTranslations("pagination");
   const [rows, setRows] = React.useState<NotificationDelivery[]>([]);

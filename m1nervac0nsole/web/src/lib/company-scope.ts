@@ -144,7 +144,7 @@ export function companyScopeRuleError(rule: CompanyScopeRule): CompanyScopeError
   return "";
 }
 
-// For the mock handler only (outside React): converts error codes into Korean text. The real UI
+// For the mock handler only (outside React): converts error codes into display text. The real UI
 // is localized by scope-text-editor via next-intl's t("scopeEditor.error.*").
 export function companyScopeErrorText(code: CompanyScopeErrorCode | "" | undefined): string {
   switch (code) {

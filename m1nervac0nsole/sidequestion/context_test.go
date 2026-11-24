@@ -98,7 +98,7 @@ func TestSideBudgetCountsContentNotJSONCharacters(t *testing.T) {
 	// rune) would report a wildly different number. Written as an escape so the
 	// source stays ASCII while the value keeps the multibyte content.
 	if EstimateInputTokens(llm.CompletionRequest{Messages: []llm.Message{llm.UserText("x")}, System: []string{strings.Repeat("\u4e2d", 3000)}, Tools: fixture().Tools}) <= baseline+3000 {
-		t.Fatal("system/schema/CJK omitted")
+		t.Fatal("system text, tool schema, or multibyte content omitted")
 	}
 }
 

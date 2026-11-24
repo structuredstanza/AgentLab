@@ -19,9 +19,7 @@ const (
 	settingConstraintsInjectWorker  = "constraints_inject_worker"
 )
 
-// User-facing error responses (in Korean) for the constraint CRUD handler. These are passed straight through writeErr and shown as-is in the UI toast.
-// Same form as errGoalTaskDeleting* in goals_api.go, and the kind validation is in intercept.go
-// Follows the "value must be one of ..." pattern.
+// Constraint errors pass through writeErr to the UI toast.
 const (
 	errConstraintTaskDeletingAdd    = "A constraint cannot be added because the task is being deleted"
 	errConstraintTaskDeletingEdit   = "The task is being deleted, so constraints cannot be modified"

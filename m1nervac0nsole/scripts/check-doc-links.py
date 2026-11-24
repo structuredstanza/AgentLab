@@ -57,8 +57,9 @@ def _is_word_char(ch: str) -> bool:
     """Determine whether a character is a `\\p{Word}` character that GitHub's anchor slug rules keep.
 
     Ruby regex `\\p{Word}` = Letter(L*) + Mark(M*) + Decimal_Number(Nd)
-    + Connector_Punctuation(Pc) + Join_Control(U+200C·U+200D). Hangul, Hanja,
-    underscores, and emoji variation selectors (Mn) are preserved.
+    + Connector_Punctuation(Pc) + Join_Control(U+200C·U+200D). Non-ASCII
+    letters, including ideographs, and marks such as emoji variation selectors
+    (Mn) are preserved, as are underscores.
     """
     if ch == "_":
         return True

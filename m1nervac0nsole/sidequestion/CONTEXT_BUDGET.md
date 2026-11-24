@@ -37,7 +37,7 @@ POST accepts and returns the request first; preparation and compaction run in th
 ## Verification Record
 
 - Replays of 19, 20, 21, and 50 groups; preservation of older conclusions beyond 20 groups; and reuse of the summary cache after restart: automation passed.
-- Very long Chinese answers and code context, request budget splitting, tool pairing, snapshot immutability, and cache invalidation for new snapshots: automation passed.
+- Very long answers with multibyte text and code context, request budget splitting, tool pairing, snapshot immutability, and cache invalidation for new snapshots: automation passed.
 - Summary failure, cancellation, truncation, overlength, tool return, clear-operation races, call limit, a single overflow recovery, and no retry after partial streaming: automation passed.
 - Pagination, restart, v1/v2/v3 archives, archive restoration of summary cache and budget metadata, older v3 without new fields, and 20 parent sessions sharing four concurrent execution slots in a standalone PostgreSQL instance: passed.
 - Go candidate service build, frontend TypeScript check, Biome check of the modified component, and Next.js production build in a separate directory: passed.

@@ -867,8 +867,8 @@ func (s *Server) seedReporterAgent() {
 }
 
 // relabelReporterAgent rewrites the seeded reporter's display name and description to the
-// English labels independently: each field changes only while it still equals its shipped
-// Korean text. Custom edits and the prompt body are never touched. One-time (settings flag).
+// English labels independently: each field changes only while it still equals its
+// original shipped value. This runs once and leaves the prompt body untouched.
 func (s *Server) relabelReporterAgent() {
 	const flag = "reporter_agent_english_label_v1"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {

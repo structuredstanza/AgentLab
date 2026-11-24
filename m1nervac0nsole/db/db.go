@@ -748,10 +748,8 @@ WHERE NOT EXISTS (SELECT 1 FROM intercept_rules WHERE name = $1)`,
 	return d.SetSetting("intercept_default_rules_v3", "done")
 }
 
-// migrateBuiltinSeedLabelsEN relabels the built-in intercept/asset rules that v1-v3
-// seeded in Chinese. Only rows whose name/message/note still equal the exact shipped
-// original are updated, so user-edited or user-created rules are never touched.
-// Gated by its own flag so it runs once per DB.
+// migrateBuiltinSeedLabelsEN updates v1-v3 built-in intercept and asset labels
+// that still match the shipped values. It runs once per database.
 func (d *DB) migrateBuiltinSeedLabelsEN() error {
 	if v, _, _ := d.GetSetting("intercept_default_rules_en_v4"); v == "done" {
 		return nil

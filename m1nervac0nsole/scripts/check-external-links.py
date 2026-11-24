@@ -4,9 +4,9 @@
 The sibling script, `check-doc-links.py`, checks only internal repository links and anchors;
 it deliberately skips external URLs because network dependence makes it flaky for merge gates.
 This script handles that "separate check." If an external link directing visitors
-to a destination (incident-reporting portals such as boho.or.kr, privacy.go.kr, pipc.go.kr,
-fsec.or.kr; CISA KEV; OWASP, SigmaHQ, Suricata, MITRE, MISP; GitHub badges, etc.) in the README top section or dated
-feature docs changes, moves, or closes, it would otherwise remain silently broken. This
+to a destination (incident-reporting portals, CISA KEV, OWASP, SigmaHQ, Suricata,
+MITRE, MISP, GitHub badges, etc.) in the README or dated feature docs changes,
+moves, or closes, it would otherwise remain silently broken. This
 script catches those links periodically and manually.
 
 Rules for choosing URLs to check
@@ -22,7 +22,7 @@ Rules for choosing URLs to check
   (e.g. `target`).
 
 How liveness is checked (the lesson learned from the first liveness runs)
-Public Korean government and security sites may reject HEAD requests or the default User-Agent,
+Public government and security sites may reject HEAD requests or the default User-Agent,
 or redirect several times, so a simple check can misclassify a working link as broken. This
 script therefore checks **with a browser User-Agent, using GET, and following redirects**. It
 uses three categories:

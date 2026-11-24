@@ -6,7 +6,7 @@ import (
 )
 
 // This file renders the HTML body of the email. Inline styles and simple table layout are used deliberately instead of modern CSS:
-// Email clients (especially Outlook and domestic enterprise mailboxes in China) differ greatly in their support for <style> blocks and flex/grid,
+// Email clients differ greatly in their support for <style> blocks and flex/grid,
 // so inline styles are the only approach that renders correctly everywhere.
 
 // htmlSeverityColor returns the accent color for a severity level, used for the left color bar and the title.

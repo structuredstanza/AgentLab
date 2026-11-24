@@ -179,21 +179,20 @@ func TestServerHandlersResponses(t *testing.T) {
 	}
 }
 
-// TestFallbackCommandParsing verifies that the trigger keyword parsing of rule-mode chat (fallbackCommand) recognizes Korean
-// While still recognizing aliases (intent/hints), accept the existing Chinese and English triggers as-is, and strip out only the keyword
-// Verifies that the arguments are returned. This is pure input parsing that does not touch the Store or DB, so it runs without a DB.
-// If the Korean alias is removed, the korean-* cases break; if the Chinese or English ones are removed, their cases break (non-vacuousness).
+// TestFallbackCommandParsing checks that all command prefixes are recognized and
+// stripped without changing the arguments, while non-commands remain intact.
+// The parser needs no database.
 func TestFallbackCommandParsing(t *testing.T) {
 	cases := []struct {
 		name, in, cmd, text string
 	}{
-		{"korean-intent", "\uc758\ub3c4 SQLi \uc8fc\uc785\uc810 \uba3c\uc800 \ud655\uc778", "intent", "SQLi \uc8fc\uc785\uc810 \uba3c\uc800 \ud655\uc778"},
-		{"korean-hint", "\ud78c\ud2b8 \ub85c\uadf8\uc778 \ud3fc\ubd80\ud130 \ubcf4\ub77c", "hint", "\ub85c\uadf8\uc778 \ud3fc\ubd80\ud130 \ubcf4\ub77c"},
-		{"chinese-intent", "\u610f\u56fe \u626b\u63cf\u7aef\u53e3", "intent", "\u626b\u63cf\u7aef\u53e3"}, // Preserve for backward compatibility
-		{"chinese-hint", "\u63d0\u793a \u770b\u767b\u5f55", "hint", "\u770b\u767b\u5f55"},                 // Preserve for backward compatibility
+		{"intent-alias-1", "\uc758\ub3c4 SQLi \uc8fc\uc785\uc810 \uba3c\uc800 \ud655\uc778", "intent", "SQLi \uc8fc\uc785\uc810 \uba3c\uc800 \ud655\uc778"},
+		{"hint-alias-1", "\ud78c\ud2b8 \ub85c\uadf8\uc778 \ud3fc\ubd80\ud130 \ubcf4\ub77c", "hint", "\ub85c\uadf8\uc778 \ud3fc\ubd80\ud130 \ubcf4\ub77c"},
+		{"intent-alias-2", "\u610f\u56fe \u626b\u63cf\u7aef\u53e3", "intent", "\u626b\u63cf\u7aef\u53e3"},
+		{"hint-alias-2", "\u63d0\u793a \u770b\u767b\u5f55", "hint", "\u770b\u767b\u5f55"},
 		{"english-intent", "intent scan ports", "intent", "scan ports"},
 		{"english-hint", "hint try admin:admin", "hint", "try admin:admin"},
-		{"status-korean", "\uc9c0\uae08 \uc0c1\ud669 \uc54c\ub824\uc918", "", "\uc9c0\uae08 \uc0c1\ud669 \uc54c\ub824\uc918"},
+		{"status-unrecognized-prefix", "\uc9c0\uae08 \uc0c1\ud669 \uc54c\ub824\uc918", "", "\uc9c0\uae08 \uc0c1\ud669 \uc54c\ub824\uc918"},
 		{"status-empty", "   ", "", ""},
 	}
 	for _, c := range cases {

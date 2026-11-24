@@ -8,7 +8,7 @@ import (
 )
 
 // TestAssetResponsesLocalized drives the request validators that return before
-// any database access and confirms the Korean message actually lands in the HTTP
+// any database access and confirms the error message reaches the HTTP
 // body. The scope/asset_ids conflict guard returns before s.m.Assets() is read,
 // MaxBytesReader trips mid-decode, and decodeCompanyMutationRequest works on the
 // body alone, so a Manager holding only the task map reaches every path.

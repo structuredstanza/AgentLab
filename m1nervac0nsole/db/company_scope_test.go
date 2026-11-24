@@ -57,7 +57,7 @@ func TestParseAutoScopeLine(t *testing.T) {
 		{name: "ipv6", input: "2001:db8::10", kind: "ip", normalized: "2001:db8::10/128"},
 		{name: "cidr", input: "198.51.100.0/24", kind: "cidr", normalized: "198.51.100.0/24"},
 		{name: "icp latin", input: "\u4eac ICP\u5907 123\u53f7", kind: "icp", normalized: "\u4eacicp\u5907123\u53f7"},
-		{name: "icp chinese", input: "\u6caa\u7f51\u5907\u6848 9988", kind: "icp", normalized: "\u6caa\u7f51\u5907\u68489988"},
+		{name: "icp without latin marker", input: "\u6caa\u7f51\u5907\u6848 9988", kind: "icp", normalized: "\u6caa\u7f51\u5907\u68489988"},
 		{name: "icp domain", input: "icp.example.com", kind: "domain", normalized: "icp.example.com"},
 		{name: "icp url query", input: "https://example.com/path?icp=1", kind: "domain", normalized: "example.com"},
 		// An ICP filing number contains no dot: descriptive text mixed with domain/version numbers is classified as a keyword; otherwise it would be stored as

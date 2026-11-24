@@ -10,6 +10,7 @@ import (
 
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/agent"
 	"github.com/structuredstanza/AgentLab/m1nervac0nsole/db"
+	"github.com/structuredstanza/AgentLab/m1nervac0nsole/traffic"
 	actool "github.com/structuredstanza/norma/tool"
 )
 
@@ -251,6 +252,48 @@ func TestFindingWorkflowMigrationPreservesUserConfiguration(t *testing.T) {
 	search, _ = pg.GetTool("traffic_search")
 	if contains(search.Agents, "reporter") {
 		t.Fatal("one-time migration undid later unbinding")
+	}
+}
+
+func TestFindingWorkflowRefreshesShippedSearchDescription(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	pg := s.m.pg
+	const flag = "finding_workflow_tools_v4_neutral_search_description"
+	original, err := pg.GetTool("traffic_search")
+	if err != nil || original == nil {
+		t.Fatalf("could not read seeded traffic_search: %v", err)
+	}
+	setting, _, err := pg.GetSetting(flag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := pg.Exec(`UPDATE tools SET description=$1 WHERE key='traffic_search'`, original.Description); err != nil {
+			t.Error(err)
+		}
+		if err := pg.SetSetting(flag, setting); err != nil {
+			t.Error(err)
+		}
+	})
+	previous := strings.Replace(traffic.TrafficSearchDescription, "supporting Unicode substrings of at least 3 characters",
+		"supporting any substring and \x43hinese (at least 3 characters)", 1)
+	for _, tc := range []struct{ name, before, want string }{
+		{"shipped default", previous, traffic.TrafficSearchDescription},
+		{"operator edit", previous + " Operator note.", previous + " Operator note."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := pg.Exec(`UPDATE tools SET description=$1 WHERE key='traffic_search'`, tc.before); err != nil {
+				t.Fatal(err)
+			}
+			if err := pg.SetSetting(flag, "false"); err != nil {
+				t.Fatal(err)
+			}
+			s.seedFindingWorkflowTools()
+			row, err := pg.GetTool("traffic_search")
+			if err != nil || row == nil || row.Description != tc.want {
+				t.Fatalf("wrong traffic_search description after refresh: %+v, %v", row, err)
+			}
+		})
 	}
 }
 

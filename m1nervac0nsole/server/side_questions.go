@@ -23,9 +23,7 @@ import (
 	"github.com/structuredstanza/norma/transcript"
 )
 
-// User-facing side-question (side-question) messages surfaced through the HTTP API and
-// the exchange status, localized to Korean (BRIEF localization policy). "Worker" and
-// "main agent" / "main conversation" match the UI terms; "[btw]" log lines stay as-is.
+// User-facing side-question API errors and exchange status messages.
 const (
 	sideErrCtxNotSaved        = "The side-question context has not been saved yet. Please try again."
 	sideErrModelConfigChanged = "The model configuration was deleted or changed. Run the main agent first to refresh the context."

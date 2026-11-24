@@ -34,8 +34,8 @@ var chatMentionKindLabel = map[string]string{
 // Labels are only for display: the server trusts only the type and numeric ID.
 var chatMentionPattern = regexp.MustCompile(`@\[(\x{6f0f}\x{6d1e}|\x{8d44}\x{4ea7}|\x{4f01}\x{4e1a}|\x{63a5}\x{53e3}|IP|\x{5e94}\x{7528}|\x{57df}\x{540d}|\x{5b50}\x{57df}\x{540d}|\x{670d}\x{52a1}|finding|company|asset|endpoint|ip|app|root_domain|subdomain|service)#([0-9]+)(?: [^\]\r\n]*)?\]`)
 
-// chatMentionKinds maps every accepted wire token to its native kind. English kinds
-// are the current wire form; Chinese tokens are kept only so stored history still parses.
+// chatMentionKinds maps accepted wire tokens to native kinds, including legacy
+// tokens so that stored history still parses.
 var chatMentionKinds = map[string]string{
 	"\u6f0f\u6d1e": "finding", "\u8d44\u4ea7": "asset", "\u4f01\u4e1a": "company", "\u63a5\u53e3": "endpoint",
 	"IP": "ip", "\u5e94\u7528": "app", "\u57df\u540d": "root_domain", "\u5b50\u57df\u540d": "subdomain", "\u670d\u52a1": "service",
@@ -131,7 +131,7 @@ func composeChatMentionMessage(pg *db.DB, message string) (string, error) {
 			return "", err
 		}
 		if data == nil {
-			// Keep the wire label (ref.Name, Chinese) as is, but display the Korean label to the user.
+			// Prefer the display label, falling back to the original wire label.
 			label := chatMentionKindLabel[ref.Kind]
 			if label == "" {
 				label = ref.Name

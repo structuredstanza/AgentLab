@@ -74,9 +74,8 @@ var notifyBackoff = []time.Duration{
 	30 * time.Second,
 }
 
-// Reason for delivery failure or delay. Stored in notification_deliveries.last_error
-// Passes through the delivery history response in notify_api.go and into the "Delivery Records" table (delivery-list.tsx) on the notifications page
-// Therefore it is kept in Korean because it is user-facing text (the diagnostic log.Printf keeps the original text, Z2).
+// Reasons for delivery failure or delay, stored in notification_deliveries.last_error
+// and shown in the delivery history.
 const (
 	errDeliveryChannelKindUnregistered = "Unregistered channel type: %q"
 	errDeliverySnapshotUnrenderable    = "Could not parse the event snapshot, so this finding could not be turned into a message"

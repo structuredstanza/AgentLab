@@ -12,12 +12,10 @@ import (
 
 const FindingRetestAgentKey = "retester"
 
-// Closing reason for finding retest (finding_retest). Stored in the finding_retests.error column and exposed as item.error in the retest panel
-// Exposed as item.error of (finding-retest-panel) (user-facing; see server/conversations.go
-// Kept in Korean because it shares the same column and panel as the sibling convRetest*: F9). retestNoConclusionReason
-// is the fallback that overrides the reason the caller passed when the agent finished without reaching a conclusion,
-// and retestServiceRestartReason is used when the restart recovery (RecoverFindingRetests) seals a retest that was left unfinished.
-// It is a constant with no single quotes, so it is safe to concatenate directly into an SQL literal position.
+// Retest closing reasons are stored in finding_retests.error and shown as-is.
+// A completed retest without a saved conclusion uses retestNoConclusionReason;
+// restart recovery uses retestServiceRestartReason for unfinished retests.
+// The restart reason must contain no single quotes because it is embedded in SQL.
 const (
 	retestNoConclusionReason   = "The agent did not save a retest conclusion. Review the conversation and run the retest again"
 	retestServiceRestartReason = "The retest was interrupted because the service restarted. Start it again"

@@ -106,9 +106,8 @@ func TestControlTasksBatchResponsesLocalized(t *testing.T) {
 	})
 }
 
-// TestIntentStateConflictWrapsSentinel checks that the intent state conflict message is in Korean while still wrapping with %w
-// Wraps db.ErrIntentStateConflict as-is, confirming that errors.Is identification is not broken.
-// The enum value paused must be preserved as-is from the original.
+// TestIntentStateConflictWrapsSentinel checks that the error wraps the conflict
+// sentinel and keeps the paused state in the message.
 func TestIntentStateConflictWrapsSentinel(t *testing.T) {
 	err := fmt.Errorf(errIntentCtrlStateConflictFmt, db.ErrIntentStateConflict)
 	if !errors.Is(err, db.ErrIntentStateConflict) {

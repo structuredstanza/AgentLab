@@ -1112,7 +1112,7 @@ func TestAssetIPRejectsHostname(t *testing.T) {
 	d, av2, _ := testSetup(t)
 	t.Cleanup(func() { d.Close() })
 
-	hostname := "d63cd476.cdn.ucloud.com.cn"
+	hostname := "cache.cdn.example.com"
 	cases := []struct {
 		name string
 		call func() (int64, error)

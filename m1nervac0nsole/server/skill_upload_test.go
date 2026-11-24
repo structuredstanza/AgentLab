@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
-	"golang.org/x/text/encoding/simplifiedchinese"
+	gbkencoding "golang.org/x/text/encoding/simplifiedchinese"
 )
 
 func TestValidSkillName(t *testing.T) {
@@ -127,17 +127,17 @@ func uploadZip(t *testing.T, skillDir string, filename string, data []byte) (*ht
 	return rr, out
 }
 
-const zhSkillMD = "---\nname: localised-skill\ndescription: test\n---\nbody\n"
+const localizedSkillMD = "---\nname: localised-skill\ndescription: test\n---\nbody\n"
 
 // A zstd-compressed archive (WinZip's optional compression method) used to blow up with
 // "zip: unsupported compression"; it now installs like any Deflate archive.
-func TestUploadSkillZstdAndChineseNames(t *testing.T) {
+func TestUploadSkillZstdAndUTF8Names(t *testing.T) {
 	dir := t.TempDir()
 	data := buildZip(t,
-		zipFile{name: "localised-skill/SKILL.md", body: zhSkillMD, method: zipMethodZstd},
+		zipFile{name: "localised-skill/SKILL.md", body: localizedSkillMD, method: zipMethodZstd},
 		zipFile{name: "localised-skill/reference/notes doc.md", body: "reference", method: zipMethodZstd},
-		// A UTF-8 multibyte entry name: the half of this test's purpose that ASCII names dropped.
-		zipFile{name: "localised-skill/reference/\u6587\u6863.md", body: "cjk", method: zipMethodZstd},
+		// Keep a multibyte path to cover UTF-8 entry names.
+		zipFile{name: "localised-skill/reference/\u6587\u6863.md", body: "reference", method: zipMethodZstd},
 		zipFile{name: "localised-skill/scripts/run.py", body: "print(1)", method: zip.Deflate},
 	)
 	rr, out := uploadZip(t, dir, "localised-skill.zip", data)
@@ -154,11 +154,10 @@ func TestUploadSkillZstdAndChineseNames(t *testing.T) {
 	}
 }
 
-// GBK-named entries (7-Zip / Explorer on Chinese Windows) must be decoded rather
-// than rejected as invalid UTF-8 paths.
+// GBK entry names must be decoded rather than rejected as invalid UTF-8.
 func TestUploadSkillGBKNames(t *testing.T) {
 	gbk := func(s string) string {
-		b, err := simplifiedchinese.GBK.NewEncoder().String(s)
+		b, err := gbkencoding.GBK.NewEncoder().String(s)
 		if err != nil {
 			t.Fatalf("gbk encode %q: %v", s, err)
 		}
@@ -166,8 +165,8 @@ func TestUploadSkillGBKNames(t *testing.T) {
 	}
 	dir := t.TempDir()
 	data := buildZip(t,
-		zipFile{name: gbk("localised-skill/SKILL.md"), body: zhSkillMD, method: zip.Deflate, nonUTF8: true},
-		zipFile{name: gbk("localised-skill/reference.md"), body: "content", method: zip.Deflate, nonUTF8: true},
+		zipFile{name: "localised-skill/SKILL.md", body: localizedSkillMD, method: zip.Deflate},
+		zipFile{name: gbk("localised-skill/\u6587\u6863.md"), body: "content", method: zip.Deflate, nonUTF8: true},
 	)
 	rr, out := uploadZip(t, dir, "skill.zip", data)
 	if rr.Code != 201 {
@@ -176,13 +175,12 @@ func TestUploadSkillGBKNames(t *testing.T) {
 	if out["name"] != "localised-skill" {
 		t.Fatalf("name = %v, want localised-skill", out["name"])
 	}
-	if _, err := os.Stat(filepath.Join(dir, "localised-skill", "reference.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "localised-skill", "\u6587\u6863.md")); err != nil {
 		t.Errorf("GBK-named entry not extracted: %v", err)
 	}
 }
 
-// An archive we genuinely cannot decode should name the method in Korean instead of
-// surfacing "zip: unsupported compression algorithm".
+// An unsupported archive should name the method rather than return a generic ZIP error.
 func TestUploadSkillUnsupportedMethod(t *testing.T) {
 	data := buildZip(t,
 		zipFile{name: "demo/SKILL.md", body: "---\nname: demo\n---\n", method: zipMethodDeflate64},

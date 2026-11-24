@@ -114,7 +114,7 @@ func TestTrafficIngestRequiresAuth(t *testing.T) {
 // A fixed byte cut can split a multi-byte rune; the stored body would then be
 // invalid UTF-8 and the evidence preview would call it binary.
 func TestTruncateBodyKeepsValidUTF8(t *testing.T) {
-	body := strings.Repeat("가", maxIngestBodySize/3+2)
+	body := strings.Repeat("\u20ac", maxIngestBodySize/3+2)
 	out := truncateBody(body)
 	if !utf8.ValidString(out) {
 		t.Fatal("truncated body is not valid UTF-8")

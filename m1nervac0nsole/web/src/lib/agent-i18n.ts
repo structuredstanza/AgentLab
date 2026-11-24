@@ -5,12 +5,9 @@ import { useTranslations } from "next-intl";
 import { api } from "@/lib/api";
 import type { Agent } from "@/lib/types";
 
-// The names, descriptions, and prompt variable labels of the builtin default agents are DB seed data,
-// Contains only Chinese (builtinAgents in db/db.go, server/finding_retests.go
-// The DB values cannot be kept per language, and because the seed uses ON CONFLICT DO NOTHING,
-// the changes are not applied to instances that are already installed. So the UI looks up translations by key
-// from the message files (the builtinAgents namespace in web/messages/{ko,en,zh,es,ja}.json).
-// Show it if present; otherwise use the DB value as-is. Agents created by the user always use the DB value.
+// Seed inserts use ON CONFLICT DO NOTHING, so existing installations may retain
+// older default labels. Look up system-seeded labels by key in the builtinAgents
+// catalog and fall back to DB values. User-created agents always use their DB values.
 
 // The retester is seeded in the DB with builtin=false (server FindingRetestAgentKey), but the system
 // Since the key is fixed, it is included in the translation targets. Agents with builtin=true (goals/planner/

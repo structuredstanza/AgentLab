@@ -77,15 +77,8 @@ const (
 
 var errWorkControlConflict = errors.New("work control conflict")
 
-// The four constants below are used by controlIntent (HTTP handler) and sendWorkerMessage (intent intervention) to write errors via writeErr
-// This is the task-control error message shown to the user as-is. The error returned by ControlWork
-// applyIntentControl(task_control.go) → controlIntent(server.go:1236) → writeErr with 409,
-// The error returned by runDetachedIntent goes through intent_intervention.go:147 → writeErr and appears on the user's screen.
-// Neither path touches agent tool (actool) input, so these messages are translated into Korean. Conversely,
-// the messages in SteerWork and KillWork in the same file (steer_work and kill_work tool results) and in transitionIntentState
-// (internal state transition log) are brain input and logs, so their original text is preserved to prevent performance drift
-// (see the comment at each site). The resume-conflict message saying the intent is no longer in the paused state is in task_control.go
-// errIntentCtrlStateConflictFmt from task_control.go to keep a single source of truth.
+// User-facing errors from intent control and intervention. For the paused-state
+// conflict, both paths use errIntentCtrlStateConflictFmt from task_control.go.
 const (
 	errWorkControlNoRunningWorkFmt = "%w: no running Worker for intent %d (it may have already stopped or not yet been assigned)"
 	errWorkControlBusyFmt          = "%w: intent %d already has a %s control in progress"
@@ -850,18 +843,15 @@ func (e *Engine) notifyChurn(t *Task, intentID int64) {
 // Broadcaster exposes the engine's live activity pub/sub (used by the SSE handler).
 func (e *Engine) Broadcaster() *Broadcaster { return e.bc }
 
-// emitActivity persists one captured step AND fans it out to live subscribers,
-// from a single point so storage and the SSE stream never diverge.
-// Display-only activity summary (no work unit or node_id). It is shown only in the dashboard transcript and is never read back
-// into any agent's context — the feedback paths (planner.workerOutput and
-// the get_worker_output tool) select only 'result'/'text' activities within the intent scope (node_id), so
-// These summaries do not carry a node_id. So even if they are localized into Korean, the brain input (BRIEF boundary #1)
-// Do not touch them. Format arguments (%d) are preserved in their original form. [[G132]]
+// Display-only activity summaries do not carry a node_id, so the planner and
+// get_worker_output do not select them as intent feedback.
 const (
 	goallessTaskDoneSummary = "All goals are achieved and the intents dispatched directly have finished, so the task is ending"
 	plannerRoundSummaryFmt  = "Planning round %d"
 )
 
+// emitActivity persists one captured step AND fans it out to live subscribers,
+// from a single point so storage and the SSE stream never diverge.
 func (e *Engine) emitActivity(t *Task, r db.Activity) db.Activity {
 	id, err := e.appendActivity(t, r)
 	if err != nil {

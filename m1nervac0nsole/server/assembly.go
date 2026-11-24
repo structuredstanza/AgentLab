@@ -321,7 +321,7 @@ var legacyTaskTimeoutHashes = map[string]string{
 	"worker":  "412e5c7cf45ba878425bb3be491659a178c0cee66bcfb717324ea9e4557d6aba",
 }
 
-// legacyGenericAssistantHash is the digest of the Chinese-era DefaultAssistantPrompt,
+// legacyGenericAssistantHash is the digest of the original DefaultAssistantPrompt,
 // which older builds seeded into every new custom agent.
 const legacyGenericAssistantHash = "a179c990bff1ab4e0a6f326945a1c44036ef4c8a54c7c5b635965f6cefdc9f0a"
 
@@ -330,7 +330,7 @@ func promptDigest(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// migrateLegacyDefaultPrompts replaces untouched Chinese-era built-in defaults with
+// migrateLegacyDefaultPrompts replaces untouched built-in defaults from older releases with
 // the English ones. Each step is hash-matched, so custom bodies are never touched
 // and a second run is a no-op. Old prompt versions remain in agent_prompts history.
 func migrateLegacyDefaultPrompts(pg *db.DB) {
@@ -388,7 +388,7 @@ func migrateLegacyDefaultPrompts(pg *db.DB) {
 	migrateLegacyJudgePrompt(pg)
 }
 
-// legacyJudgePromptHash is the digest of the Chinese-era intercept judge prompt. Older
+// legacyJudgePromptHash is the digest of the original intercept judge prompt. Older
 // builds shipped it, and the config writer persisted it as a custom override because it
 // differed from the then-current default.
 const legacyJudgePromptHash = "d6bf0f5fae9e98f551de5ac73a935a667f1c4eb18b30fd9da2ffb3e851ea2c15"

@@ -210,8 +210,7 @@ function taskDuration(task: Task, nowSec: number): number {
 // aggregate accumulated over a bulk delete.
 type DeleteCounts = Omit<DeleteTaskResult, "deleted" | "cleanup_warning">;
 
-// Module-level functions cannot call the hook, so they receive the translation function as an argument and expose it to the user
-// strings in Korean (following the approval-records precedent).
+// Module-level functions receive the translation function because they cannot call the hook.
 type Translator = ReturnType<typeof useTranslations>;
 
 function deleteDetails(t: Translator, result: DeleteCounts): string[] {

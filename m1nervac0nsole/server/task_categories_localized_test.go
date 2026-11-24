@@ -46,7 +46,7 @@ func TestTaskCategoryResponses(t *testing.T) {
 		t.Fatal("invalid id must not pass")
 	}
 
-	// writeTaskCategoryError — the name-conflict sentinel maps to the Korean 409.
+	// The name-conflict sentinel maps to HTTP 409.
 	rec = httptest.NewRecorder()
 	writeTaskCategoryError(rec, db.ErrTaskCategoryNameConflict)
 	if rec.Code != http.StatusConflict {

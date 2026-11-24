@@ -80,11 +80,10 @@ CREATE INDEX IF NOT EXISTS idx_blob_refs_ex ON blob_refs(exchange_id);
 
 // ftsSchema is applied separately from indexSchema: a driver build without FTS5
 // must degrade to "no full-text search" rather than take the whole recorder down.
-// trigram (not the default unicode61) is required for two reasons this subsystem
-// depends on: it matches arbitrary substrings — "ssw0r" finds "P@ssw0rd" — and it
-// handles CJK, which unicode61 does not tokenize. Contentless (content=”) keeps
-// only the index, since the text itself lives in exchange_bodies; contentless_delete
-// lets rows be deleted without replaying the original text back in.
+// trigram (not the default unicode61) matches arbitrary substrings: "ssw0r"
+// finds "P@ssw0rd", even when the match falls inside an unbroken run of text.
+// Contentless (content='') keeps only the index; the text itself lives in
+// exchange_bodies. With contentless_delete, deletion needs no original text.
 const ftsSchema = `CREATE VIRTUAL TABLE IF NOT EXISTS ex_fts USING fts5(
   content, tokenize='trigram', content='', contentless_delete=1
 );`
@@ -156,7 +155,7 @@ const (
 // TrafficSearchDescription is persisted into the tool catalog for new and
 // upgraded installations. Keep it in the traffic package so the runtime tool
 // and the catalog migration cannot drift apart.
-const TrafficSearchDescription = "Query target traffic that the recording proxy has captured (host is required; accepts a bare host, host:port, or a full URL, and can be further filtered by URL substring or body keyword). Specifying a port returns only that service's traffic, so traffic from different ports on the same IP is not mixed. body_contains runs full-text search over captured request/response headers and bodies, supporting any substring and Chinese (at least 3 characters). Returns only a lightweight index (id/method/url/status/resp_len) without response content. After a non-empty result, you must verify each request/response with traffic_get, then pass only the IDs that really support the current vulnerability to bind_finding_traffic. By default it returns 3 results (at most 10 per page); use page to paginate when there are many results."
+const TrafficSearchDescription = "Query target traffic that the recording proxy has captured (host is required; accepts a bare host, host:port, or a full URL, and can be further filtered by URL substring or body keyword). Specifying a port returns only that service's traffic, so traffic from different ports on the same IP is not mixed. body_contains runs full-text search over captured request/response headers and bodies, supporting Unicode substrings of at least 3 characters. Returns only a lightweight index (id/method/url/status/resp_len) without response content. After a non-empty result, you must verify each request/response with traffic_get, then pass only the IDs that really support the current vulnerability to bind_finding_traffic. By default it returns 3 results (at most 10 per page); use page to paginate when there are many results."
 
 // taskSource is the origin transport's own answer to which task a proxied
 // request belongs to. The gateway implements it from the session it already
@@ -1439,8 +1438,7 @@ func clipBytes(b []byte, n int) []byte {
 	return b[:n]
 }
 
-// truncateUTF8 cuts b to at most n bytes without splitting a multi-byte rune,
-// so a preview never ends in half a CJK character.
+// truncateUTF8 cuts b to at most n bytes without splitting a multibyte rune.
 func truncateUTF8(b []byte, n int) string {
 	if len(b) <= n {
 		return string(b)
@@ -2235,7 +2233,7 @@ func (t *Traffic) reapStage(stageDir string) {
 // DeleteHostsExact removes recorded exchanges for a set of EXACT hosts (the
 // batch path for the page's multi-select delete): index rows + each host's file
 // tree, then one blob-GC pass. Exact match — unlike DeleteHost's substring —
-// so picking "api.example.com" never sweeps "api.example.com.cn". Returns rows
+// so picking "api.example.com" never sweeps "api.example.com.test". Returns rows
 // deleted. Duplicate hosts are harmless (idempotent deletes, single tree pass).
 func (t *Traffic) DeleteHostsExact(hosts []string) (int64, error) {
 	stage, err := t.StageDeleteHostsExact(hosts)

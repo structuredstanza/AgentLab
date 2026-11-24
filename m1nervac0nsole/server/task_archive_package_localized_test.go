@@ -6,16 +6,8 @@ import (
 	"testing"
 )
 
-// task_archive_package.go: Verify the error path returned when the original and the delete-staging temporary file coexist.
-//
-// Call graph determination (see the errArchiveStagedAndOriginalCoexist constant comment): this error is raised in the background
-// archive worker runOneTaskArchiveJob (task_archives.go:102) calls FailTaskArchiveJob with it.
-// Stored in the task_archives.error column, and TaskArchivesPanel in tasks/page.tsx displays {archive.error}
-// Used only for direct display on screen as user-facing output (actool·planner feedback 0). Along the same propagation path
-// (archiveTask·validateArchivePath) are already in Korean, so this translation is consistent with them.
-//
-// stageTaskArchivePackageDelete is a pure file function that does not touch the DB, so on this host without a DB
-// it can create both the original file and the delete temp file (.deleting-N) at once to actually drive the real contradictory branch.
+// TestTaskArchiveStagedAndOriginalCoexistError exercises the conflicting file
+// state directly, without running the archive worker or accessing the database.
 func TestTaskArchiveStagedAndOriginalCoexistError(t *testing.T) {
 	dataDir := t.TempDir()
 	archivePath := taskArchivePath(dataDir, 21, "42")
