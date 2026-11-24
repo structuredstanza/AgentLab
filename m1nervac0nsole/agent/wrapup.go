@@ -129,16 +129,13 @@ func wrapupSettlement(agentKey string, disabledTools []string, tools ...actool.C
 	}
 }
 
-// withWrapupLang appends the display-language directive (langDirective) after the wrap-up prompt.
-// Unlike the system prompt, the wrap-up prompt does not automatically get the langDirective tail,
-// so attaching it directly like this makes the final user-visible one-sentence summary come out in English.
-// The wrap-up prose itself is an operational instruction read by the model (kept in Korean), and this tail, with the highest priority,
-// Only enforces the language of user-facing text. Harmless for the planner family, which does not produce summaries.
+// withWrapupLang reinforces English in the wrap-up message. The system
+// guidance, including the defensive-use rules, still applies.
 func withWrapupLang(prompt string) string {
 	if strings.TrimSpace(prompt) == "" {
 		return prompt
 	}
-	return prompt + langDirective()
+	return prompt + langDirective
 }
 
 // ---------- Task-level timeout wrap-up terms (see docs/Task-Level Timeout and Wrap-Up Design.md) ----------

@@ -98,6 +98,14 @@ var mcpTools = []mcpTool{
 		Description: "List this token's task scope rows and its scope rules.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 	},
+	{
+		Name:        "get_remediation_report",
+		Description: "Read the remediation report for this token's task.",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"task_id": map[string]any{"type": "integer", "description": "optional task id (defaults to this token's task)"}},
+		},
+	},
 }
 
 func mcpToolAllowed(name string) bool {
@@ -109,7 +117,7 @@ func mcpToolAllowed(name string) bool {
 	return false
 }
 
-// mcpRPC serves POST /mcp: JSON-RPC 2.0 over the four read tools, authenticated
+// mcpRPC serves POST /mcp: JSON-RPC 2.0 over the read-only tools, authenticated
 // by a scoped API token only. It is mounted outside requireAuth on purpose: a
 // JWT is not accepted here (AuthenticateAPIToken cannot resolve one), so an
 // external harness can never hold the admin session.
@@ -246,6 +254,15 @@ func (s *Server) mcpRunTool(ctx context.Context, pg *db.DB, taskID int64, name s
 		return mcpListFindings(pg, taskID, raw)
 	case "list_scope":
 		return mcpListScope(pg, taskID)
+	case "get_remediation_report":
+		ok, err := mcpTaskArg(raw, taskID)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "{}", nil
+		}
+		return readRemediationReport(ctx, pg, taskID)
 	}
 	return "", fmt.Errorf("unknown tool %q", name)
 }

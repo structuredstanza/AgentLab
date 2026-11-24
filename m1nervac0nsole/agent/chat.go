@@ -84,7 +84,11 @@ func chatWorkDirSpec() string {
 // chatSystem renders the DB-managed prompt body for agentKey. Custom agents have
 // no per-key in-code default, so DefaultAssistantPrompt is the render fallback.
 func chatSystem(agentKey, dataDir string) string {
-	return renderSystem(agentKey, DefaultAssistantPrompt, chatVars{DataDir: dataDir, Now: nowStr()}) + chatWorkDirSpec() + langDirective()
+	guidance := systemPromptGuidance
+	if agentKey == "reporter" {
+		guidance = systemPromptGuidance + reporterEvidenceGuidance
+	}
+	return renderSystem(agentKey, DefaultAssistantPrompt, chatVars{DataDir: dataDir, Now: nowStr()}) + chatWorkDirSpec() + guidance
 }
 
 // chatVars carries the runtime variables a custom agent's prompt may reference.

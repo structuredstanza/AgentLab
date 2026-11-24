@@ -144,7 +144,7 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 	}
 	result, _ = out["result"].(map[string]any)
 	tools, _ := result["tools"].([]any)
-	want := []string{"list_assets", "get_asset", "list_findings", "list_scope"}
+	want := []string{"list_assets", "get_asset", "list_findings", "list_scope", "get_remediation_report"}
 	if len(tools) != len(want) {
 		t.Fatalf("tools/list returned %d tools, want %d: %v", len(tools), len(want), tools)
 	}
@@ -252,6 +252,58 @@ func TestMCPToolsScopedToTokenTask(t *testing.T) {
 	}
 	if len(scope.Rules) != 1 || !strings.Contains(scope.Rules[0].Pattern, rig.ownDomain) {
 		t.Fatalf("list_scope rules: %s", text)
+	}
+}
+
+func TestMCPRemediationReportScopedToTokenTask(t *testing.T) {
+	rig := mcpRigFor(t)
+	if _, err := rig.m.pg.Exec(`UPDATE tasks SET completed_at=now(), status='done',
+remediation_for=now(), remediation_report='{"state":"ready","items":[]}'::jsonb
+WHERE id IN ($1, $2)`, rig.own, rig.other); err != nil {
+		t.Fatal(err)
+	}
+
+	const tool = "get_remediation_report"
+	for _, tc := range []struct {
+		name       string
+		args       string
+		wantReport bool
+	}{
+		{"default task", `{}`, true},
+		{"explicit token task", fmt.Sprintf(`{"task_id":%d}`, rig.own), true},
+		{"other task", fmt.Sprintf(`{"task_id":%d}`, rig.other), false},
+		{"missing task", `{"task_id":-1}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text, isErr := mcpToolCall(t, rig.s, rig.token, tool, tc.args)
+			if isErr {
+				t.Fatalf("%s failed: %s", tool, text)
+			}
+			if tc.wantReport {
+				var report struct {
+					State  string `json:"state"`
+					TaskID int64  `json:"task_id"`
+				}
+				if err := json.Unmarshal([]byte(text), &report); err != nil {
+					t.Fatalf("remediation report: %v (%s)", err, text)
+				}
+				if report.State != "ready" || report.TaskID != rig.own {
+					t.Fatalf("expected ready report for task %d, got %s", rig.own, text)
+				}
+			} else if text != "{}" {
+				t.Fatalf("mismatched task returned %s, want {}", text)
+			}
+
+			var count int
+			if err := rig.m.pg.QueryRow(`SELECT count(*) FROM mcp_audit a
+JOIN api_tokens t ON t.id=a.token_id
+WHERE t.task_id=$1 AND a.tool=$2 AND a.args=$3::jsonb`, rig.own, tool, tc.args).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatalf("audit rows for %s with %s: got %d, want 1", tool, tc.args, count)
+			}
+		})
 	}
 }
 

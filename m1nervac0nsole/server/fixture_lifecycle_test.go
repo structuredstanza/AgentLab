@@ -30,6 +30,7 @@ func drainFixtureServer(s *Server, m *Manager) {
 		s.engine.StopTask(task.ID)
 	}
 	s.archiveWG.Wait()
+	s.remediationWG.Wait()
 	if s.side != nil {
 		<-s.side.done
 	}

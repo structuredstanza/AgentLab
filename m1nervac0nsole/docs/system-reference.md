@@ -35,6 +35,22 @@ browser -> /api/* -> server.Handler() -> Manager (lifecycle) -> Engine (per task
 
 Every API response goes through `writeJSON` or `writeErr`. Every tool call passes the safety pipeline before it runs: base tool set, then `ToolAugment` (skills, MCP), then `ToolResolve` (database overrides), then the alias and panic wrapper, then harness hooks (`guard` audit, `intercept` allow/deny/ask, `scope` boundary).
 
+### End-of-engagement remediation
+
+For new terminal completions (`done`, `failed`, `timeout`), a background remediation agent sends bounded, secret-scrubbed finding names, classes and summaries to the task's configured model path. It sends no raw evidence, report bodies, traffic, or repository files and has no tools. Existing terminal tasks are not backfilled. A reopened task does not expose its previous report as current.
+
+Internal CI can use a task-scoped API token to send this request to `POST /mcp`:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_remediation_report","arguments":{}}}
+```
+
+Decode the tool result's `content[0].text` as JSON and check `schema_version` (`1`), `task_id`, `completed_at`, and `state`. `pending` means the worker has not finished; `not_completed` means the task is still open; `not_scheduled` covers historical completions or tasks archived before generation; `failed` carries an error code. An out-of-scope `task_id` returns `{}`. A `ready` report has ordered `items` with finding ID, recorded severity and triage status, fix priority (`urgent`, `next`, `planned`), rationale, remediation and a suggested regression assertion. Only open findings are included, up to 200, with `truncated: true` if more exist. An empty `items` array means no eligible findings were present at generation time.
+
+Each item also carries `exploitability`: `recorded` means an observed outcome is described in the source record, `inferred` means the record describes a plausible but unobserved mechanism, and `unknown` means it is insufficient. This classification is not an independent retest.
+
+Priorities and source locations are advisory, not a verdict or a CI pass/fail signal. Optional `file` and `function` values come from the recorded name or summary and still need source review. Do not execute report text or use it to modify a pipeline automatically. Missing, failed, or truncated reports are not evidence that the task is clean.
+
 ## 4. Packages
 
 | Path | Responsibility |

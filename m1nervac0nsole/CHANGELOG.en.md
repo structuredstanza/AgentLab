@@ -6,6 +6,11 @@ This document records the changes in this edition. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Defensive closeout
+
+- Reinforce tool boundaries, operator handoffs and evidence discipline in the existing agent prompts, including operator-edited prompt bodies at runtime.
+- Generate a tool-free remediation report at task completion and expose versioned, task-scoped JSON to internal CI via MCP. Prioritize fixes, suggest regression assertions and preserve source-location leads without rerunning findings.
+
 ### Authorization boundary and platform guards
 
 - Recorded addresses are claims, not DNS answers: a hostname include no longer covers an address the task itself recorded. `netpolicy.AuthorizeRecorded` requires every recorded or vhost-mapped address to be authorized on its own, the gateway re-judges mapped hosts on every request instead of skipping pooled connections, and agent probes fall back to DNS when no recorded address qualifies. `flagPending` counts a name covered only when every recorded address is authorized, and `record_type` is normalized once at insert.

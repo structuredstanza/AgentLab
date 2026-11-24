@@ -598,6 +598,14 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS active_llm_profile_id BIGINT REFERENCES llm_profiles(id) ON DELETE SET NULL;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_chain_revision BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+-- Historical completions predate the reporting agent and are not backfilled.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remediation_available_since TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remediation_for TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remediation_report JSONB;
+CREATE INDEX IF NOT EXISTS idx_tasks_remediation_pending ON tasks(completed_at, id)
+    WHERE deleted_at IS NULL AND archived_at IS NULL
+      AND status IN ('done','failed','timeout') AND completed_at >= remediation_available_since
+      AND remediation_for IS DISTINCT FROM completed_at;
 CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category_id, created_at DESC)
     WHERE deleted_at IS NULL AND category_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_pinned ON tasks(pinned_at DESC)

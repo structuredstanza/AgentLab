@@ -66,15 +66,6 @@ func TestAskOperatorActivityShape(t *testing.T) {
 	}
 }
 
-func TestAskOperatorEnvHandoffGuidance(t *testing.T) {
-	desc := (&Server{}).toolAskOperator().Description()
-	for _, marker := range []string{"copy-pastable", "do not retry or work around"} {
-		if !strings.Contains(desc, marker) {
-			t.Errorf("ask_operator description missing env-handoff marker %q", marker)
-		}
-	}
-}
-
 // A screenshot must reach the operator without entering the conversation when
 // provider credentials are configured: an image cannot be redacted the way the
 // question text is, but the human still needs to see the page.

@@ -209,6 +209,9 @@ type Server struct {
 	// channel coalesces enqueue bursts; the database remains the source of truth.
 	archiveWake chan struct{}
 	archiveWG   sync.WaitGroup
+
+	remediationWG sync.WaitGroup
+
 	side        *sideQuestionState
 	asks        askState
 
@@ -366,6 +369,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Printf("[engine] selected LLM unavailable — engine idle: %v", err)
 	}
 	s.restoreTaskRuntimes()
+	if m.pg != nil {
+		s.remediationWG.Add(1)
+		go func() {
+			defer s.remediationWG.Done()
+			s.runRemediation(s.ctx)
+		}()
+	}
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()
 	s.wireInterceptReviewer() // LLM fallback approval: commands that do not match any interception rule are handed to the model for a decision
