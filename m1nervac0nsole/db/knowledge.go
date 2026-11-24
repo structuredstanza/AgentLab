@@ -32,8 +32,10 @@ import (
 // and is not enforced.
 
 const (
-	// MaxKnowledgePerTask bounds machine-written knowledge per task.
-	MaxKnowledgePerTask = 50
+	// MaxKnowledgePerTask bounds machine-written knowledge per task. Sized for
+	// large engagements: the longest recorded run demanded 61 entries before it
+	// was stopped, so a bound of 100 keeps roughly double the observed peak.
+	MaxKnowledgePerTask = 100
 	// MaxReflectionsPerTask bounds the reflection pool per task.
 	MaxReflectionsPerTask = 300
 

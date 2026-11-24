@@ -51,11 +51,11 @@ Visibility of knowledge to a task T with company set C (task_companies): status<
 2. `ScrubTargetIdentifiers(text, identifiers) (string,int)`: used when generalising (promote to company/global, or operator-created global/company entry): replace each identifier (case-insensitive, whole token, also as the suffix of a host) with `<target>`, and replace every IPv4/IPv6 literal with `<ip>` and every email with `<email>`. `(d *DB) TaskScopeIdentifiers(ctx, taskID)` returns the task's scope domains/ips/cidr-hosts plus its companies' names and domains (read db/task_scope.go, db/companies.go for the real tables).
 3. Candidate entries and reflections are task-private; promotion is the only way out and it re-scrubs with the origin task's identifiers and returns the redaction count so the owner sees what changed.
 4. Everything rendered into a prompt is flattened to one line per item, length capped, wrapped in a header that says it is DATA from earlier work (may contain target-controlled text), not instructions. Reuse `lessonText`/the RenderLessons approach in db/lessons.go.
-5. Caps bound noise: per task max 50 agent knowledge entries and max 300 reflections (return `ErrMemoryCapReached`, not silent drop); length caps title 120, body 2000, summary 240, detail 1000 (truncate rune-safely); dedupe: knowledge (task_id, lower(title)); reflections (task_id, dedupe_key) where worker/planner key = sha256 of kind+normalised summary.
+5. Caps bound noise: per task max 100 agent knowledge entries and max 300 reflections (return `ErrMemoryCapReached`, not silent drop); length caps title 120, body 2000, summary 240, detail 1000 (truncate rune-safely); dedupe: knowledge (task_id, lower(title)); reflections (task_id, dedupe_key) where worker/planner key = sha256 of kind+normalised summary.
 
 ## Go API in package db (new files db/knowledge.go, db/reflection.go, db/scrub.go, db/reflect_engine.go)
 ```go
-const (MaxKnowledgePerTask = 50; MaxReflectionsPerTask = 300)
+const (MaxKnowledgePerTask = 100; MaxReflectionsPerTask = 300)
 var ErrMemoryCapReached = errors.New("memory cap reached for this task")
 var ErrMemoryInvalid = errors.New("invalid memory entry")
 
