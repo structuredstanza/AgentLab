@@ -12,7 +12,6 @@ m1nervac0nsole is an autonomous offensive tool. Misuse causes real harm, and una
 
 - Use it **only** against targets you own or for which you hold explicit written authorization, within an agreed scope and time window. Do not target live services or other parties' assets.
 - Verify in locally isolated environments you own — deliberately vulnerable targets such as OWASP Juice Shop or DVWA.
-- In the Republic of Korea, unauthorized intrusion into an information and communications network violates the **Network Act**, and the **Personal Information Protection Act** applies wherever personal data is involved. Your own jurisdiction's computer-crime and data-protection law applies wherever you operate.
 
 Starting the console constitutes agreement to the full terms in [License and disclaimer](#license-and-disclaimer).
 
