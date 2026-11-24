@@ -27,9 +27,12 @@ func TestRemediationCompletionLifecycle(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 	ctx := t.Context()
 	id := apiTokenTask(t, m, "remediation lifecycle")
+	const intro = "Review auth.go CheckOwner before access. password=fixture-secret "
+	const urlPrefix = "https://fixture-user:fixture-cut-prefix"
+	summary := intro + strings.Repeat(" ", 1800-len(intro)-len(urlPrefix)) + urlPrefix + "-rest@example.invalid"
 	var findingID int64
 	err = m.pg.QueryRowContext(ctx, `INSERT INTO findings(task_id,vulnclass,name,severity,status,summary,evidence)
- VALUES ($1,'access','Missing check','high','pending','Review auth.go CheckOwner before access. password=fixture-secret','RAW_EVIDENCE_MARKER') RETURNING id`, id).Scan(&findingID)
+ VALUES ($1,'access','Missing check','high','pending',$2,'RAW_EVIDENCE_MARKER') RETURNING id`, id, summary).Scan(&findingID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,8 +47,9 @@ func TestRemediationCompletionLifecycle(t *testing.T) {
 		}
 		input := req.Messages[0].Text()
 		if !strings.Contains(input, "CheckOwner") || strings.Contains(input, "fixture-secret") ||
+			strings.Contains(input, "fixture-cut-prefix") ||
 			strings.Contains(input, "RAW_EVIDENCE_MARKER") || strings.Contains(input, "FIXED_MARKER") {
-			t.Fatalf("wrong finding data sent to provider: %s", input)
+			t.Fatal("provider input is missing source context or contains excluded data")
 		}
 		return fmt.Sprintf(`[{"finding_id":%d,"priority":"urgent","exploitability":"unknown","rationale":"The recorded impact warrants review.","remediation":"Check resource ownership before returning data.","regression_check":"Assert a non-owner cannot read the record.","file":"auth.go","function":"CheckOwner"}]`, findingID)
 	}}}

@@ -126,7 +126,12 @@ func (s *Server) remediationStep(ctx context.Context) error {
 }
 
 func remediationFindings(ctx context.Context, pg *db.DB, taskID int64) ([]remediationFinding, error) {
-	rows, err := pg.QueryContext(ctx, `SELECT id, left(name, 160), left(vulnclass, 80), severity, status, left(summary, 1800)
+	// Omit oversized inputs whole; cutting before redaction can break a match.
+	rows, err := pg.QueryContext(ctx, `SELECT id,
+ CASE WHEN octet_length(name) <= 16384 THEN name ELSE '' END,
+ CASE WHEN octet_length(vulnclass) <= 16384 THEN vulnclass ELSE '' END,
+ severity, status,
+ CASE WHEN octet_length(summary) <= 16384 THEN summary ELSE '' END
  FROM findings WHERE task_id=$1 AND status IN ('pending','in_progress','confirmed')
  ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, id LIMIT $2`,
 		taskID, remediationLimit+1)
@@ -140,12 +145,23 @@ func remediationFindings(ctx context.Context, pg *db.DB, taskID int64) ([]remedi
 		if err := rows.Scan(&f.ID, &f.Name, &f.Class, &f.Severity, &f.Status, &f.Summary); err != nil {
 			return nil, fmt.Errorf("scan remediation finding: %w", err)
 		}
-		for _, v := range []*string{&f.Name, &f.Class, &f.Summary} {
-			*v, _ = db.ScrubSecrets(*v)
-		}
+		f.Name = remediationText(f.Name, 160)
+		f.Class = remediationText(f.Class, 80)
+		f.Summary = remediationText(f.Summary, 1800)
 		out = append(out, f)
 	}
 	return out, rows.Err()
+}
+
+func remediationText(text string, maxRunes int) string {
+	text, _ = db.ScrubSecrets(text)
+	for i := range text {
+		if maxRunes == 0 {
+			return text[:i]
+		}
+		maxRunes--
+	}
+	return text
 }
 
 func remediationPriority(p string) int {
